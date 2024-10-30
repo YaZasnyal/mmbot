@@ -1,0 +1,18 @@
+[workspace]
+
+members = [
+    "mmbot",
+    "lib/mattermost-api",
+    "lib/bool_parser",
+    "lib/mattermost-bot"
+]
+
+[workspace.dependencies]
+tokio = "1.41.0"
+serde = { version = "1.0.213", features = ["derive"] }
+serde_json = "1.0.132"
+async-trait = "0.1.83"
+
+mattermost_api = { path = "lib/mattermost-api" }
+mattermost_bot = { path = "lib/mattermost-bot" }
+bool_parser = { path = "lib/bool_parser" }
