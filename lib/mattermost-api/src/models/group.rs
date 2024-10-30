@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -31,7 +31,12 @@ pub struct Group {
     pub update_at: Option<i64>,
     #[serde(rename = "delete_at", skip_serializing_if = "Option::is_none")]
     pub delete_at: Option<i64>,
-    #[serde(rename = "has_syncables", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "has_syncables",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub has_syncables: Option<bool>,
 }
 
@@ -51,4 +56,3 @@ impl Group {
         }
     }
 }
-

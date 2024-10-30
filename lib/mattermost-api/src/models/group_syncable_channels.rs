@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -15,7 +15,10 @@ use serde::{Deserialize, Serialize};
 pub struct GroupSyncableChannels {
     #[serde(rename = "channel_id", skip_serializing_if = "Option::is_none")]
     pub channel_id: Option<String>,
-    #[serde(rename = "channel_display_name", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "channel_display_name",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub channel_display_name: Option<String>,
     #[serde(rename = "channel_type", skip_serializing_if = "Option::is_none")]
     pub channel_type: Option<String>,
@@ -27,7 +30,12 @@ pub struct GroupSyncableChannels {
     pub team_type: Option<String>,
     #[serde(rename = "group_id", skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
-    #[serde(rename = "auto_add", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "auto_add",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub auto_add: Option<bool>,
     #[serde(rename = "create_at", skip_serializing_if = "Option::is_none")]
     pub create_at: Option<i64>,
@@ -54,4 +62,3 @@ impl GroupSyncableChannels {
         }
     }
 }
-

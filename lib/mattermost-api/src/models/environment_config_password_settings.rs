@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -13,15 +13,40 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EnvironmentConfigPasswordSettings {
-    #[serde(rename = "MinimumLength", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "MinimumLength",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub minimum_length: Option<bool>,
-    #[serde(rename = "Lowercase", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "Lowercase",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub lowercase: Option<bool>,
-    #[serde(rename = "Number", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "Number",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub number: Option<bool>,
-    #[serde(rename = "Uppercase", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "Uppercase",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub uppercase: Option<bool>,
-    #[serde(rename = "Symbol", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "Symbol",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub symbol: Option<bool>,
 }
 
@@ -36,4 +61,3 @@ impl EnvironmentConfigPasswordSettings {
         }
     }
 }
-

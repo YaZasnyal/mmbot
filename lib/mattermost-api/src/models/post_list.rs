@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -24,7 +24,12 @@ pub struct PostList {
     #[serde(rename = "prev_post_id", skip_serializing_if = "Option::is_none")]
     pub prev_post_id: Option<String>,
     /// Whether there are more items after this page.
-    #[serde(rename = "has_next", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "has_next",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub has_next: Option<bool>,
 }
 
@@ -39,4 +44,3 @@ impl PostList {
         }
     }
 }
-

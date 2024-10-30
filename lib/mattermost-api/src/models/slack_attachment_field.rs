@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -18,7 +18,12 @@ pub struct SlackAttachmentField {
     /// The value of the attachment, set as string but capable with golang interface
     #[serde(rename = "Value", skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
-    #[serde(rename = "Short", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "Short",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub short: Option<bool>,
 }
 
@@ -31,4 +36,3 @@ impl SlackAttachmentField {
         }
     }
 }
-

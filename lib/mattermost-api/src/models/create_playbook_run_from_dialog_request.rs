@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -35,7 +35,12 @@ pub struct CreatePlaybookRunFromDialogRequest {
     #[serde(rename = "submission", skip_serializing_if = "Option::is_none")]
     pub submission: Option<Box<models::CreatePlaybookRunFromDialogRequestSubmission>>,
     /// If the dialog was cancelled.
-    #[serde(rename = "cancelled", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "cancelled",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub cancelled: Option<bool>,
 }
 
@@ -54,4 +59,3 @@ impl CreatePlaybookRunFromDialogRequest {
         }
     }
 }
-

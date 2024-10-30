@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -17,7 +17,10 @@ pub struct AttachDeviceExtraPropsRequest {
     #[serde(rename = "device_id", skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
     /// Whether the mobile device has notifications disabled. Accepted values are \"true\" or \"false\".
-    #[serde(rename = "deviceNotificationDisabled", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "deviceNotificationDisabled",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub device_notification_disabled: Option<String>,
     /// Mobile app version. The version must be parseable as a semver.
     #[serde(rename = "mobileVersion", skip_serializing_if = "Option::is_none")]
@@ -33,4 +36,3 @@ impl AttachDeviceExtraPropsRequest {
         }
     }
 }
-

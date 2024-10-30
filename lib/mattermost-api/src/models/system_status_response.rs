@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -14,13 +14,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SystemStatusResponse {
     /// Latest Android version supported
-    #[serde(rename = "AndroidLatestVersion", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "AndroidLatestVersion",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub android_latest_version: Option<String>,
     /// Minimum Android version supported
     #[serde(rename = "AndroidMinVersion", skip_serializing_if = "Option::is_none")]
     pub android_min_version: Option<String>,
     /// Latest desktop version supported
-    #[serde(rename = "DesktopLatestVersion", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "DesktopLatestVersion",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub desktop_latest_version: Option<String>,
     /// Minimum desktop version supported
     #[serde(rename = "DesktopMinVersion", skip_serializing_if = "Option::is_none")]
@@ -41,7 +47,10 @@ pub struct SystemStatusResponse {
     #[serde(rename = "status", skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// Whether the device id provided can receive notifications (\"true\", \"false\" or \"unknown\"). Included when device_id parameter set.
-    #[serde(rename = "CanReceiveNotifications", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "CanReceiveNotifications",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub can_receive_notifications: Option<String>,
 }
 
@@ -61,4 +70,3 @@ impl SystemStatusResponse {
         }
     }
 }
-

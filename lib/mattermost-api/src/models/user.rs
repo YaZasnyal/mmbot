@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -34,7 +34,12 @@ pub struct User {
     pub nickname: Option<String>,
     #[serde(rename = "email", skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
-    #[serde(rename = "email_verified", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "email_verified",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub email_verified: Option<bool>,
     #[serde(rename = "auth_service", skip_serializing_if = "Option::is_none")]
     pub auth_service: Option<String>,
@@ -46,21 +51,38 @@ pub struct User {
     pub notify_props: Option<Box<models::UserNotifyProps>>,
     #[serde(rename = "props", skip_serializing_if = "Option::is_none")]
     pub props: Option<serde_json::Value>,
-    #[serde(rename = "last_password_update", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "last_password_update",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_password_update: Option<i64>,
-    #[serde(rename = "last_picture_update", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "last_picture_update",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_picture_update: Option<i64>,
     #[serde(rename = "failed_attempts", skip_serializing_if = "Option::is_none")]
     pub failed_attempts: Option<i32>,
-    #[serde(rename = "mfa_active", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "mfa_active",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub mfa_active: Option<bool>,
     #[serde(rename = "timezone", skip_serializing_if = "Option::is_none")]
     pub timezone: Option<Box<models::Timezone>>,
     /// ID of accepted terms of service, if any. This field is not present if empty.
-    #[serde(rename = "terms_of_service_id", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "terms_of_service_id",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub terms_of_service_id: Option<String>,
     /// The time in milliseconds the user accepted the terms of service
-    #[serde(rename = "terms_of_service_create_at", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "terms_of_service_create_at",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub terms_of_service_create_at: Option<i64>,
 }
 
@@ -92,4 +114,3 @@ impl User {
         }
     }
 }
-

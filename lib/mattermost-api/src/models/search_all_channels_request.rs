@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -17,28 +17,61 @@ pub struct SearchAllChannelsRequest {
     #[serde(rename = "term")]
     pub term: String,
     /// A group id to exclude channels that are associated to that group via GroupChannel records.
-    #[serde(rename = "not_associated_to_group", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "not_associated_to_group",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub not_associated_to_group: Option<String>,
     /// Exclude default channels from the results by setting this parameter to true.
-    #[serde(rename = "exclude_default_channels", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "exclude_default_channels",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub exclude_default_channels: Option<bool>,
-    /// Filters results to channels belonging to the given team ids  __Minimum server version__: 5.26 
+    /// Filters results to channels belonging to the given team ids  __Minimum server version__: 5.26
     #[serde(rename = "team_ids", skip_serializing_if = "Option::is_none")]
     pub team_ids: Option<Vec<String>>,
-    /// Filters results to only return channels constrained to a group  __Minimum server version__: 5.26 
-    #[serde(rename = "group_constrained", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    /// Filters results to only return channels constrained to a group  __Minimum server version__: 5.26
+    #[serde(
+        rename = "group_constrained",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub group_constrained: Option<bool>,
-    /// Filters results to exclude channels constrained to a group  __Minimum server version__: 5.26 
-    #[serde(rename = "exclude_group_constrained", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    /// Filters results to exclude channels constrained to a group  __Minimum server version__: 5.26
+    #[serde(
+        rename = "exclude_group_constrained",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub exclude_group_constrained: Option<bool>,
-    /// Filters results to only return Public / Open channels, can be used in conjunction with `private` to return both `public` and `private` channels  __Minimum server version__: 5.26 
-    #[serde(rename = "public", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    /// Filters results to only return Public / Open channels, can be used in conjunction with `private` to return both `public` and `private` channels  __Minimum server version__: 5.26
+    #[serde(
+        rename = "public",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub public: Option<bool>,
-    /// Filters results to only return Private channels, can be used in conjunction with `public` to return both `private` and `public` channels  __Minimum server version__: 5.26 
-    #[serde(rename = "private", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    /// Filters results to only return Private channels, can be used in conjunction with `public` to return both `private` and `public` channels  __Minimum server version__: 5.26
+    #[serde(
+        rename = "private",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub private: Option<bool>,
-    /// Filters results to only return deleted / archived channels  __Minimum server version__: 5.26 
-    #[serde(rename = "deleted", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    /// Filters results to only return deleted / archived channels  __Minimum server version__: 5.26
+    #[serde(
+        rename = "deleted",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub deleted: Option<bool>,
     /// The page number to return, if paginated. If this parameter is not present with the `per_page` parameter then the results will be returned un-paged.
     #[serde(rename = "page", skip_serializing_if = "Option::is_none")]
@@ -46,14 +79,29 @@ pub struct SearchAllChannelsRequest {
     /// The number of entries to return per page, if paginated. If this parameter is not present with the `page` parameter then the results will be returned un-paged.
     #[serde(rename = "per_page", skip_serializing_if = "Option::is_none")]
     pub per_page: Option<String>,
-    /// If set to true, only channels which do not have a granular retention policy assigned to them will be returned. The `sysconsole_read_compliance_data_retention` permission is required to use this parameter. __Minimum server version__: 5.35 
-    #[serde(rename = "exclude_policy_constrained", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    /// If set to true, only channels which do not have a granular retention policy assigned to them will be returned. The `sysconsole_read_compliance_data_retention` permission is required to use this parameter. __Minimum server version__: 5.35
+    #[serde(
+        rename = "exclude_policy_constrained",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub exclude_policy_constrained: Option<bool>,
-    /// If set to true, returns channels where given search 'term' matches channel ID. __Minimum server version__: 5.35 
-    #[serde(rename = "include_search_by_id", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    /// If set to true, returns channels where given search 'term' matches channel ID. __Minimum server version__: 5.35
+    #[serde(
+        rename = "include_search_by_id",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub include_search_by_id: Option<bool>,
-    /// If set to true, only returns channels that are local to this server. __Minimum server version__: 10.2 
-    #[serde(rename = "exclude_remote", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    /// If set to true, only returns channels that are local to this server. __Minimum server version__: 10.2
+    #[serde(
+        rename = "exclude_remote",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub exclude_remote: Option<bool>,
 }
 
@@ -77,4 +125,3 @@ impl SearchAllChannelsRequest {
         }
     }
 }
-

@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -35,16 +35,28 @@ pub struct Scheme {
     #[serde(rename = "scope", skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     /// The id of the default team admin role for this scheme.
-    #[serde(rename = "default_team_admin_role", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "default_team_admin_role",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_team_admin_role: Option<String>,
     /// The id of the default team user role for this scheme.
-    #[serde(rename = "default_team_user_role", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "default_team_user_role",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_team_user_role: Option<String>,
     /// The id of the default channel admin role for this scheme.
-    #[serde(rename = "default_channel_admin_role", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "default_channel_admin_role",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_channel_admin_role: Option<String>,
     /// The id of the default channel user role for this scheme.
-    #[serde(rename = "default_channel_user_role", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "default_channel_user_role",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_channel_user_role: Option<String>,
 }
 
@@ -65,4 +77,3 @@ impl Scheme {
         }
     }
 }
-

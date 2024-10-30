@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -13,7 +13,12 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ConfigLdapSettings {
-    #[serde(rename = "Enable", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "Enable",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable: Option<bool>,
     #[serde(rename = "LdapServer", skip_serializing_if = "Option::is_none")]
     pub ldap_server: Option<String>,
@@ -43,9 +48,17 @@ pub struct ConfigLdapSettings {
     pub id_attribute: Option<String>,
     #[serde(rename = "PositionAttribute", skip_serializing_if = "Option::is_none")]
     pub position_attribute: Option<String>,
-    #[serde(rename = "SyncIntervalMinutes", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SyncIntervalMinutes",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sync_interval_minutes: Option<i32>,
-    #[serde(rename = "SkipCertificateVerification", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "SkipCertificateVerification",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub skip_certificate_verification: Option<bool>,
     #[serde(rename = "QueryTimeout", skip_serializing_if = "Option::is_none")]
     pub query_timeout: Option<i32>,
@@ -81,4 +94,3 @@ impl ConfigLdapSettings {
         }
     }
 }
-

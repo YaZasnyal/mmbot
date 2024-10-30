@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -47,7 +47,12 @@ pub struct Command {
     #[serde(rename = "icon_url", skip_serializing_if = "Option::is_none")]
     pub icon_url: Option<String>,
     /// Use auto complete for this command
-    #[serde(rename = "auto_complete", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "auto_complete",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub auto_complete: Option<bool>,
     /// The description for this command shown when selecting the command
     #[serde(rename = "auto_complete_desc", skip_serializing_if = "Option::is_none")]
@@ -89,4 +94,3 @@ impl Command {
         }
     }
 }
-

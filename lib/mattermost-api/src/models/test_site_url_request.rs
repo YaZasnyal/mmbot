@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -20,9 +20,6 @@ pub struct TestSiteUrlRequest {
 
 impl TestSiteUrlRequest {
     pub fn new(site_url: String) -> TestSiteUrlRequest {
-        TestSiteUrlRequest {
-            site_url,
-        }
+        TestSiteUrlRequest { site_url }
     }
 }
-

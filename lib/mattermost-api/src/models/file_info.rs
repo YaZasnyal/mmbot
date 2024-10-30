@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -50,7 +50,12 @@ pub struct FileInfo {
     #[serde(rename = "height", skip_serializing_if = "Option::is_none")]
     pub height: Option<i32>,
     /// If this file is an image, whether or not it has a preview-sized version
-    #[serde(rename = "has_preview_image", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "has_preview_image",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub has_preview_image: Option<bool>,
 }
 
@@ -73,4 +78,3 @@ impl FileInfo {
         }
     }
 }
-

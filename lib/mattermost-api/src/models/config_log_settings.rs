@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -13,19 +13,39 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ConfigLogSettings {
-    #[serde(rename = "EnableConsole", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableConsole",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_console: Option<bool>,
     #[serde(rename = "ConsoleLevel", skip_serializing_if = "Option::is_none")]
     pub console_level: Option<String>,
-    #[serde(rename = "EnableFile", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableFile",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_file: Option<bool>,
     #[serde(rename = "FileLevel", skip_serializing_if = "Option::is_none")]
     pub file_level: Option<String>,
     #[serde(rename = "FileLocation", skip_serializing_if = "Option::is_none")]
     pub file_location: Option<String>,
-    #[serde(rename = "EnableWebhookDebugging", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableWebhookDebugging",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_webhook_debugging: Option<bool>,
-    #[serde(rename = "EnableDiagnostics", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableDiagnostics",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_diagnostics: Option<bool>,
 }
 
@@ -42,4 +62,3 @@ impl ConfigLogSettings {
         }
     }
 }
-

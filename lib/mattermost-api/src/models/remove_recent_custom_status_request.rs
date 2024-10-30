@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -28,7 +28,12 @@ pub struct RemoveRecentCustomStatusRequest {
 }
 
 impl RemoveRecentCustomStatusRequest {
-    pub fn new(emoji: String, text: String, duration: String, expires_at: String) -> RemoveRecentCustomStatusRequest {
+    pub fn new(
+        emoji: String,
+        text: String,
+        duration: String,
+        expires_at: String,
+    ) -> RemoveRecentCustomStatusRequest {
         RemoveRecentCustomStatusRequest {
             emoji,
             text,
@@ -37,4 +42,3 @@ impl RemoveRecentCustomStatusRequest {
         }
     }
 }
-

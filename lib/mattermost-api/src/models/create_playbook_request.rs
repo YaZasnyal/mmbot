@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -26,7 +26,12 @@ pub struct CreatePlaybookRequest {
     #[serde(rename = "create_public_playbook_run")]
     pub create_public_playbook_run: bool,
     /// A boolean indicating whether the playbook is licensed as public or private. Required 'true' for free tier.
-    #[serde(rename = "public", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "public",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub public: Option<bool>,
     /// The stages defined by this playbook.
     #[serde(rename = "checklists")]
@@ -35,42 +40,83 @@ pub struct CreatePlaybookRequest {
     #[serde(rename = "member_ids")]
     pub member_ids: Vec<String>,
     /// The IDs of the channels where all the status updates will be broadcasted. The team of the broadcast channel must be the same as the playbook's team.
-    #[serde(rename = "broadcast_channel_ids", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "broadcast_channel_ids",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub broadcast_channel_ids: Option<Vec<String>>,
     /// A list with the IDs of the members to be automatically invited to the playbook run's channel as soon as the playbook run is created.
     #[serde(rename = "invited_user_ids", skip_serializing_if = "Option::is_none")]
     pub invited_user_ids: Option<Vec<String>>,
     /// Boolean that indicates whether the members declared in invited_user_ids will be automatically invited.
-    #[serde(rename = "invite_users_enabled", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "invite_users_enabled",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub invite_users_enabled: Option<bool>,
     /// User ID of the member that will be automatically assigned as owner as soon as the playbook run is created. If the member is not part of the playbook run's channel or is not included in the invited_user_ids list, they will be automatically invited to the channel.
     #[serde(rename = "default_owner_id", skip_serializing_if = "Option::is_none")]
     pub default_owner_id: Option<String>,
     /// Boolean that indicates whether the member declared in default_owner_id will be automatically assigned as owner.
-    #[serde(rename = "default_owner_enabled", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "default_owner_enabled",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_owner_enabled: Option<String>,
     /// ID of the channel where the playbook run will be automatically announced as soon as the playbook run is created.
-    #[serde(rename = "announcement_channel_id", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "announcement_channel_id",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub announcement_channel_id: Option<String>,
     /// Boolean that indicates whether the playbook run creation will be announced in the channel declared in announcement_channel_id.
-    #[serde(rename = "announcement_channel_enabled", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "announcement_channel_enabled",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub announcement_channel_enabled: Option<bool>,
     /// An absolute URL where a POST request will be sent as soon as the playbook run is created. The allowed protocols are HTTP and HTTPS.
-    #[serde(rename = "webhook_on_creation_url", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "webhook_on_creation_url",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub webhook_on_creation_url: Option<String>,
     /// Boolean that indicates whether the webhook declared in webhook_on_creation_url will be automatically sent.
-    #[serde(rename = "webhook_on_creation_enabled", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "webhook_on_creation_enabled",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub webhook_on_creation_enabled: Option<bool>,
     /// An absolute URL where a POST request will be sent as soon as the playbook run's status is updated. The allowed protocols are HTTP and HTTPS.
-    #[serde(rename = "webhook_on_status_update_url", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "webhook_on_status_update_url",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub webhook_on_status_update_url: Option<String>,
     /// Boolean that indicates whether the webhook declared in webhook_on_status_update_url will be automatically sent.
-    #[serde(rename = "webhook_on_status_update_enabled", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "webhook_on_status_update_enabled",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub webhook_on_status_update_enabled: Option<bool>,
 }
 
 impl CreatePlaybookRequest {
-    pub fn new(title: String, team_id: String, create_public_playbook_run: bool, checklists: Vec<models::CreatePlaybookRequestChecklistsInner>, member_ids: Vec<String>) -> CreatePlaybookRequest {
+    pub fn new(
+        title: String,
+        team_id: String,
+        create_public_playbook_run: bool,
+        checklists: Vec<models::CreatePlaybookRequestChecklistsInner>,
+        member_ids: Vec<String>,
+    ) -> CreatePlaybookRequest {
         CreatePlaybookRequest {
             title,
             description: None,
@@ -93,4 +139,3 @@ impl CreatePlaybookRequest {
         }
     }
 }
-

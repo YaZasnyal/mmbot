@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ConfigAnalyticsSettings {
-    #[serde(rename = "MaxUsersForStatistics", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "MaxUsersForStatistics",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_users_for_statistics: Option<i32>,
 }
 
@@ -24,4 +27,3 @@ impl ConfigAnalyticsSettings {
         }
     }
 }
-

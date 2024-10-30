@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -23,7 +23,12 @@ pub struct WebhookOnStatusUpdatePayload {
     #[serde(rename = "description", skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// True if the playbook run is ongoing; false if the playbook run is ended.
-    #[serde(rename = "is_active", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "is_active",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub is_active: Option<bool>,
     /// The identifier of the user that is commanding the playbook run.
     #[serde(rename = "owner_user_id", skip_serializing_if = "Option::is_none")]
@@ -88,4 +93,3 @@ impl WebhookOnStatusUpdatePayload {
         }
     }
 }
-

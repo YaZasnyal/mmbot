@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -23,67 +23,174 @@ pub struct ConfigServiceSettings {
     pub tls_cert_file: Option<String>,
     #[serde(rename = "TLSKeyFile", skip_serializing_if = "Option::is_none")]
     pub tls_key_file: Option<String>,
-    #[serde(rename = "UseLetsEncrypt", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "UseLetsEncrypt",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub use_lets_encrypt: Option<bool>,
-    #[serde(rename = "LetsEncryptCertificateCacheFile", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "LetsEncryptCertificateCacheFile",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub lets_encrypt_certificate_cache_file: Option<String>,
-    #[serde(rename = "Forward80To443", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "Forward80To443",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub forward80_to443: Option<bool>,
     #[serde(rename = "ReadTimeout", skip_serializing_if = "Option::is_none")]
     pub read_timeout: Option<i32>,
     #[serde(rename = "WriteTimeout", skip_serializing_if = "Option::is_none")]
     pub write_timeout: Option<i32>,
-    #[serde(rename = "MaximumLoginAttempts", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "MaximumLoginAttempts",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub maximum_login_attempts: Option<i32>,
-    #[serde(rename = "SegmentDeveloperKey", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SegmentDeveloperKey",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub segment_developer_key: Option<String>,
     #[serde(rename = "GoogleDeveloperKey", skip_serializing_if = "Option::is_none")]
     pub google_developer_key: Option<String>,
-    #[serde(rename = "EnableOAuthServiceProvider", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableOAuthServiceProvider",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_o_auth_service_provider: Option<bool>,
-    #[serde(rename = "EnableIncomingWebhooks", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableIncomingWebhooks",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_incoming_webhooks: Option<bool>,
-    #[serde(rename = "EnableOutgoingWebhooks", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableOutgoingWebhooks",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_outgoing_webhooks: Option<bool>,
-    #[serde(rename = "EnableCommands", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableCommands",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_commands: Option<bool>,
-    #[serde(rename = "EnableOnlyAdminIntegrations", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableOnlyAdminIntegrations",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_only_admin_integrations: Option<bool>,
-    #[serde(rename = "EnablePostUsernameOverride", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnablePostUsernameOverride",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_post_username_override: Option<bool>,
-    #[serde(rename = "EnablePostIconOverride", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnablePostIconOverride",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_post_icon_override: Option<bool>,
-    #[serde(rename = "EnableTesting", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableTesting",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_testing: Option<bool>,
-    #[serde(rename = "EnableDeveloper", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableDeveloper",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_developer: Option<bool>,
-    #[serde(rename = "EnableSecurityFixAlert", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableSecurityFixAlert",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_security_fix_alert: Option<bool>,
-    #[serde(rename = "EnableInsecureOutgoingConnections", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableInsecureOutgoingConnections",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_insecure_outgoing_connections: Option<bool>,
-    #[serde(rename = "EnableMultifactorAuthentication", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableMultifactorAuthentication",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_multifactor_authentication: Option<bool>,
-    #[serde(rename = "EnforceMultifactorAuthentication", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnforceMultifactorAuthentication",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enforce_multifactor_authentication: Option<bool>,
     #[serde(rename = "AllowCorsFrom", skip_serializing_if = "Option::is_none")]
     pub allow_cors_from: Option<String>,
-    #[serde(rename = "SessionLengthWebInDays", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SessionLengthWebInDays",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub session_length_web_in_days: Option<i32>,
-    #[serde(rename = "SessionLengthMobileInDays", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SessionLengthMobileInDays",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub session_length_mobile_in_days: Option<i32>,
-    #[serde(rename = "SessionLengthSSOInDays", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SessionLengthSSOInDays",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub session_length_ssoin_days: Option<i32>,
-    #[serde(rename = "SessionCacheInMinutes", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SessionCacheInMinutes",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub session_cache_in_minutes: Option<i32>,
-    #[serde(rename = "WebsocketSecurePort", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "WebsocketSecurePort",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub websocket_secure_port: Option<i32>,
     #[serde(rename = "WebsocketPort", skip_serializing_if = "Option::is_none")]
     pub websocket_port: Option<i32>,
     #[serde(rename = "WebserverMode", skip_serializing_if = "Option::is_none")]
     pub webserver_mode: Option<String>,
-    #[serde(rename = "EnableCustomEmoji", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableCustomEmoji",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_custom_emoji: Option<bool>,
-    #[serde(rename = "RestrictCustomEmojiCreation", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "RestrictCustomEmojiCreation",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub restrict_custom_emoji_creation: Option<String>,
 }
 
@@ -129,4 +236,3 @@ impl ConfigServiceSettings {
         }
     }
 }
-

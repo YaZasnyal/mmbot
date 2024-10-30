@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -25,7 +25,7 @@ pub struct PluginManifest {
     /// Version number of the plugin.
     #[serde(rename = "version", skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// The minimum Mattermost server version required for the plugin.  Available as server version 5.6. 
+    /// The minimum Mattermost server version required for the plugin.  Available as server version 5.6.
     #[serde(rename = "min_server_version", skip_serializing_if = "Option::is_none")]
     pub min_server_version: Option<String>,
     #[serde(rename = "backend", skip_serializing_if = "Option::is_none")]
@@ -54,4 +54,3 @@ impl PluginManifest {
         }
     }
 }
-

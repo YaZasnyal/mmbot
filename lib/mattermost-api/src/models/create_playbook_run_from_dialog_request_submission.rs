@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -21,13 +21,19 @@ pub struct CreatePlaybookRunFromDialogRequestSubmission {
     #[serde(rename = "playbookRunName")]
     pub playbook_run_name: String,
     /// An optional description of the playbook run.
-    #[serde(rename = "playbookRunDescription", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "playbookRunDescription",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub playbook_run_description: Option<String>,
 }
 
 impl CreatePlaybookRunFromDialogRequestSubmission {
     /// Map of the dialog fields to their values
-    pub fn new(playbook_id: String, playbook_run_name: String) -> CreatePlaybookRunFromDialogRequestSubmission {
+    pub fn new(
+        playbook_id: String,
+        playbook_run_name: String,
+    ) -> CreatePlaybookRunFromDialogRequestSubmission {
         CreatePlaybookRunFromDialogRequestSubmission {
             playbook_id,
             playbook_run_name,
@@ -35,4 +41,3 @@ impl CreatePlaybookRunFromDialogRequestSubmission {
         }
     }
 }
-

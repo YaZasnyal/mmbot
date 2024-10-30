@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -21,7 +21,12 @@ pub struct LoginRequest {
     pub token: Option<String>,
     #[serde(rename = "device_id", skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
-    #[serde(rename = "ldap_only", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "ldap_only",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub ldap_only: Option<bool>,
     /// The password used for email authentication.
     #[serde(rename = "password", skip_serializing_if = "Option::is_none")]
@@ -40,4 +45,3 @@ impl LoginRequest {
         }
     }
 }
-

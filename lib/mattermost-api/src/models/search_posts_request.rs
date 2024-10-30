@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -23,7 +23,12 @@ pub struct SearchPostsRequest {
     #[serde(rename = "time_zone_offset", skip_serializing_if = "Option::is_none")]
     pub time_zone_offset: Option<i32>,
     /// Set to true if deleted channels should be included in the search. (archived channels)
-    #[serde(rename = "include_deleted_channels", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "include_deleted_channels",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub include_deleted_channels: Option<bool>,
     /// The page to select. (Only works with Elasticsearch)
     #[serde(rename = "page", skip_serializing_if = "Option::is_none")]
@@ -45,4 +50,3 @@ impl SearchPostsRequest {
         }
     }
 }
-

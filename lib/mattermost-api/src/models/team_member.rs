@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -26,10 +26,20 @@ pub struct TeamMember {
     #[serde(rename = "delete_at", skip_serializing_if = "Option::is_none")]
     pub delete_at: Option<i32>,
     /// Whether this team member holds the default user role defined by the team's permissions scheme.
-    #[serde(rename = "scheme_user", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "scheme_user",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub scheme_user: Option<bool>,
     /// Whether this team member holds the default admin role defined by the team's permissions scheme.
-    #[serde(rename = "scheme_admin", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "scheme_admin",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub scheme_admin: Option<bool>,
     /// The list of roles explicitly assigned to this team member, as a space separated list of role names. This list does *not* include any roles granted implicitly through permissions schemes.
     #[serde(rename = "explicit_roles", skip_serializing_if = "Option::is_none")]
@@ -49,4 +59,3 @@ impl TeamMember {
         }
     }
 }
-

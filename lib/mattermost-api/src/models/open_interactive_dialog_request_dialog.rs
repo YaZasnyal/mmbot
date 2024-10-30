@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -30,7 +30,12 @@ pub struct OpenInteractiveDialogRequestDialog {
     #[serde(rename = "submit_label", skip_serializing_if = "Option::is_none")]
     pub submit_label: Option<String>,
     /// Set true to receive payloads when user cancels a dialog
-    #[serde(rename = "notify_on_cancel", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "notify_on_cancel",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub notify_on_cancel: Option<bool>,
     /// Set some state to be echoed back with the dialog submission
     #[serde(rename = "state", skip_serializing_if = "Option::is_none")]
@@ -39,7 +44,10 @@ pub struct OpenInteractiveDialogRequestDialog {
 
 impl OpenInteractiveDialogRequestDialog {
     /// Post object to create
-    pub fn new(title: String, elements: Vec<serde_json::Value>) -> OpenInteractiveDialogRequestDialog {
+    pub fn new(
+        title: String,
+        elements: Vec<serde_json::Value>,
+    ) -> OpenInteractiveDialogRequestDialog {
         OpenInteractiveDialogRequestDialog {
             callback_id: None,
             title,
@@ -51,4 +59,3 @@ impl OpenInteractiveDialogRequestDialog {
         }
     }
 }
-

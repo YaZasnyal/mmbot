@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -32,24 +32,43 @@ pub struct SharedChannelRemote {
     #[serde(rename = "delete_at", skip_serializing_if = "Option::is_none")]
     pub delete_at: Option<i32>,
     /// Indicates if the invite has been accepted by the remote
-    #[serde(rename = "is_invite_accepted", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "is_invite_accepted",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub is_invite_accepted: Option<bool>,
     /// Indicates if the invite has been confirmed by the remote
-    #[serde(rename = "is_invite_confirmed", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "is_invite_confirmed",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub is_invite_confirmed: Option<bool>,
     /// Id of the remote cluster that the channel is shared with
     #[serde(rename = "remote_id", skip_serializing_if = "Option::is_none")]
     pub remote_id: Option<String>,
     /// Time in milliseconds of the last post in the channel that was synchronized with the remote update_at
-    #[serde(rename = "last_post_update_at", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "last_post_update_at",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_post_update_at: Option<i32>,
     /// Id of the last post in the channel that was synchronized with the remote
     #[serde(rename = "last_post_id", skip_serializing_if = "Option::is_none")]
     pub last_post_id: Option<String>,
     /// Time in milliseconds of the last post in the channel that was synchronized with the remote create_at
-    #[serde(rename = "last_post_create_at", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "last_post_create_at",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_post_create_at: Option<String>,
-    #[serde(rename = "last_post_create_id", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "last_post_create_id",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_post_create_id: Option<String>,
 }
 
@@ -72,4 +91,3 @@ impl SharedChannelRemote {
         }
     }
 }
-

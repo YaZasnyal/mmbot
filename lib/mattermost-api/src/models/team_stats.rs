@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -17,7 +17,10 @@ pub struct TeamStats {
     pub team_id: Option<String>,
     #[serde(rename = "total_member_count", skip_serializing_if = "Option::is_none")]
     pub total_member_count: Option<i32>,
-    #[serde(rename = "active_member_count", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "active_member_count",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub active_member_count: Option<i32>,
 }
 
@@ -30,4 +33,3 @@ impl TeamStats {
         }
     }
 }
-

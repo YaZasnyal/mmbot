@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -43,7 +43,10 @@ pub struct EnvironmentConfig {
     pub ldap_settings: Option<Box<models::EnvironmentConfigLdapSettings>>,
     #[serde(rename = "ComplianceSettings", skip_serializing_if = "Option::is_none")]
     pub compliance_settings: Option<Box<models::EnvironmentConfigComplianceSettings>>,
-    #[serde(rename = "LocalizationSettings", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "LocalizationSettings",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub localization_settings: Option<Box<models::EnvironmentConfigLocalizationSettings>>,
     #[serde(rename = "SamlSettings", skip_serializing_if = "Option::is_none")]
     pub saml_settings: Option<Box<models::EnvironmentConfigSamlSettings>>,
@@ -84,4 +87,3 @@ impl EnvironmentConfig {
         }
     }
 }
-

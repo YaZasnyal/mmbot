@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -19,10 +19,20 @@ pub struct SharedChannel {
     #[serde(rename = "team_id", skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
     /// Is this the home cluster for the shared channel
-    #[serde(rename = "home", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "home",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub home: Option<bool>,
     /// Is this shared channel shared as read only
-    #[serde(rename = "readonly", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "readonly",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub readonly: Option<bool>,
     /// Channel name as it is shared (may be different than original channel name)
     #[serde(rename = "name", skip_serializing_if = "Option::is_none")]
@@ -66,4 +76,3 @@ impl SharedChannel {
         }
     }
 }
-

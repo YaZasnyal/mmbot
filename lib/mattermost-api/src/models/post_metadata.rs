@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -14,24 +14,24 @@ use serde::{Deserialize, Serialize};
 /// PostMetadata : Additional information used to display a post.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PostMetadata {
-    /// Information about content embedded in the post including OpenGraph previews, image link previews, and message attachments. This field will be null if the post does not contain embedded content. 
+    /// Information about content embedded in the post including OpenGraph previews, image link previews, and message attachments. This field will be null if the post does not contain embedded content.
     #[serde(rename = "embeds", skip_serializing_if = "Option::is_none")]
     pub embeds: Option<Vec<models::PostMetadataEmbedsInner>>,
-    /// The custom emojis that appear in this point or have been used in reactions to this post. This field will be null if the post does not contain custom emojis. 
+    /// The custom emojis that appear in this point or have been used in reactions to this post. This field will be null if the post does not contain custom emojis.
     #[serde(rename = "emojis", skip_serializing_if = "Option::is_none")]
     pub emojis: Option<Vec<models::Emoji>>,
-    /// The FileInfo objects for any files attached to the post. This field will be null if the post does not have any file attachments. 
+    /// The FileInfo objects for any files attached to the post. This field will be null if the post does not have any file attachments.
     #[serde(rename = "files", skip_serializing_if = "Option::is_none")]
     pub files: Option<Vec<models::FileInfo>>,
-    /// An object mapping the URL of an external image to an object containing the dimensions of that image. This field will be null if the post or its embedded content does not reference any external images. 
+    /// An object mapping the URL of an external image to an object containing the dimensions of that image. This field will be null if the post or its embedded content does not reference any external images.
     #[serde(rename = "images", skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<models::PostMetadataImagesInner>>,
-    /// Any reactions made to this point. This field will be null if no reactions have been made to this post. 
+    /// Any reactions made to this point. This field will be null if no reactions have been made to this post.
     #[serde(rename = "reactions", skip_serializing_if = "Option::is_none")]
     pub reactions: Option<Vec<models::Reaction>>,
     #[serde(rename = "priority", skip_serializing_if = "Option::is_none")]
     pub priority: Option<Box<models::PostMetadataPriority>>,
-    /// Any acknowledgements made to this point. 
+    /// Any acknowledgements made to this point.
     #[serde(rename = "acknowledgements", skip_serializing_if = "Option::is_none")]
     pub acknowledgements: Option<Vec<models::PostAcknowledgement>>,
 }
@@ -50,4 +50,3 @@ impl PostMetadata {
         }
     }
 }
-

@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -23,10 +23,16 @@ pub struct OutgoingOAuthConnectionPostItem {
     #[serde(rename = "client_secret", skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<String>,
     /// The username of the credentials of the outgoing OAuth connection.
-    #[serde(rename = "credentials_username", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "credentials_username",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub credentials_username: Option<String>,
     /// The password of the credentials of the outgoing OAuth connection.
-    #[serde(rename = "credentials_password", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "credentials_password",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub credentials_password: Option<String>,
     /// The OAuth token URL of the outgoing OAuth connection.
     #[serde(rename = "oauth_token_url", skip_serializing_if = "Option::is_none")]
@@ -53,4 +59,3 @@ impl OutgoingOAuthConnectionPostItem {
         }
     }
 }
-

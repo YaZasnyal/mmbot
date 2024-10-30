@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -34,7 +34,12 @@ pub struct CreateChannelRequest {
 }
 
 impl CreateChannelRequest {
-    pub fn new(team_id: String, name: String, display_name: String, r#type: String) -> CreateChannelRequest {
+    pub fn new(
+        team_id: String,
+        name: String,
+        display_name: String,
+        r#type: String,
+    ) -> CreateChannelRequest {
         CreateChannelRequest {
             team_id,
             name,
@@ -45,4 +50,3 @@ impl CreateChannelRequest {
         }
     }
 }
-

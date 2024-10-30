@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -17,7 +17,10 @@ pub struct UserTermsOfService {
     #[serde(rename = "user_id", skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
     /// The unique identifier of the terms of service the action was performed on.
-    #[serde(rename = "terms_of_service_id", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "terms_of_service_id",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub terms_of_service_id: Option<String>,
     /// The time in milliseconds that this action was performed.
     #[serde(rename = "create_at", skip_serializing_if = "Option::is_none")]
@@ -33,4 +36,3 @@ impl UserTermsOfService {
         }
     }
 }
-

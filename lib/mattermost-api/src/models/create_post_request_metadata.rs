@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -21,9 +21,6 @@ pub struct CreatePostRequestMetadata {
 impl CreatePostRequestMetadata {
     /// A JSON object to add post metadata, e.g the post's priority
     pub fn new() -> CreatePostRequestMetadata {
-        CreatePostRequestMetadata {
-            priority: None,
-        }
+        CreatePostRequestMetadata { priority: None }
     }
 }
-

@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -30,7 +30,12 @@ pub struct CreateGroupRequestGroup {
 
 impl CreateGroupRequestGroup {
     /// Group object to create.
-    pub fn new(name: String, display_name: String, source: String, allow_reference: bool) -> CreateGroupRequestGroup {
+    pub fn new(
+        name: String,
+        display_name: String,
+        source: String,
+        allow_reference: bool,
+    ) -> CreateGroupRequestGroup {
         CreateGroupRequestGroup {
             name,
             display_name,
@@ -39,4 +44,3 @@ impl CreateGroupRequestGroup {
         }
     }
 }
-

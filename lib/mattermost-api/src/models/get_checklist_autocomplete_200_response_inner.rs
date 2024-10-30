@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -25,7 +25,11 @@ pub struct GetChecklistAutocomplete200ResponseInner {
 }
 
 impl GetChecklistAutocomplete200ResponseInner {
-    pub fn new(item: String, hint: String, helptext: String) -> GetChecklistAutocomplete200ResponseInner {
+    pub fn new(
+        item: String,
+        hint: String,
+        helptext: String,
+    ) -> GetChecklistAutocomplete200ResponseInner {
         GetChecklistAutocomplete200ResponseInner {
             item,
             hint,
@@ -33,4 +37,3 @@ impl GetChecklistAutocomplete200ResponseInner {
         }
     }
 }
-

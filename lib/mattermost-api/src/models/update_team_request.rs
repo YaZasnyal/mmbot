@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -30,7 +30,15 @@ pub struct UpdateTeamRequest {
 }
 
 impl UpdateTeamRequest {
-    pub fn new(id: String, display_name: String, description: String, company_name: String, allowed_domains: String, invite_id: String, allow_open_invite: String) -> UpdateTeamRequest {
+    pub fn new(
+        id: String,
+        display_name: String,
+        description: String,
+        company_name: String,
+        allowed_domains: String,
+        invite_id: String,
+        allow_open_invite: String,
+    ) -> UpdateTeamRequest {
         UpdateTeamRequest {
             id,
             display_name,
@@ -42,4 +50,3 @@ impl UpdateTeamRequest {
         }
     }
 }
-

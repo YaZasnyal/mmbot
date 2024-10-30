@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -19,9 +19,6 @@ pub struct GetRedirectLocation200Response {
 
 impl GetRedirectLocation200Response {
     pub fn new() -> GetRedirectLocation200Response {
-        GetRedirectLocation200Response {
-            location: None,
-        }
+        GetRedirectLocation200Response { location: None }
     }
 }
-

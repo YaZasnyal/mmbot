@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -31,7 +31,7 @@ pub struct UpdateChannelBookmarkRequest {
     /// The emoji of the channel bookmark
     #[serde(rename = "emoji", skip_serializing_if = "Option::is_none")]
     pub emoji: Option<String>,
-    /// * `link` for channel bookmarks that reference a link. `link_url` is requied * `file` for channel bookmarks that reference a file. `file_id` is required 
+    /// * `link` for channel bookmarks that reference a link. `link_url` is requied * `file` for channel bookmarks that reference a file. `file_id` is required
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub r#type: Option<Type>,
 }
@@ -49,7 +49,7 @@ impl UpdateChannelBookmarkRequest {
         }
     }
 }
-/// * `link` for channel bookmarks that reference a link. `link_url` is requied * `file` for channel bookmarks that reference a file. `file_id` is required 
+/// * `link` for channel bookmarks that reference a link. `link_url` is requied * `file` for channel bookmarks that reference a file. `file_id` is required
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub enum Type {
     #[serde(rename = "link")]
@@ -63,4 +63,3 @@ impl Default for Type {
         Self::Link
     }
 }
-

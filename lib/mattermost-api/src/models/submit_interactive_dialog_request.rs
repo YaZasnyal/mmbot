@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -32,12 +32,22 @@ pub struct SubmitInteractiveDialogRequest {
     #[serde(rename = "state", skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     /// Set to true if the dialog was cancelled
-    #[serde(rename = "cancelled", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "cancelled",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub cancelled: Option<bool>,
 }
 
 impl SubmitInteractiveDialogRequest {
-    pub fn new(url: String, channel_id: String, team_id: String, submission: serde_json::Value) -> SubmitInteractiveDialogRequest {
+    pub fn new(
+        url: String,
+        channel_id: String,
+        team_id: String,
+        submission: serde_json::Value,
+    ) -> SubmitInteractiveDialogRequest {
         SubmitInteractiveDialogRequest {
             url,
             channel_id,
@@ -49,4 +59,3 @@ impl SubmitInteractiveDialogRequest {
         }
     }
 }
-

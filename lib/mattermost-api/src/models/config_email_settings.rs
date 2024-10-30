@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -13,21 +13,49 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ConfigEmailSettings {
-    #[serde(rename = "EnableSignUpWithEmail", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableSignUpWithEmail",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_sign_up_with_email: Option<bool>,
-    #[serde(rename = "EnableSignInWithEmail", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableSignInWithEmail",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_sign_in_with_email: Option<bool>,
-    #[serde(rename = "EnableSignInWithUsername", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableSignInWithUsername",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_sign_in_with_username: Option<bool>,
-    #[serde(rename = "SendEmailNotifications", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "SendEmailNotifications",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub send_email_notifications: Option<bool>,
-    #[serde(rename = "RequireEmailVerification", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "RequireEmailVerification",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub require_email_verification: Option<bool>,
     #[serde(rename = "FeedbackName", skip_serializing_if = "Option::is_none")]
     pub feedback_name: Option<String>,
     #[serde(rename = "FeedbackEmail", skip_serializing_if = "Option::is_none")]
     pub feedback_email: Option<String>,
-    #[serde(rename = "FeedbackOrganization", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "FeedbackOrganization",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub feedback_organization: Option<String>,
     #[serde(rename = "SMTPUsername", skip_serializing_if = "Option::is_none")]
     pub smtp_username: Option<String>,
@@ -43,17 +71,39 @@ pub struct ConfigEmailSettings {
     pub invite_salt: Option<String>,
     #[serde(rename = "PasswordResetSalt", skip_serializing_if = "Option::is_none")]
     pub password_reset_salt: Option<String>,
-    #[serde(rename = "SendPushNotifications", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "SendPushNotifications",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub send_push_notifications: Option<bool>,
-    #[serde(rename = "PushNotificationServer", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "PushNotificationServer",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub push_notification_server: Option<String>,
-    #[serde(rename = "PushNotificationContents", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "PushNotificationContents",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub push_notification_contents: Option<String>,
-    #[serde(rename = "EnableEmailBatching", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableEmailBatching",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_email_batching: Option<bool>,
-    #[serde(rename = "EmailBatchingBufferSize", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "EmailBatchingBufferSize",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub email_batching_buffer_size: Option<i32>,
-    #[serde(rename = "EmailBatchingInterval", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "EmailBatchingInterval",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub email_batching_interval: Option<i32>,
 }
 
@@ -84,4 +134,3 @@ impl ConfigEmailSettings {
         }
     }
 }
-

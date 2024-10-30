@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -15,7 +15,10 @@ use serde::{Deserialize, Serialize};
 pub struct ConfigNativeAppSettings {
     #[serde(rename = "AppDownloadLink", skip_serializing_if = "Option::is_none")]
     pub app_download_link: Option<String>,
-    #[serde(rename = "AndroidAppDownloadLink", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "AndroidAppDownloadLink",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub android_app_download_link: Option<String>,
     #[serde(rename = "IosAppDownloadLink", skip_serializing_if = "Option::is_none")]
     pub ios_app_download_link: Option<String>,
@@ -30,4 +33,3 @@ impl ConfigNativeAppSettings {
         }
     }
 }
-

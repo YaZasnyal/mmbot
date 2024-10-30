@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -32,12 +32,23 @@ pub struct UpdateOAuthAppRequest {
     #[serde(rename = "homepage")]
     pub homepage: String,
     /// Set this to `true` to skip asking users for permission. It will be set to false if value is not provided.
-    #[serde(rename = "is_trusted", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "is_trusted",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub is_trusted: Option<bool>,
 }
 
 impl UpdateOAuthAppRequest {
-    pub fn new(id: String, name: String, description: String, callback_urls: Vec<String>, homepage: String) -> UpdateOAuthAppRequest {
+    pub fn new(
+        id: String,
+        name: String,
+        description: String,
+        callback_urls: Vec<String>,
+        homepage: String,
+    ) -> UpdateOAuthAppRequest {
         UpdateOAuthAppRequest {
             id,
             name,
@@ -49,4 +60,3 @@ impl UpdateOAuthAppRequest {
         }
     }
 }
-

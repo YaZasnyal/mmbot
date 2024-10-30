@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use futures_util::{SinkExt, TryStreamExt};
 use mattermost_api::apis::configuration::Configuration;
-use plugin::Event;
 use reqwest_websocket::{Message, RequestBuilderExt};
 
 mod nested_decoder;

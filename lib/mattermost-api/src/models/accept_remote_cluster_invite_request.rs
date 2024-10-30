@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -27,7 +27,12 @@ pub struct AcceptRemoteClusterInviteRequest {
 }
 
 impl AcceptRemoteClusterInviteRequest {
-    pub fn new(invite: String, name: String, default_team_id: String, password: String) -> AcceptRemoteClusterInviteRequest {
+    pub fn new(
+        invite: String,
+        name: String,
+        default_team_id: String,
+        password: String,
+    ) -> AcceptRemoteClusterInviteRequest {
         AcceptRemoteClusterInviteRequest {
             invite,
             name,
@@ -37,4 +42,3 @@ impl AcceptRemoteClusterInviteRequest {
         }
     }
 }
-

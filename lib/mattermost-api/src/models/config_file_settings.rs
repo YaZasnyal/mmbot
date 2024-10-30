@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -19,7 +19,12 @@ pub struct ConfigFileSettings {
     pub driver_name: Option<String>,
     #[serde(rename = "Directory", skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
-    #[serde(rename = "EnablePublicLink", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnablePublicLink",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_public_link: Option<bool>,
     #[serde(rename = "PublicLinkSalt", skip_serializing_if = "Option::is_none")]
     pub public_link_salt: Option<String>,
@@ -37,9 +42,15 @@ pub struct ConfigFileSettings {
     pub profile_height: Option<i32>,
     #[serde(rename = "InitialFont", skip_serializing_if = "Option::is_none")]
     pub initial_font: Option<String>,
-    #[serde(rename = "AmazonS3AccessKeyId", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "AmazonS3AccessKeyId",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub amazon_s3_access_key_id: Option<String>,
-    #[serde(rename = "AmazonS3SecretAccessKey", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "AmazonS3SecretAccessKey",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub amazon_s3_secret_access_key: Option<String>,
     #[serde(rename = "AmazonS3Bucket", skip_serializing_if = "Option::is_none")]
     pub amazon_s3_bucket: Option<String>,
@@ -47,7 +58,12 @@ pub struct ConfigFileSettings {
     pub amazon_s3_region: Option<String>,
     #[serde(rename = "AmazonS3Endpoint", skip_serializing_if = "Option::is_none")]
     pub amazon_s3_endpoint: Option<String>,
-    #[serde(rename = "AmazonS3SSL", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "AmazonS3SSL",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub amazon_s3_ssl: Option<bool>,
 }
 
@@ -75,4 +91,3 @@ impl ConfigFileSettings {
         }
     }
 }
-

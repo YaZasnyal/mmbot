@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -17,7 +17,10 @@ pub struct PlaybookRunMetadata {
     #[serde(rename = "channel_name", skip_serializing_if = "Option::is_none")]
     pub channel_name: Option<String>,
     /// Display name of the channel associated to the playbook run.
-    #[serde(rename = "channel_display_name", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "channel_display_name",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub channel_display_name: Option<String>,
     /// Name of the team the playbook run is in.
     #[serde(rename = "team_name", skip_serializing_if = "Option::is_none")]
@@ -41,4 +44,3 @@ impl PlaybookRunMetadata {
         }
     }
 }
-

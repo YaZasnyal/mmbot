@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -17,41 +17,94 @@ pub struct ConfigTeamSettings {
     pub site_name: Option<String>,
     #[serde(rename = "MaxUsersPerTeam", skip_serializing_if = "Option::is_none")]
     pub max_users_per_team: Option<i32>,
-    #[serde(rename = "EnableTeamCreation", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableTeamCreation",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_team_creation: Option<bool>,
-    #[serde(rename = "EnableUserCreation", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableUserCreation",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_user_creation: Option<bool>,
-    #[serde(rename = "EnableOpenServer", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableOpenServer",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_open_server: Option<bool>,
-    #[serde(rename = "RestrictCreationToDomains", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "RestrictCreationToDomains",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub restrict_creation_to_domains: Option<String>,
-    #[serde(rename = "EnableCustomBrand", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "EnableCustomBrand",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub enable_custom_brand: Option<bool>,
     #[serde(rename = "CustomBrandText", skip_serializing_if = "Option::is_none")]
     pub custom_brand_text: Option<String>,
-    #[serde(rename = "CustomDescriptionText", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "CustomDescriptionText",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub custom_description_text: Option<String>,
-    #[serde(rename = "RestrictDirectMessage", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "RestrictDirectMessage",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub restrict_direct_message: Option<String>,
     #[serde(rename = "RestrictTeamInvite", skip_serializing_if = "Option::is_none")]
     pub restrict_team_invite: Option<String>,
-    #[serde(rename = "RestrictPublicChannelManagement", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "RestrictPublicChannelManagement",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub restrict_public_channel_management: Option<String>,
-    #[serde(rename = "RestrictPrivateChannelManagement", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "RestrictPrivateChannelManagement",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub restrict_private_channel_management: Option<String>,
-    #[serde(rename = "RestrictPublicChannelCreation", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "RestrictPublicChannelCreation",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub restrict_public_channel_creation: Option<String>,
-    #[serde(rename = "RestrictPrivateChannelCreation", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "RestrictPrivateChannelCreation",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub restrict_private_channel_creation: Option<String>,
-    #[serde(rename = "RestrictPublicChannelDeletion", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "RestrictPublicChannelDeletion",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub restrict_public_channel_deletion: Option<String>,
-    #[serde(rename = "RestrictPrivateChannelDeletion", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "RestrictPrivateChannelDeletion",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub restrict_private_channel_deletion: Option<String>,
-    #[serde(rename = "UserStatusAwayTimeout", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "UserStatusAwayTimeout",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub user_status_away_timeout: Option<i32>,
     #[serde(rename = "MaxChannelsPerTeam", skip_serializing_if = "Option::is_none")]
     pub max_channels_per_team: Option<i32>,
-    #[serde(rename = "MaxNotificationsPerChannel", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "MaxNotificationsPerChannel",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_notifications_per_channel: Option<i32>,
 }
 
@@ -81,4 +134,3 @@ impl ConfigTeamSettings {
         }
     }
 }
-

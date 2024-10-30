@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -21,11 +21,13 @@ pub struct CreateGroupRequest {
 }
 
 impl CreateGroupRequest {
-    pub fn new(group: models::CreateGroupRequestGroup, user_ids: Vec<String>) -> CreateGroupRequest {
+    pub fn new(
+        group: models::CreateGroupRequestGroup,
+        user_ids: Vec<String>,
+    ) -> CreateGroupRequest {
         CreateGroupRequest {
             group: Box::new(group),
             user_ids,
         }
     }
 }
-

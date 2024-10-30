@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -38,7 +38,12 @@ pub struct Team {
     pub allowed_domains: Option<String>,
     #[serde(rename = "invite_id", skip_serializing_if = "Option::is_none")]
     pub invite_id: Option<String>,
-    #[serde(rename = "allow_open_invite", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "allow_open_invite",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub allow_open_invite: Option<bool>,
     /// The data retention policy to which this team has been assigned. If no such policy exists, or the caller does not have the `sysconsole_read_compliance_data_retention` permission, this field will be null.
     #[serde(rename = "policy_id", skip_serializing_if = "Option::is_none")]
@@ -64,4 +69,3 @@ impl Team {
         }
     }
 }
-

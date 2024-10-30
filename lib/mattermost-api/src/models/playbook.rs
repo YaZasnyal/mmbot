@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -26,7 +26,12 @@ pub struct Playbook {
     #[serde(rename = "team_id", skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
     /// A boolean indicating whether the playbook runs created from this playbook should be public or private.
-    #[serde(rename = "create_public_playbook_run", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "create_public_playbook_run",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub create_public_playbook_run: Option<bool>,
     /// The playbook creation timestamp, formatted as the number of milliseconds since the Unix epoch.
     #[serde(rename = "create_at", skip_serializing_if = "Option::is_none")]
@@ -65,4 +70,3 @@ impl Playbook {
         }
     }
 }
-

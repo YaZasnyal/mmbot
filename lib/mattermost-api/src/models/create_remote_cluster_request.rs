@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -19,7 +19,7 @@ pub struct CreateRemoteClusterRequest {
     pub display_name: Option<String>,
     #[serde(rename = "default_team_id")]
     pub default_team_id: String,
-    /// The password to use in the invite code. If empty, the server will generate one and it will be part of the response 
+    /// The password to use in the invite code. If empty, the server will generate one and it will be part of the response
     #[serde(rename = "password", skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
 }
@@ -34,4 +34,3 @@ impl CreateRemoteClusterRequest {
         }
     }
 }
-

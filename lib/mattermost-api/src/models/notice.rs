@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -17,10 +17,20 @@ pub struct Notice {
     #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// Does this notice apply only to sysadmins
-    #[serde(rename = "sysAdminOnly", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "sysAdminOnly",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub sys_admin_only: Option<bool>,
     /// Does this notice apply only to team admins
-    #[serde(rename = "teamAdminOnly", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "teamAdminOnly",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub team_admin_only: Option<bool>,
     /// Optional action to perform on action button click. (defaults to closing the notice)
     #[serde(rename = "action", skip_serializing_if = "Option::is_none")]
@@ -57,4 +67,3 @@ impl Notice {
         }
     }
 }
-

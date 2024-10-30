@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -17,7 +17,10 @@ pub struct ViewChannel200Response {
     #[serde(rename = "status", skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// A JSON object mapping channel IDs to the channel view times
-    #[serde(rename = "last_viewed_at_times", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "last_viewed_at_times",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_viewed_at_times: Option<serde_json::Value>,
 }
 
@@ -29,4 +32,3 @@ impl ViewChannel200Response {
         }
     }
 }
-

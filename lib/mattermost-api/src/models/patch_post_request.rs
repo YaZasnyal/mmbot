@@ -1,7 +1,7 @@
 /*
  * Mattermost API Reference
  *
- * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn). 
+ * There is also a work-in-progress [Postman API reference](https://documenter.getpostman.com/view/4508214/RW8FERUn).
  *
  * The version of the OpenAPI document: 4.0.0
  * Contact: feedback@mattermost.com
@@ -14,7 +14,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PatchPostRequest {
     /// Set to `true` to pin the post to the channel it is in
-    #[serde(rename = "is_pinned", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "is_pinned",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub is_pinned: Option<bool>,
     /// The message text of the post
     #[serde(rename = "message", skip_serializing_if = "Option::is_none")]
@@ -23,7 +28,12 @@ pub struct PatchPostRequest {
     #[serde(rename = "file_ids", skip_serializing_if = "Option::is_none")]
     pub file_ids: Option<Vec<String>>,
     /// Set to `true` if the post has reactions to it
-    #[serde(rename = "has_reactions", skip_serializing_if = "Option::is_none", default, deserialize_with = "bool_parser::deserialize_option_bool")]
+    #[serde(
+        rename = "has_reactions",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "bool_parser::deserialize_option_bool"
+    )]
     pub has_reactions: Option<bool>,
     /// A general JSON property bag to attach to the post
     #[serde(rename = "props", skip_serializing_if = "Option::is_none")]
@@ -41,4 +51,3 @@ impl PatchPostRequest {
         }
     }
 }
-
