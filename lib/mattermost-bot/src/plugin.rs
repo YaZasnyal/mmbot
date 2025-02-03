@@ -13,26 +13,16 @@ pub struct Event {
 
 #[async_trait::async_trait]
 pub trait Plugin: Send + Sync + 'static {
+    /// Unique ID that is used to store plugin progress
+    fn id(&self) -> &'static str;
+    
     /// Fast event filter
-    fn filter(&self, _event: Arc<Event>) -> bool {
+    fn filter(&self, _event: &Arc<Event>) -> bool {
         true
     }
-
-    /// Indicated the unique queue that must be used to post events to
-    ///
-    /// Allows to make processing serializable if long running events are used
-    fn queue(&self, _event: Arc<Event>) -> Option<String> {
-        None
-    }
-
-    /// Function that is called when bot is instatiated
-    async fn on_setup(&self) {}
-
-    /// Function that is called when bot is terminating
-    async fn on_destroy(&self) {}
 
     /// Process event
     ///
     /// Launched asynchronously
-    async fn process_event(&self, event: Arc<Event>, config: Arc<Configuration>);
+    async fn process_event(&self, event: &Arc<Event>, config: &Arc<Configuration>);
 }

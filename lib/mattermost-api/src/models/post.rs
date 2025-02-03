@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Post {
-    #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
+    #[serde(rename = "id")]
+    pub id: String,
     /// The time in milliseconds a post was created
     #[serde(rename = "create_at", skip_serializing_if = "Option::is_none")]
     pub create_at: Option<i64>,
@@ -53,7 +53,7 @@ pub struct Post {
 impl Post {
     pub fn new() -> Post {
         Post {
-            id: None,
+            id: String::default(),
             create_at: None,
             update_at: None,
             delete_at: None,

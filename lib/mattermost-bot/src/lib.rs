@@ -74,15 +74,26 @@ impl Bot {
 
         while let Some(message) = websocket.try_next().await? {
             if let Message::Text(text) = message {
-                println!("received: {text}");
+                tracing::debug!(text, "received");
                 let event = serde_json::from_str::<Event>(&text);
-                match event {
+                let event = match event {
                     Ok(e) => {
-                        println!("parsed: {e:?}");
+                        tracing::info!(event=?e, "parsed event successfully");
+                        e
                     }
                     Err(e) => {
-                        eprintln!("unable to parse: {:?}", e);
+                        tracing::error!("unable to parse: {:?}", e);
+                        continue;
                     }
+                };
+
+                let event = Arc::new(event);
+                for plugin in &self.plugins {
+                    if !plugin.filter(&event) {
+                        continue;
+                    }
+
+                    plugin.process_event(&event, &self.config).await;
                 }
             } else if let Message::Ping(p) = message {
                 websocket.send(Message::Pong(p)).await?;

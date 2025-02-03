@@ -824,7 +824,7 @@ pub async fn get_posts_for_channel(
     channel_id: &str,
     page: Option<i32>,
     per_page: Option<i32>,
-    since: Option<i32>,
+    since: Option<i64>,
     before: Option<&str>,
     after: Option<&str>,
     include_deleted: Option<bool>,
