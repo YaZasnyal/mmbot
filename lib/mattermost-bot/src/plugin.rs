@@ -8,7 +8,7 @@ use crate::types::EventType;
 #[derive(Debug, Clone, Deserialize)]
 pub struct Event {
     #[serde(flatten)]
-    data: EventType,
+    pub data: EventType,
 }
 
 #[async_trait::async_trait]

@@ -4,9 +4,9 @@ use futures_util::{SinkExt, TryStreamExt};
 use mattermost_api::apis::configuration::Configuration;
 use reqwest_websocket::{Message, RequestBuilderExt};
 
-mod nested_decoder;
-mod plugin;
-mod types;
+pub mod nested_decoder;
+pub mod plugin;
+pub mod types;
 
 pub use plugin::{Event, Plugin};
 
