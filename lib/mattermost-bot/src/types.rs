@@ -29,6 +29,9 @@ pub enum ChannelType {
     Open,
     #[serde(rename = "P")]
     Private,
+    /// Direct messages
+    #[serde(rename = "D")]
+    Direct,
 }
 
 #[derive(Debug, Clone, Deserialize)]
