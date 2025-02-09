@@ -83,7 +83,7 @@ impl Bot {
                         e
                     }
                     Err(e) => {
-                        tracing::error!("unable to parse: {:?}", e);
+                        tracing::error!("unable to parse: {:?}; {}", e, text);
                         continue;
                     }
                 };
