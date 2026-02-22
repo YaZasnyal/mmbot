@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use std::sync::Arc;
 
 use crate::nested_decoder::Nested;
 
@@ -7,7 +6,7 @@ use crate::nested_decoder::Nested;
 #[serde(tag = "event", content = "data")]
 #[serde(rename_all = "snake_case")]
 pub enum EventType {
-    Posted(PostedEvent),
+    Posted(Box<PostedEvent>),
     ReactionAdded(ReactionAddedEvent),
     ReactionRemoved(ReactionRemovedEvent),
 }
@@ -36,10 +35,10 @@ pub enum ChannelType {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReactionAddedEvent {
-    reaction: Nested<mattermost_api::models::reaction::Reaction>,
+    pub reaction: Nested<mattermost_api::models::reaction::Reaction>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReactionRemovedEvent {
-    reaction: Nested<mattermost_api::models::reaction::Reaction>,
+    pub reaction: Nested<mattermost_api::models::reaction::Reaction>,
 }
