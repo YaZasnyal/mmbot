@@ -13,66 +13,7 @@
 
 ---
 
-### 4. Graceful shutdown
-**Файл**: `lib/mattermost-bot/src/lib.rs`
-
-**Проблема**: Нет способа корректно остановить бота.
-
-**Решение**: Добавить поддержку `CancellationToken` из `tokio_util`.
-
-**Статус**: ⏳ Pending
-
----
-
 ## 🟡 Medium Priority
-
-### 5. Единообразное логирование
-**Файлы**: 
-- `lib/mattermost-bot/src/lib.rs:42` - `eprintln!`
-- `lib/mattermost-bot/src/lib.rs:103` - `println!`
-
-**Проблема**: Смешивание `tracing`, `println!` и `eprintln!`.
-
-**Решение**: Использовать только `tracing` для всего логирования.
-
-**Статус**: ⏳ Pending
-
----
-
-### 6. Типизированные ошибки
-**Файл**: `lib/mattermost-bot/src/lib.rs`
-
-**Проблема**: Используется `Box<dyn std::error::Error>` - нет структурированных ошибок.
-
-**Решение**: Создать `enum BotError` с помощью `thiserror`:
-- `WebSocket` - ошибки WebSocket
-- `MissingToken` - отсутствует токен
-- `InvalidSchema` - неверная схема URL
-- `EventParse` - ошибка парсинга события
-
-**Статус**: ⏳ Pending
-
----
-
-### 7. Безопасное построение URL
-**Файл**: `lib/mattermost-bot/src/lib.rs:51-57`
-
-**Проблема**: `replace()` заменяет все вхождения, не только префикс.
-
-**Решение**: Использовать `strip_prefix()` для безопасной замены схемы.
-
-**Статус**: ⏳ Pending
-
----
-
-### 8. Публичные поля в структурах событий
-**Файл**: `lib/mattermost-bot/src/types.rs`
-
-**Проблема**: `PostedEvent` имеет публичные поля, а `ReactionAddedEvent` и `ReactionRemovedEvent` - приватные.
-
-**Решение**: Сделать все поля публичными для consistency.
-
-**Статус**: ⏳ Pending
 
 ---
 
@@ -124,17 +65,6 @@ Bot::new(config)
 - `events_processed` - обработано событий
 - `events_failed` - ошибки обработки
 - `reconnections` - количество переподключений
-
-**Статус**: ⏳ Pending
-
----
-
-### 12. Обработка других типов WebSocket сообщений
-**Файл**: `lib/mattermost-bot/src/lib.rs:103`
-
-**Проблема**: Mattermost отправляет разные типы: `hello`, `status_change`, `typing`, и т.д. Сейчас они только логируются.
-
-**Решение**: Структурированно обрабатывать или как минимум типизированно логировать.
 
 **Статус**: ⏳ Pending
 

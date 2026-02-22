@@ -28,7 +28,22 @@ impl Bot {
     /// # Errors
     ///
     /// Returns `BotError::MissingToken` if `bearer_access_token` is not set in the configuration
-    pub fn new(config: Configuration) -> Result<Self> {
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use mattermost_bot::Bot;
+    /// use mattermost_api::apis::configuration::Configuration;
+    ///
+    /// // Using the builder pattern
+    /// let mut config = Configuration::default();
+    /// config.base_path = "https://your-mattermost.com".to_string();
+    /// config.bearer_access_token = Some("your_token".to_string());
+    ///
+    /// let bot = Bot::with_config(config)?
+    ///   .with_plugin(MyPlugin {})
+    /// ```
+    pub fn with_config(config: Configuration) -> Result<Self> {
         if config.bearer_access_token.is_none() {
             return Err(BotError::MissingToken);
         }
@@ -39,8 +54,20 @@ impl Bot {
         })
     }
 
-    pub fn add_plugin(&mut self, plugin: impl Plugin) {
+    /// Add a plugin to the bot
+    ///
+    /// This method consumes self and returns it back, allowing for fluent chaining.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// let bot = Bot::with_config(config)?
+    ///     .with_plugin(MyPlugin {})
+    ///     .with_plugin(AnotherPlugin {});
+    /// ```
+    pub fn with_plugin(mut self, plugin: impl Plugin) -> Self {
         self.plugins.push(Box::new(plugin));
+        self
     }
 
     /// Run the bot with graceful shutdown support
@@ -51,6 +78,8 @@ impl Bot {
     /// # Example
     ///
     /// ```no_run
+    /// use mattermost_bot::Bot;
+    /// use mattermost_api::apis::configuration::Configuration;
     /// use tokio_graceful::Shutdown;
     /// use std::time::Duration;
     ///
@@ -58,19 +87,19 @@ impl Bot {
     /// async fn main() -> anyhow::Result<()> {
     ///     // Setup graceful shutdown with Ctrl+C handler
     ///     let shutdown = Shutdown::builder()
-    ///         .with_delay(Duration::from_secs(5))  // Grace period before force shutdown
-    ///         .with_overwrite_fn(tokio::signal::ctrl_c)  // Handle Ctrl+C
+    ///         .with_delay(Duration::from_secs(5))
+    ///         .with_overwrite_fn(tokio::signal::ctrl_c)
     ///         .build();
     ///
     ///     let guard = shutdown.guard();
     ///
-    ///     // Create and configure bot
+    ///     // Create and configure bot using fluent API
     ///     let mut config = Configuration::default();
     ///     config.base_path = "https://your-mattermost.com".to_string();
     ///     config.bearer_access_token = Some("your_token".to_string());
     ///
-    ///     let mut bot = Bot::new(config)?;
-    ///     // bot.add_plugin(...);
+    ///     let mut bot = Bot::with_config(config)?
+    ///         .with_plugin(MyPlugin {});
     ///
     ///     // Run bot with graceful shutdown
     ///     bot.run(guard).await;
