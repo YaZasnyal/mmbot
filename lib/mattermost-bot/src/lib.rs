@@ -177,13 +177,24 @@ impl Bot {
                 };
 
                 let event = Arc::new(event);
-                for plugin in &self.plugins {
-                    if !plugin.filter(&event) {
-                        continue;
-                    }
 
-                    plugin.process_event(&event, &self.config).await;
-                }
+                // Process events in parallel across all interested plugins
+                let futures: Vec<_> = self
+                    .plugins
+                    .iter()
+                    .filter(|plugin| plugin.filter(&event))
+                    .map(|plugin| {
+                        let event = Arc::clone(&event);
+                        let config = Arc::clone(&self.config);
+                        async move {
+                            plugin.process_event(&event, &config).await;
+                        }
+                    })
+                    .collect();
+
+                // Wait for all plugin handlers to complete
+                // Errors in individual plugins won't affect others
+                futures_util::future::join_all(futures).await;
             } else if let Message::Ping(p) = message {
                 websocket.send(Message::Pong(p)).await?;
             } else {

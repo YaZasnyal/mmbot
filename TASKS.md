@@ -19,25 +19,6 @@
 
 ## 🟢 Low Priority
 
-### 9. Builder pattern для Bot
-**Файл**: `lib/mattermost-bot/src/lib.rs`
-
-**Текущий API**:
-```rust
-let mut bot = Bot::new(config);
-bot.add_plugin(plugin1);
-bot.add_plugin(plugin2);
-```
-
-**Улучшение**: Добавить fluent API:
-```rust
-Bot::new(config)
-    .with_plugin(plugin1)
-    .with_plugin(plugin2)
-    .build()
-    .await;
-```
-
 **Статус**: ⏳ Pending
 
 ---
