@@ -754,6 +754,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "cron"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5877d3fbf742507b66bc2a1945106bd30dd8504019d596901ddd012a4dd01740"
+dependencies = [
+ "chrono",
+ "once_cell",
+ "winnow",
+]
+
+[[package]]
+name = "cron_tab"
+version = "0.2.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f166791253db9e92d71fea57fcafaddd1304a292a0429bb8bb07a178aa1eaf2"
+dependencies = [
+ "chrono",
+ "cron",
+ "crossbeam-channel",
+ "thiserror 2.0.11",
+]
+
+[[package]]
+name = "crossbeam-channel"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1858,6 +1890,8 @@ name = "mattermost_bot"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
+ "cron_tab",
  "futures-util",
  "mattermost_api",
  "reqwest-websocket",

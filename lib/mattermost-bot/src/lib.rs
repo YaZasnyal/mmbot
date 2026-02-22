@@ -19,7 +19,7 @@ pub use async_trait::async_trait;
 pub struct Bot {
     config: Arc<Configuration>,
 
-    plugins: Vec<Box<dyn Plugin>>,
+    plugins: Vec<Arc<dyn Plugin>>,
 }
 
 impl Bot {
@@ -66,7 +66,7 @@ impl Bot {
     ///     .with_plugin(AnotherPlugin {});
     /// ```
     pub fn with_plugin(mut self, plugin: impl Plugin) -> Self {
-        self.plugins.push(Box::new(plugin));
+        self.plugins.push(Arc::new(plugin));
         self
     }
 
@@ -108,10 +108,15 @@ impl Bot {
     /// }
     /// ```
     pub async fn run(&mut self, guard: tokio_graceful::ShutdownGuard) {
+        // Setup and start cron scheduler
+        let mut scheduler = self.setup_cron();
+        scheduler.start();
+
         loop {
             tokio::select! {
                 _ = guard.cancelled() => {
                     tracing::info!("Shutdown signal received, stopping bot...");
+                    scheduler.stop();
                     break;
                 }
                 result = self.run_ws() => {
@@ -132,7 +137,19 @@ impl Bot {
         tracing::info!("Bot stopped gracefully");
     }
 
-    async fn run_ws(&mut self) -> Result<()> {
+    fn setup_cron(&self) -> cron_tab::Cron<chrono::Utc> {
+        let mut scheduler = cron_tab::Cron::new(chrono::Utc);
+
+        for plugin in &self.plugins {
+            let plugin = Arc::clone(plugin);
+            let config = Arc::clone(&self.config);
+            plugin.setup_cron(&mut scheduler, config);
+        }
+
+        scheduler
+    }
+
+    async fn run_ws(&self) -> Result<()> {
         let url = if let Some(rest) = self.config.base_path.strip_prefix("https://") {
             format!("wss://{}", rest)
         } else if let Some(rest) = self.config.base_path.strip_prefix("http://") {
@@ -184,6 +201,7 @@ impl Bot {
                     .iter()
                     .filter(|plugin| plugin.filter(&event))
                     .map(|plugin| {
+                        let plugin = Arc::clone(plugin);
                         let event = Arc::clone(&event);
                         let config = Arc::clone(&self.config);
                         async move {

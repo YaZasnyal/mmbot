@@ -1,22 +1,5 @@
 # Tasks - mattermost-bot improvements
 
-## 🔴 High Priority
-
-### 1. Параллельная обработка событий
-**Файл**: `lib/mattermost-bot/src/lib.rs:97-102`
-
-**Проблема**: Плагины обрабатываются последовательно. Если один плагин долго работает, остальные ждут.
-
-**Решение**: Spawn задачи параллельно с помощью `tokio::spawn` и `join_all`.
-
-**Статус**: ⏳ Pending
-
----
-
-## 🟡 Medium Priority
-
----
-
 ## 🟢 Low Priority
 
 **Статус**: ⏳ Pending
