@@ -43,19 +43,64 @@ impl Bot {
         self.plugins.push(Box::new(plugin));
     }
 
-    pub async fn run(&mut self) {
+    /// Run the bot with graceful shutdown support
+    ///
+    /// This method will run the bot until a shutdown signal is received.
+    /// It automatically handles reconnection on WebSocket errors.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use tokio_graceful::Shutdown;
+    /// use std::time::Duration;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> anyhow::Result<()> {
+    ///     // Setup graceful shutdown with Ctrl+C handler
+    ///     let shutdown = Shutdown::builder()
+    ///         .with_delay(Duration::from_secs(5))  // Grace period before force shutdown
+    ///         .with_overwrite_fn(tokio::signal::ctrl_c)  // Handle Ctrl+C
+    ///         .build();
+    ///
+    ///     let guard = shutdown.guard();
+    ///
+    ///     // Create and configure bot
+    ///     let mut config = Configuration::default();
+    ///     config.base_path = "https://your-mattermost.com".to_string();
+    ///     config.bearer_access_token = Some("your_token".to_string());
+    ///
+    ///     let mut bot = Bot::new(config)?;
+    ///     // bot.add_plugin(...);
+    ///
+    ///     // Run bot with graceful shutdown
+    ///     bot.run(guard).await;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn run(&mut self, guard: tokio_graceful::ShutdownGuard) {
         loop {
-            match self.run_ws().await {
-                Ok(_) => {
-                    tracing::info!("WebSocket connection closed gracefully, reconnecting...");
+            tokio::select! {
+                _ = guard.cancelled() => {
+                    tracing::info!("Shutdown signal received, stopping bot...");
+                    break;
                 }
-                Err(e) => {
-                    tracing::error!("WebSocket error: {}, reconnecting in 1s...", e);
+                result = self.run_ws() => {
+                    match result {
+                        Ok(_) => {
+                            tracing::info!("WebSocket connection closed gracefully, reconnecting...");
+                        }
+                        Err(e) => {
+                            tracing::error!("WebSocket error: {}, reconnecting in 1s...", e);
+                        }
+                    }
+
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
-
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
+
+        tracing::info!("Bot stopped gracefully");
     }
 
     async fn run_ws(&mut self) -> Result<()> {

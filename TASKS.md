@@ -13,30 +13,6 @@
 
 ---
 
-### 2. Обработка отсутствующего bearer_access_token
-**Файл**: `lib/mattermost-bot/src/lib.rs:71`
-
-**Проблема**: `unwrap()` на `bearer_access_token` может вызвать panic.
-
-**Решение**: 
-- Вариант 1: Валидация в конструкторе `Bot::new()`
-- Вариант 2: Возвращать ошибку из `run_ws()`
-
-**Статус**: ⏳ Pending
-
----
-
-### 3. Убрать panic при неизвестной схеме URL
-**Файл**: `lib/mattermost-bot/src/lib.rs:56-58`
-
-**Проблема**: `panic!("unknown schema")` вместо обработки ошибки.
-
-**Решение**: Возвращать типизированную ошибку.
-
-**Статус**: ⏳ Pending
-
----
-
 ### 4. Graceful shutdown
 **Файл**: `lib/mattermost-bot/src/lib.rs`
 

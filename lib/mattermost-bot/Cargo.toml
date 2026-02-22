@@ -13,3 +13,4 @@ reqwest-websocket = "0.4.3"
 mattermost_api = { workspace = true }
 tracing = "0.1.41"
 thiserror = "2.0"
+tokio-graceful = "0.1.6"
