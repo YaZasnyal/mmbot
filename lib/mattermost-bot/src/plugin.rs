@@ -15,7 +15,7 @@ pub struct Event {
 pub trait Plugin: Send + Sync + 'static {
     /// Unique ID that is used to store plugin progress
     fn id(&self) -> &'static str;
-    
+
     /// Fast event filter
     fn filter(&self, _event: &Arc<Event>) -> bool {
         true

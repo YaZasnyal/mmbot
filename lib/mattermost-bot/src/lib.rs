@@ -1,14 +1,16 @@
 use std::sync::Arc;
 
 use futures_util::{SinkExt, TryStreamExt};
-use reqwest_websocket::{Message, RequestBuilderExt};
 pub use mattermost_api::apis::configuration::Configuration;
+use reqwest_websocket::{Message, RequestBuilderExt};
 
 pub use mattermost_api;
+pub mod error;
 pub mod nested_decoder;
 pub mod plugin;
 pub mod types;
 
+pub use error::{BotError, Result};
 pub use plugin::{Event, Plugin};
 
 // reexports
@@ -21,11 +23,20 @@ pub struct Bot {
 }
 
 impl Bot {
-    pub fn new(config: Configuration) -> Self {
-        Self {
+    /// Create a new bot with the given configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns `BotError::MissingToken` if `bearer_access_token` is not set in the configuration
+    pub fn new(config: Configuration) -> Result<Self> {
+        if config.bearer_access_token.is_none() {
+            return Err(BotError::MissingToken);
+        }
+
+        Ok(Self {
             config: Arc::new(config),
             plugins: Default::default(),
-        }
+        })
     }
 
     pub fn add_plugin(&mut self, plugin: impl Plugin) {
@@ -35,10 +46,11 @@ impl Bot {
     pub async fn run(&mut self) {
         loop {
             match self.run_ws().await {
-                Ok(_) => { /* add tracing log */ }
+                Ok(_) => {
+                    tracing::info!("WebSocket connection closed gracefully, reconnecting...");
+                }
                 Err(e) => {
-                    // TODO: add tracing log
-                    eprintln!("ws error: {:?}", e);
+                    tracing::error!("WebSocket error: {}, reconnecting in 1s...", e);
                 }
             }
 
@@ -46,32 +58,34 @@ impl Bot {
         }
     }
 
-    async fn run_ws(&mut self) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let url = if self.config.base_path.starts_with("https://") {
-            self.config.base_path.replace("https", "wss")
-        } else if self.config.base_path.starts_with("http://") {
-            self.config.base_path.replace("http", "ws")
+    async fn run_ws(&mut self) -> Result<()> {
+        let url = if let Some(rest) = self.config.base_path.strip_prefix("https://") {
+            format!("wss://{}", rest)
+        } else if let Some(rest) = self.config.base_path.strip_prefix("http://") {
+            format!("ws://{}", rest)
         } else {
-            panic!("unknown schema");
+            return Err(BotError::InvalidSchema(self.config.base_path.clone()));
         };
         let url = format!("{}/api/v4/websocket", url);
 
         let response = self.config.client.get(url).upgrade().send().await?;
         let mut websocket = response.into_websocket().await?;
 
-        // TODO: make normal auth
-        websocket
-            .send(Message::Text(format!(
-                r#"{{
+        // Send authentication challenge
+        // SAFETY: Token presence is already validated in Bot::new()
+        let token = self.config.bearer_access_token.as_ref().unwrap();
+        let auth_message = serde_json::json!({
             "seq": 1,
             "action": "authentication_challenge",
-            "data": {{
-              "token": "{}"
-            }}
-          }}"#,
-                self.config.bearer_access_token.as_ref().unwrap()
-            )))
-            .await?;
+            "data": {
+                "token": token
+            }
+        });
+
+        let auth_text = serde_json::to_string(&auth_message)
+            .map_err(|e| BotError::MessageSerialization(e.to_string()))?;
+
+        websocket.send(Message::Text(auth_text)).await?;
 
         while let Some(message) = websocket.try_next().await? {
             if let Message::Text(text) = message {
@@ -99,7 +113,7 @@ impl Bot {
             } else if let Message::Ping(p) = message {
                 websocket.send(Message::Pong(p)).await?;
             } else {
-                println!("received unknown: {message:?}");
+                tracing::warn!(?message, "Received unknown WebSocket message type");
             }
         }
 

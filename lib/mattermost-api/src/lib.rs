@@ -1,3 +1,6 @@
+#![allow(clippy::all)]
+#![allow(unused)]
+#![allow(unused_mut)]
 #![allow(unused_imports)]
 #![allow(clippy::too_many_arguments)]
 
