@@ -34,16 +34,6 @@
 
 ---
 
-### 13. Реализовать TODO комментарии
-**Файлы**:
-- `lib/mattermost-bot/src/lib.rs:40` - добавить tracing log для graceful close
-- `lib/mattermost-bot/src/lib.rs:41` - добавить tracing log для ошибки
-- `lib/mattermost-bot/src/lib.rs:66` - улучшить аутентификацию
-
-**Статус**: ⏳ Pending
-
----
-
 ### 14. Добавить unit тесты
 **Файл**: `lib/mattermost-bot/tests/`
 

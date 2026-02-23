@@ -181,17 +181,26 @@ impl Bot {
         while let Some(message) = websocket.try_next().await? {
             if let Message::Text(text) = message {
                 tracing::debug!(text, "received");
-                let event = serde_json::from_str::<Event>(&text);
-                let event = match event {
+
+                // Try to parse as event
+                let event = match serde_json::from_str::<Event>(&text) {
                     Ok(e) => {
-                        tracing::info!(event=?e, "parsed event successfully");
+                        tracing::debug!(event=?e, "parsed event");
                         e
                     }
                     Err(e) => {
-                        tracing::error!("unable to parse: {:?}; {}", e, text);
+                        // Not an event, might be a response message (like {"status":"OK","seq_reply":1})
+                        // Just log at debug level and skip
+                        tracing::debug!("skipping non-event message: {:?}", e);
                         continue;
                     }
                 };
+
+                // Skip Unknown events (like hello, status_change, etc.)
+                if matches!(event.data, crate::types::EventType::Unknown) {
+                    tracing::debug!("skipping unknown event type");
+                    continue;
+                }
 
                 let event = Arc::new(event);
 

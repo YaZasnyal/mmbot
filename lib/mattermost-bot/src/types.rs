@@ -6,9 +6,25 @@ use crate::nested_decoder::Nested;
 #[serde(tag = "event", content = "data")]
 #[serde(rename_all = "snake_case")]
 pub enum EventType {
+    /// WebSocket connection established (contains bot's connection ID and user ID)
+    Hello(HelloEvent),
+    /// New post in a channel
     Posted(Box<PostedEvent>),
+    /// Reaction added to a post
     ReactionAdded(ReactionAddedEvent),
+    /// Reaction removed from a post
     ReactionRemoved(ReactionRemovedEvent),
+    /// Unknown or unhandled event type
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HelloEvent {
+    /// WebSocket connection ID
+    pub connection_id: String,
+    /// Mattermost server version
+    pub server_version: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

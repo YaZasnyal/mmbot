@@ -16,3 +16,13 @@ thiserror = "2.0"
 tokio-graceful = "0.1.6"
 cron_tab = "0.2"
 chrono = "0.4"
+
+[dev-dependencies]
+testcontainers = { workspace = true }
+testcontainers-modules = { workspace = true, features = ["postgres"] }
+tokio = { workspace = true, features = ["full"] }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+uuid = { workspace = true, features = ["v4"] }
+test-log = { workspace = true, features = ["trace"] }
