@@ -1,125 +1,44 @@
 # Tasks - mmbot project roadmap
 
+## 📋 RFC (Request for Comments)
+
+Задачи, которые были проработаны, но решено не реализовывать или отложить:
+
+- [RFC 0001: Storage и персистентность](rfcs/0001-storage-persistence.md) - Решено НЕ добавлять Storage в Layer 2
+
+---
+
 ## 🔴 High Priority
 
 **Эти задачи критичны для основной функциональности ботов**
 
----
-
-### 1. Plugin lifecycle hooks
-**Компонент**: `lib/mattermost-bot`  
-**Файл**: `lib/mattermost-bot/src/plugin.rs`
-
-**Описание**: Добавить методы для инициализации и очистки ресурсов плагинов.
-
-**Решение**:
-```rust
-#[async_trait]
-pub trait Plugin: Send + Sync + 'static {
-    fn id(&self) -> &'static str;
-    
-    /// Called once when bot starts (before connecting to WebSocket)
-    async fn on_start(&self, config: &Arc<Configuration>) -> Result<()> {
-        Ok(())
-    }
-    
-    /// Called when bot is shutting down (after WebSocket closed)
-    async fn on_shutdown(&self, config: &Arc<Configuration>) -> Result<()> {
-        Ok(())
-    }
-    
-    fn filter(&self, event: &Arc<Event>) -> bool { true }
-    async fn process_event(&self, event: &Arc<Event>, config: &Arc<Configuration>);
-    fn setup_cron(...) { }
-}
-```
-
-**Use cases**:
-- Открытие DB connections при старте
-- Восстановление состояния из персистентного storage
-- Graceful cleanup ресурсов при shutdown
-- Регистрация slash commands в Mattermost
-
-**Статус**: ⏳ Pending
+**Статус**: ✅ Все High Priority задачи для Layer 2 завершены!
 
 ---
 
-### 2. Event middleware / pipeline
-**Компонент**: `lib/mattermost-bot`  
-**Файл**: `lib/mattermost-bot/src/lib.rs`
-
-**Описание**: Добавить middleware для pre/post обработки событий.
-
-**Решение**:
-```rust
-#[async_trait]
-pub trait EventMiddleware: Send + Sync {
-    /// Process event before it reaches plugins
-    /// Returns false to skip event (won't be sent to plugins)
-    async fn before(&self, event: &Arc<Event>) -> bool {
-        true
-    }
-    
-    /// Process event after all plugins handled it
-    async fn after(&self, event: &Arc<Event>) {
-        // optional hook
-    }
-}
-
-impl Bot {
-    pub fn with_middleware(mut self, middleware: impl EventMiddleware + 'static) -> Self {
-        self.middleware.push(Arc::new(middleware));
-        self
-    }
-}
-```
-
-**Use cases**:
-- **Игнорирование собственных сообщений** (чтобы бот не отвечал сам себе в цикл)
-- Логирование всех событий
-- Фильтрация по глобальным условиям (например, игнорировать всех ботов)
-- Rate limiting на уровне источника событий
-- Enrichment событий (добавление дополнительных данных)
-
-**Первый middleware**: `IgnoreSelfMiddleware` - игнорирует сообщения от самого бота.
-
-**Статус**: ⏳ Pending
+### ~~1. Plugin lifecycle hooks~~ ✅ DONE
+**Статус**: ✅ Завершено (коммит a4a59ee)
 
 ---
 
-### 3. Персистентность состояния плагинов
-**Компонент**: `lib/mattermost-bot`  
-**Файл**: `lib/mattermost-bot/src/storage.rs` (новый)
+### ~~2. Event middleware / pipeline~~ ✅ DONE  
+**Статус**: ✅ Завершено (коммит b1a2aed)
 
-**Описание**: Использовать `plugin.id()` для хранения состояния между запусками.
+Реализован `IgnoreSelf` middleware как пример композитного паттерна.
 
-**Решение**:
-```rust
-pub struct PluginContext {
-    pub config: Arc<Configuration>,
-    pub storage: Arc<dyn Storage>,
-}
+---
 
-#[async_trait]
-pub trait Storage: Send + Sync {
-    async fn get(&self, plugin_id: &str, key: &str) -> Result<Option<Vec<u8>>>;
-    async fn set(&self, plugin_id: &str, key: &str, value: Vec<u8>) -> Result<()>;
-    async fn delete(&self, plugin_id: &str, key: &str) -> Result<()>;
-    async fn list_keys(&self, plugin_id: &str) -> Result<Vec<String>>;
-}
-```
+### ~~3. Персистентность состояния плагинов~~ ❌ ОТКЛОНЕНО
 
-**Реализации**:
-- `InMemoryStorage` - по умолчанию (данные теряются при перезапуске)
-- `FileStorage` - сохранение в JSON/CBOR файлы
-- `SurrealDbStorage` - для production (опциональная feature)
+**Статус**: ❌ Намеренно НЕ реализуется в Layer 2
 
-**Use cases**:
-- Сохранение прогресса обработки событий
-- Кэширование данных между запусками
-- Хранение пользовательских настроек плагина
+**Причина**: См. [RFC 0001](rfcs/0001-storage-persistence.md)
 
-**Статус**: ⏳ Pending
+Ключевые выводы:
+- Реконсиляция per-thread неизбежна при старте
+- Layer 3 (thread-bot) реализует свою персистентность
+- Layer 2 остаётся простым event streaming фреймворком
+- Плагинам для простых use cases персистентность не нужна
 
 ---
 
