@@ -10,6 +10,7 @@ pub mod middlewares;
 pub mod nested_decoder;
 pub mod plugin;
 pub mod types;
+pub use cron_tab;
 
 pub use error::{BotError, Result};
 pub use plugin::{Event, Plugin};
