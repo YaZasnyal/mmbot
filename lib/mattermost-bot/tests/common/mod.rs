@@ -21,6 +21,7 @@ pub struct MattermostTestEnv {
     pub team_id: String,
     pub channel_id: String,
     bot_token: String,
+    bot_user_id: String,
 }
 
 impl MattermostTestEnv {
@@ -93,6 +94,7 @@ impl MattermostTestEnv {
             team_id,
             channel_id,
             bot_token,
+            bot_user_id,
         })
     }
 
@@ -103,6 +105,18 @@ impl MattermostTestEnv {
             bearer_access_token: Some(self.bot_token.clone()),
             ..Configuration::default()
         })
+    }
+
+    /// Get bot's access token
+    #[allow(dead_code)] // Only used in middleware_tests
+    pub fn bot_token(&self) -> &str {
+        &self.bot_token
+    }
+
+    /// Get bot's user ID
+    #[allow(dead_code)] // Only used in middleware_tests
+    pub fn bot_user_id(&self) -> &str {
+        &self.bot_user_id
     }
 
     /// Get authenticated HTTP client for making API calls
@@ -460,24 +474,36 @@ pub fn run_bot_background(
     bot: Bot,
 ) -> (
     mpsc::UnboundedReceiver<Arc<Event>>,
-    tokio_graceful::Shutdown,
+    tokio::sync::oneshot::Sender<()>,
 ) {
     let (plugin, events_rx) = EventChannelPlugin::new();
     let bot = bot.with_plugin(plugin);
 
     // Setup shutdown with timeout (will shutdown after 5 seconds if not stopped manually)
-    let shutdown = tokio_graceful::Shutdown::new(async {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    });
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = tokio_graceful::Shutdown::builder()
+        .with_signal(async move {
+            rx.await.ok();
+        })
+        .build();
     let guard = shutdown.guard();
 
     // Run bot in background
     tokio::spawn(async move {
         let mut bot = bot;
-        bot.run(guard).await;
+        let fut = bot.run(guard);
+        let timeout = tokio::time::sleep(Duration::from_secs(5));
+        tokio::select! {
+            _ = timeout => {
+                tracing::error!("bot reached test run timeout")
+            },
+            _ = fut => {
+                tracing::info!("bot finished")
+            }
+        }
     });
 
-    (events_rx, shutdown)
+    (events_rx, tx)
 }
 
 /// HTTP client authenticated with a token

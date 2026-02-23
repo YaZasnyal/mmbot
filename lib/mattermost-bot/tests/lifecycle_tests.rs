@@ -104,7 +104,7 @@ async fn test_plugin_lifecycle_hooks() -> Result<()> {
     tracing::info!("on_start verified, triggering shutdown...");
 
     // Trigger shutdown
-    bot_shutdown.shutdown().await;
+    bot_shutdown.send(()).ok();
 
     // Wait for on_shutdown to be called
     tokio::select! {

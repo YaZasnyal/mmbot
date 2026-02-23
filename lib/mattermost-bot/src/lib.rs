@@ -6,12 +6,14 @@ use reqwest_websocket::{Message, RequestBuilderExt};
 
 pub use mattermost_api;
 pub mod error;
+pub mod middlewares;
 pub mod nested_decoder;
 pub mod plugin;
 pub mod types;
 
 pub use error::{BotError, Result};
 pub use plugin::{Event, Plugin};
+pub use tokio_graceful;
 
 // reexports
 pub use async_trait::async_trait;
