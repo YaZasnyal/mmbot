@@ -105,7 +105,7 @@ jobs:
 
       - name: Start Mattermost test environment
         run: |
-          docker-compose -f lib/mattermost-bot/tests/docker-compose.yml up -d
+          docker compose -f lib/mattermost-bot/tests/docker-compose.yml up -d
 
       - name: Wait for Mattermost to be ready
         run: |
@@ -119,7 +119,7 @@ jobs:
             sleep 2
           done
           echo "❌ Mattermost failed to start"
-          docker-compose -f lib/mattermost-bot/tests/docker-compose.yml logs
+          docker compose -f lib/mattermost-bot/tests/docker-compose.yml logs
           exit 1
 
       - name: Run integration tests
@@ -130,7 +130,7 @@ jobs:
       - name: Stop Mattermost test environment
         if: always()
         run: |
-          docker-compose -f lib/mattermost-bot/tests/docker-compose.yml down -v
+          docker compose -f lib/mattermost-bot/tests/docker-compose.yml down -v
 
   build:
     name: Build
