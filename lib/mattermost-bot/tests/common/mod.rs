@@ -1,7 +1,11 @@
 use anyhow::{Context, Result};
 use mattermost_api::apis::configuration::Configuration;
+use mattermost_bot::types::EventType;
+use mattermost_bot::{async_trait, Bot, Event, Plugin};
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
 
 /// Test environment configuration
 ///
@@ -9,11 +13,11 @@ use std::sync::Arc;
 /// Set MATTERMOST_URL environment variable to override default (http://localhost:8065)
 ///
 /// Creates all necessary resources (admin user, team, channel, bot) automatically.
+#[allow(dead_code)] // Some fields only used in specific test files
 pub struct MattermostTestEnv {
     pub base_url: String,
     pub admin_token: String,
     pub admin_user_id: String,
-    #[allow(dead_code)]
     pub team_id: String,
     pub channel_id: String,
     bot_token: String,
@@ -105,6 +109,7 @@ impl MattermostTestEnv {
     ///
     /// By default returns client authenticated as admin.
     /// To create client for other users, pass their token and user_id.
+    #[allow(dead_code)] // Only used in integration_tests, not lifecycle_tests
     pub fn http_client(&self, token: Option<&str>, user_id: Option<&str>) -> AuthenticatedClient {
         AuthenticatedClient {
             base_url: self.base_url.clone(),
@@ -397,7 +402,86 @@ impl MattermostTestEnv {
     }
 }
 
+/// Test plugin that forwards all events to a channel
+pub struct EventChannelPlugin {
+    tx: mpsc::UnboundedSender<Arc<Event>>,
+}
+
+impl EventChannelPlugin {
+    pub fn new() -> (Self, mpsc::UnboundedReceiver<Arc<Event>>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self { tx }, rx)
+    }
+}
+
+#[async_trait]
+impl Plugin for EventChannelPlugin {
+    fn id(&self) -> &'static str {
+        "EventChannel"
+    }
+
+    fn filter(&self, _event: &Arc<Event>) -> bool {
+        true // Forward all events
+    }
+
+    async fn process_event(
+        &self,
+        event: &Arc<Event>,
+        _config: &Arc<mattermost_api::apis::configuration::Configuration>,
+    ) {
+        tracing::info!(event_type=?event.data, "Event received");
+        let _ = self.tx.send(Arc::clone(event));
+    }
+}
+
+/// Wait for a specific event type from the channel
+pub async fn wait_for_event<F>(
+    rx: &mut mpsc::UnboundedReceiver<Arc<Event>>,
+    matcher: F,
+) -> Option<Arc<Event>>
+where
+    F: Fn(&EventType) -> bool,
+{
+    while let Some(event) = rx.recv().await {
+        tracing::info!("received event: {:?}", event.data);
+        if matcher(&event.data) {
+            tracing::info!("found awaited event");
+            return Some(event);
+        }
+    }
+    None
+}
+
+/// Run bot in background with automatic shutdown
+///
+/// Returns the event receiver and a shutdown handle.
+/// The bot will automatically stop after 5 seconds or when shutdown.shutdown() is called.
+pub fn run_bot_background(
+    bot: Bot,
+) -> (
+    mpsc::UnboundedReceiver<Arc<Event>>,
+    tokio_graceful::Shutdown,
+) {
+    let (plugin, events_rx) = EventChannelPlugin::new();
+    let bot = bot.with_plugin(plugin);
+
+    // Setup shutdown with timeout (will shutdown after 5 seconds if not stopped manually)
+    let shutdown = tokio_graceful::Shutdown::new(async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    });
+    let guard = shutdown.guard();
+
+    // Run bot in background
+    tokio::spawn(async move {
+        let mut bot = bot;
+        bot.run(guard).await;
+    });
+
+    (events_rx, shutdown)
+}
+
 /// HTTP client authenticated with a token
+#[allow(dead_code)] // Only used in integration_tests, not lifecycle_tests
 pub struct AuthenticatedClient {
     pub base_url: String,
     pub client: reqwest::Client,
@@ -407,6 +491,7 @@ pub struct AuthenticatedClient {
 
 impl AuthenticatedClient {
     /// Post a message to a channel
+    #[allow(dead_code)] // Only used in integration_tests
     pub async fn post_message(&self, channel_id: &str, message: &str) -> Result<serde_json::Value> {
         let payload = serde_json::json!({
             "channel_id": channel_id,
@@ -431,6 +516,7 @@ impl AuthenticatedClient {
     }
 
     /// Add a reaction to a post
+    #[allow(dead_code)] // Only used in integration_tests
     pub async fn add_reaction(&self, post_id: &str, emoji_name: &str) -> Result<()> {
         let create_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -16,6 +16,26 @@ pub trait Plugin: Send + Sync + 'static {
     /// Unique ID that is used to store plugin progress
     fn id(&self) -> &'static str;
 
+    /// Called once when bot starts (before connecting to WebSocket)
+    ///
+    /// Use this to initialize resources, open database connections,
+    /// restore state from persistent storage, etc.
+    ///
+    /// If this method returns an error, it will be logged but won't prevent
+    /// the bot from starting. Other plugins will continue to initialize.
+    async fn on_start(&self, _config: &Arc<Configuration>) -> crate::Result<()> {
+        Ok(())
+    }
+
+    /// Called when bot is shutting down (after WebSocket closed)
+    ///
+    /// Use this to clean up resources, close connections, save state, etc.
+    ///
+    /// Errors are logged but don't prevent shutdown from completing.
+    async fn on_shutdown(&self, _config: &Arc<Configuration>) -> crate::Result<()> {
+        Ok(())
+    }
+
     /// Fast event filter
     fn filter(&self, _event: &Arc<Event>) -> bool {
         true

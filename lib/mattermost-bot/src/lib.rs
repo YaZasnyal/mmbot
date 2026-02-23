@@ -108,6 +108,24 @@ impl Bot {
     /// }
     /// ```
     pub async fn run(&mut self, guard: tokio_graceful::ShutdownGuard) {
+        // Call on_start for all plugins
+        tracing::info!("Initializing plugins...");
+        for plugin in &self.plugins {
+            match plugin.on_start(&self.config).await {
+                Ok(_) => {
+                    tracing::debug!(plugin_id = plugin.id(), "Plugin initialized successfully");
+                }
+                Err(e) => {
+                    tracing::error!(
+                        plugin_id = plugin.id(),
+                        error = %e,
+                        "Plugin initialization failed, continuing anyway"
+                    );
+                }
+            }
+        }
+        tracing::info!("All plugins initialized");
+
         // Setup and start cron scheduler
         let mut scheduler = self.setup_cron();
         scheduler.start();
@@ -133,6 +151,24 @@ impl Bot {
                 }
             }
         }
+
+        // Call on_shutdown for all plugins
+        tracing::info!("Shutting down plugins...");
+        for plugin in &self.plugins {
+            match plugin.on_shutdown(&self.config).await {
+                Ok(_) => {
+                    tracing::debug!(plugin_id = plugin.id(), "Plugin shut down successfully");
+                }
+                Err(e) => {
+                    tracing::error!(
+                        plugin_id = plugin.id(),
+                        error = %e,
+                        "Plugin shutdown failed, continuing anyway"
+                    );
+                }
+            }
+        }
+        tracing::info!("All plugins shut down");
 
         tracing::info!("Bot stopped gracefully");
     }

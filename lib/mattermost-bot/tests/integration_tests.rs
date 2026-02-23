@@ -1,89 +1,10 @@
 mod common;
 
 use anyhow::Result;
-use common::MattermostTestEnv;
+use common::{run_bot_background, wait_for_event, MattermostTestEnv};
 use mattermost_bot::types::EventType;
-use mattermost_bot::{async_trait, Bot, Event, Plugin};
-use std::sync::Arc;
-use std::time::Duration;
+use mattermost_bot::Bot;
 use test_log::test;
-use tokio::sync::mpsc;
-
-/// Test plugin that sends events to a channel
-struct EventChannelPlugin {
-    tx: mpsc::UnboundedSender<Arc<Event>>,
-}
-
-#[async_trait]
-impl Plugin for EventChannelPlugin {
-    fn id(&self) -> &'static str {
-        "EventChannel"
-    }
-
-    fn filter(&self, _event: &Arc<Event>) -> bool {
-        true // Forward all events
-    }
-
-    async fn process_event(
-        &self,
-        event: &Arc<Event>,
-        _config: &Arc<mattermost_api::apis::configuration::Configuration>,
-    ) {
-        tracing::info!(event_type=?event.data, "Event received");
-        let _ = self.tx.send(Arc::clone(event));
-    }
-}
-
-impl EventChannelPlugin {
-    fn new() -> (Self, mpsc::UnboundedReceiver<Arc<Event>>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        (Self { tx }, rx)
-    }
-}
-
-/// Wait for a specific event type from the channel
-async fn wait_for_event<F>(
-    rx: &mut mpsc::UnboundedReceiver<Arc<Event>>,
-    matcher: F,
-) -> Option<Arc<Event>>
-where
-    F: Fn(&EventType) -> bool,
-{
-    while let Some(event) = rx.recv().await {
-        tracing::info!("received event: {:?}", event.data);
-        if matcher(&event.data) {
-            tracing::info!("found awaited event");
-            return Some(event);
-        }
-    }
-    None
-}
-
-/// Run bot in background with automatic shutdown
-/// Returns the event receiver and a shutdown handle that will stop the bot when dropped
-fn run_bot_background(
-    bot: Bot,
-) -> (
-    mpsc::UnboundedReceiver<Arc<Event>>,
-    tokio_graceful::Shutdown,
-) {
-    let (plugin, events_rx) = EventChannelPlugin::new();
-    let bot = bot.with_plugin(plugin);
-
-    // Setup shutdown with timeout (will shutdown after 30 seconds if not stopped manually)
-    let shutdown = tokio_graceful::Shutdown::new(async {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    });
-    let guard = shutdown.guard();
-
-    // Run bot in background
-    tokio::spawn(async move {
-        let mut bot = bot;
-        bot.run(guard).await;
-    });
-
-    (events_rx, shutdown)
-}
 
 #[test(tokio::test)]
 async fn test_bot_receives_posted_event() -> Result<()> {
