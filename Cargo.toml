@@ -4,7 +4,8 @@ members = [
     "mmbot",
     "lib/mattermost-api",
     "lib/bool_parser",
-    "lib/mattermost-bot"
+    "lib/mattermost-bot",
+    "lib/thread-bot"
 ]
 
 [workspace.dependencies]
