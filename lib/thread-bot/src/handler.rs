@@ -29,6 +29,16 @@ pub enum ThreadEffect {
     },
     /// Set thread-level metadata
     SetThreadMetadata { metadata: serde_json::Value },
+    /// Reschedule handler run after applying effects
+    ///
+    /// Useful for:
+    /// - Posting initial "working on it" message, then continuing work
+    /// - Saving intermediate state and resuming later
+    /// - Multi-step workflows with user-visible progress
+    ///
+    /// After applying all effects in the batch, Layer 3 will schedule
+    /// a new handler run (respecting debounce if new messages arrive).
+    Reschedule,
     /// Mark thread as resolved
     MarkResolved,
     /// Mark thread as stopped
