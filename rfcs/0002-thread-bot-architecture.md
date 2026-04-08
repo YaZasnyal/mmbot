@@ -2,6 +2,7 @@
 
 **Статус**: Черновик  
 **Дата**: 2026-04-06  
+**Последнее обновление**: 2026-04-08  
 **Автор**: Обсуждение в парном программировании
 
 ## Контекст
@@ -274,38 +275,79 @@ struct ThreadRuntimeState {
 
 ## Реакции
 
-### Root post reactions
+### Архитектурное решение
 
-Поддерживаем как минимум:
-- `✅` на root post → `Resolved`
-- `🛑` на root post → `Stopped`
+Реакции обрабатываются через делегирование в `ThreadHandler`, а не жестко зашиты в Layer 3.
 
-При этом Layer 3:
-- сохраняет факт реакции в `thread_reactions`;
-- меняет статус треда;
-- abort-ит активный handler, если он есть;
-- вызывает `ThreadHandler::on_thread_closed(...)`.
+**Ключевые принципы**:
+1. Layer 3 различает **control reactions** (на root post) и **feedback reactions** (на сообщения бота).
+2. Control reactions обрабатываются через синхронный метод `ThreadHandler::on_control_reaction()`.
+3. Handler получает **событие изменения реакции** (`ReactionChange`), а не только snapshot состояния.
+4. Handler возвращает `Option<ThreadEffect>` для выполнения действий.
+5. Feedback reactions сохраняются в БД только для сообщений бота (с флагом `is_bot_message`).
+
+### Control reactions на root post
+
+**Когда вызывается**:
+- Только для реакций на root post треда.
+- Только если тред в статусе `New` или `Active`.
+- Для завершенных тредов (`Resolved`, `Stopped`) реакции игнорируются.
+
+**Почему синхронный метод**:
+- Нельзя делать долгую async работу внутри обработки реакции.
+- Если нужна async работа, handler возвращает `ThreadEffect`, который Layer 3 применит.
+- Это предотвращает блокировку event loop и упрощает reasoning о порядке выполнения.
+
+**Почему передается `ThreadRecord`, а не `Thread`**:
+- Сборка полного `Thread` snapshot дорогая (запрос к Mattermost API + join с БД).
+- Для control reactions обычно достаточно metadata треда (`ThreadRecord`).
+- Полный `Thread` собирается только если нужен (например, для `on_thread_closed`).
+
+**Default implementation**:
+```rust
+fn on_control_reaction(
+    &self,
+    thread_record: &ThreadRecord,
+    change: &ReactionChange,
+) -> Option<ThreadEffect> {
+    default_control_reactions(change)
+}
+```
+
+Где `default_control_reactions`:
+- `✅` (`white_check_mark`) на `ReactionAdded` → `ThreadEffect::MarkResolved`
+- `🛑` (`stop_sign`) на `ReactionAdded` → `ThreadEffect::MarkStopped`
+- Все остальное → `None`
 
 ### Feedback reactions на сообщения бота
 
-Поддерживаем как минимум:
-- `👍`
-- `👎`
+**Определение**:
+- Handler определяет, какие emoji считаются feedback через метод `is_feedback_reaction()`.
+- Default: `thumbsup`, `thumbsdown`, `+1`, `-1`.
 
-Они:
-- сохраняются как feedback для аналитики;
-- не обязаны менять статус треда;
-- могут позже использоваться Layer 4 для анализа качества ответов, ранбуков и инструментов.
+**Обработка**:
+- Layer 3 проверяет: это наше сообщение (`is_bot_message = true`) + feedback reaction?
+- Если да, сохраняет в `thread_reactions` для аналитики.
+- Не вызывает handler, не меняет статус треда.
+- Layer 4 может позже анализировать feedback через `ThreadStore`.
+
+**Почему только на наши посты**:
+- Экономия места в БД.
+- Feedback имеет смысл только для ответов бота.
+- Флаг `is_bot_message` выставляется при применении `ThreadEffect::Reply`.
 
 ### ReactionRemoved
 
-На первом этапе `ReactionRemoved` не участвует в бизнес-логике Layer 3.
+**Обработка**:
+- События `ReactionRemoved` сохраняются в `thread_reactions` с `action = Removed`.
+- Передаются в `on_control_reaction()` для гибкости.
+- Default implementation игнорирует `ReactionRemoved` (не меняет статус).
+- Layer 4 может реализовать кастомную логику если нужно.
 
-Выбранное правило:
-- transitions по `resolve` / `stop` происходят только на `ReactionAdded`;
-- удаление этих реакций игнорируется;
-- удаление feedback reactions (`👍`, `👎`) тоже игнорируется;
-- при желании событие можно логировать на debug-уровне, но не сохранять как значимую доменную операцию.
+**Почему не влияет на статус по умолчанию**:
+- Удаление `✅` не должно автоматически reopenить тред.
+- Это упрощает модель и избегает race conditions.
+- Если нужна такая логика, Layer 4 может ее реализовать.
 
 ## Интерфейсы
 
@@ -332,6 +374,37 @@ pub trait ThreadHandler: Send + Sync + 'static {
         thread: &Thread,
         ctx: &ThreadContext,
     ) -> Result<HandleResult, ThreadBotError>;
+
+    /// Синхронная обработка control reactions на root post.
+    ///
+    /// Вызывается ТОЛЬКО если тред в статусе New или Active.
+    /// Не может делать async работу - для этого возвращайте ThreadEffect.
+    ///
+    /// # Параметры
+    /// - `thread_record`: легковесная запись треда из БД (без сообщений)
+    /// - `change`: событие изменения реакции (кто, что, когда)
+    ///
+    /// # Возвращает
+    /// - `Some(effect)` если нужно выполнить действие
+    /// - `None` если реакция игнорируется
+    fn on_control_reaction(
+        &self,
+        thread_record: &ThreadRecord,
+        change: &ReactionChange,
+    ) -> Option<ThreadEffect> {
+        // Default: стандартная логика ✅/🛑
+        default_control_reactions(change)
+    }
+
+    /// Определяет, является ли emoji feedback reaction.
+    ///
+    /// Feedback reactions сохраняются в БД только для сообщений бота
+    /// (с флагом is_bot_message = true) для последующей аналитики.
+    ///
+    /// Default: 👍 и 👎
+    fn is_feedback_reaction(&self, emoji_name: &str) -> bool {
+        matches!(emoji_name, "thumbsup" | "thumbsdown" | "+1" | "-1")
+    }
 
     /// Вызывается при штатном или принудительном закрытии треда.
     async fn on_thread_closed(
@@ -446,6 +519,10 @@ pub trait ThreadStore: Send + Sync + 'static {
 
     async fn get_thread(&self, thread_id: &str) -> Result<Option<ThreadRecord>, ThreadBotError>;
 
+    /// Найти тред по любому post_id в треде (легковесный запрос).
+    /// Используется для routing реакций и сообщений к нужному треду.
+    async fn get_thread_by_post(&self, post_id: &str) -> Result<Option<ThreadRecord>, ThreadBotError>;
+
     async fn list_threads_by_status(
         &self,
         statuses: &[ThreadStatus],
@@ -496,6 +573,10 @@ pub trait ThreadStore: Send + Sync + 'static {
         &self,
         input: AppendReaction,
     ) -> Result<(), ThreadBotError>;
+
+    /// Получить список реакций треда для сборки Thread snapshot.
+    async fn list_thread_reactions(&self, thread_id: &str) 
+        -> Result<Vec<ThreadReaction>, ThreadBotError>;
 }
 ```
 
@@ -510,7 +591,32 @@ pub trait ThreadStore: Send + Sync + 'static {
 
 ## Доменные структуры
 
+### `ThreadRecord`
+
+Легковесная запись треда из БД, без загрузки сообщений.
+Используется для быстрых проверок и control reactions.
+
+```rust
+pub struct ThreadRecord {
+    pub thread_id: String,
+    pub root_post_id: String,
+    pub channel_id: String,
+    pub creator_user_id: String,  // автор root post
+    pub status: ThreadStatus,
+    pub metadata: serde_json::Value,
+    pub last_seen_post_id: Option<String>,
+    pub last_seen_post_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_processed_post_id: Option<String>,
+    pub last_processed_post_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+```
+
 ### `Thread`
+
+Полный snapshot треда для handler.
+Дорогой в сборке - собирается из Mattermost API + БД.
 
 ```rust
 pub struct Thread {
@@ -527,6 +633,7 @@ pub struct ThreadInfo {
     pub thread_id: String,
     pub root_post_id: String,
     pub channel_id: String,
+    pub creator_user_id: String,
     pub status: ThreadStatus,
     pub metadata: serde_json::Value,
     pub last_seen_post_id: Option<String>,
@@ -537,6 +644,8 @@ pub struct ThreadInfo {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 ```
+
+`ThreadInfo` можно создать из `ThreadRecord` через `From` trait.
 
 ### `ThreadMessage`
 
@@ -576,6 +685,20 @@ pub enum ReactionAction {
 }
 ```
 
+### `ReactionChange`
+
+Событие изменения реакции, передается в `on_control_reaction()`.
+
+```rust
+pub struct ReactionChange {
+    pub post_id: String,        // root_post_id
+    pub user_id: String,        // кто добавил/удалил
+    pub emoji_name: String,     // какую реакцию
+    pub action: ReactionAction, // Added или Removed
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+```
+
 ## `ThreadContext`
 
 `ThreadContext` в этой модели должен быть в основном read-only.
@@ -609,9 +732,10 @@ Side effects (`reply`, `update message`, `mark stopped`, `mark resolved`) опи
 let plugin = ThreadBot::new(handler, store)
     .with_channel(channel_id)
     .with_debounce(Duration::from_secs(3))
-    .with_resolve_reaction("white_check_mark")
-    .with_stop_reaction("stop_sign");
+    .build();
 ```
+
+**Примечание**: Конфигурация control reactions (resolve/stop emoji) убрана из `ThreadBot`, так как теперь это ответственность `ThreadHandler::on_control_reaction()`.
 
 Предполагается, что Mattermost API отдаёт имя emoji, а не unicode-символ. Поэтому Layer 3 оперирует именно `emoji_name` из API и не делает дополнительную нормализацию на первом этапе.
 
@@ -623,11 +747,11 @@ pub struct ThreadBot<H> {
     store: Arc<dyn ThreadStore>,
     tracked_channels: std::collections::HashSet<String>,
     debounce: std::time::Duration,
-    resolve_reaction: String,
-    stop_reaction: String,
     runtime: Arc<tokio::sync::Mutex<std::collections::HashMap<String, ThreadRuntimeState>>>,
 }
 ```
+
+**Примечание**: Поля `resolve_reaction` и `stop_reaction` удалены, так как обработка реакций делегирована в `ThreadHandler::on_control_reaction()`.
 
 ## Как `ThreadBot` реализует `Plugin`
 
@@ -688,35 +812,96 @@ pub struct ThreadBot<H> {
    - сообщения треда не копируются в store.
 5. Если `true`:
    - создать thread record;
-   - сохранить текущее сообщение reference в `thread_messages`;
+   - сохранить текущее сообщение reference в `thread_messages` с `is_bot_message = false`;
    - перевести тред в `Active`.
 6. Если тред уже `Active`:
-   - сохранить сообщение reference в `thread_messages`;
+   - сохранить сообщение reference в `thread_messages` с `is_bot_message = false`;
    - abort текущего handler run;
    - запланировать новый запуск через debounce.
 
 ### `ReactionAdded`
 
-1. Сохранить reaction event в БД.
-2. Найти тред, к которому относится post.
-3. Если это root post и `emoji_name == resolve_reaction`:
-   - перевести тред в `Resolved`;
-   - abort текущий handle;
-   - вызвать `on_thread_closed(...ResolvedByReaction...)`.
-4. Если это root post и `emoji_name == stop_reaction`:
-   - перевести тред в `Stopped`;
-   - abort текущий handle;
-   - вызвать `on_thread_closed(...StoppedByReaction...)`.
-5. Если `emoji_name` в feedback reactions (`thumbsup`, `thumbsdown` или другие явно сконфигурированные имена), просто сохранить для аналитики.
+```rust
+// В ThreadBot::process_event()
+EventType::ReactionAdded(ref reaction) => {
+    // 1. Сохраняем в БД всегда
+    self.store.append_reaction(AppendReaction {
+        thread_id: None,  // будет заполнено через JOIN в БД
+        post_id: reaction.post_id.clone(),
+        user_id: reaction.user_id.clone(),
+        emoji_name: reaction.emoji_name.clone(),
+        action: ReactionAction::Added,
+    }).await?;
+    
+    // 2. Находим тред по post_id (легковесный запрос)
+    let Some(thread_record) = self.store
+        .get_thread_by_post(&reaction.post_id)
+        .await? 
+    else {
+        return; // Не tracked тред
+    };
+    
+    // 3. Проверяем - это root post?
+    if thread_record.root_post_id == reaction.post_id {
+        // === Control reaction на root post ===
+        
+        // Только для активных тредов
+        if !matches!(thread_record.status, ThreadStatus::New | ThreadStatus::Active) {
+            return;
+        }
+        
+        let change = ReactionChange {
+            post_id: reaction.post_id.clone(),
+            user_id: reaction.user_id.clone(),
+            emoji_name: reaction.emoji_name.clone(),
+            action: ReactionAction::Added,
+            created_at: Utc::now(),
+        };
+        
+        // Вызываем handler (синхронно!)
+        if let Some(effect) = self.handler.on_control_reaction(&thread_record, &change) {
+            // Применяем effect
+            self.apply_effect(effect, &thread_record).await?;
+            
+            // Если Resolved/Stopped - abort и вызываем on_thread_closed
+            if matches!(effect, ThreadEffect::MarkResolved | ThreadEffect::MarkStopped) {
+                self.abort_handler(&thread_record.thread_id).await;
+                
+                // Теперь собираем полный Thread для on_thread_closed
+                let thread = self.build_thread_snapshot(&thread_record).await?;
+                let reason = match effect {
+                    ThreadEffect::MarkResolved => ThreadCloseReason::ResolvedByReaction,
+                    ThreadEffect::MarkStopped => ThreadCloseReason::StoppedByReaction,
+                    _ => unreachable!(),
+                };
+                self.handler.on_thread_closed(&thread, reason, &self.ctx).await?;
+            }
+        }
+    } else {
+        // === Реакция на обычное сообщение ===
+        
+        // Проверяем: это наше сообщение + feedback reaction?
+        if let Some(msg) = self.store.get_message(&reaction.post_id).await? {
+            if msg.is_bot_message 
+                && self.handler.is_feedback_reaction(&reaction.emoji_name) 
+            {
+                tracing::info!(
+                    post_id = %reaction.post_id,
+                    emoji = %reaction.emoji_name,
+                    user_id = %reaction.user_id,
+                    "Received feedback reaction on bot message"
+                );
+                // Уже сохранили в БД на шаге 1
+            }
+        }
+    }
+}
+```
 
 ### `ReactionRemoved`
 
-На первом этапе `ReactionRemoved` игнорируется в доменной логике Layer 3.
-
-Допустимое поведение:
-- можно логировать событие на debug-уровне;
-- нельзя менять thread status;
-- нельзя запускать отдельные lifecycle transitions.
+Аналогично `ReactionAdded`, но с `action: ReactionAction::Removed`.
+Default implementation `on_control_reaction()` игнорирует `Removed` события.
 
 ## Схема БД
 
@@ -729,6 +914,7 @@ CREATE TABLE threads (
     thread_id TEXT PRIMARY KEY,
     root_post_id TEXT NOT NULL UNIQUE,
     channel_id TEXT NOT NULL,
+    creator_user_id TEXT NOT NULL,
     status TEXT NOT NULL,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     last_seen_post_id TEXT,
@@ -745,6 +931,10 @@ CREATE INDEX idx_threads_updated_at ON threads(updated_at DESC);
 CREATE INDEX idx_threads_metadata_gin ON threads USING GIN(metadata);
 ```
 
+**Поле `creator_user_id`**:
+- Автор root post треда.
+- Добавлено для удобства в `on_control_reaction()` - можно проверять права без загрузки сообщений.
+
 ### `thread_messages`
 
 Таблица хранит не текст сообщений как source of truth, а references и локальную metadata.
@@ -754,6 +944,7 @@ CREATE TABLE thread_messages (
     post_id TEXT PRIMARY KEY,
     thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
     user_id TEXT NOT NULL,
+    is_bot_message BOOLEAN NOT NULL DEFAULT FALSE,
     root_id TEXT,
     parent_post_id TEXT,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -769,7 +960,14 @@ CREATE INDEX idx_thread_messages_thread_id_post_created_at
 
 CREATE INDEX idx_thread_messages_user_id ON thread_messages(user_id);
 CREATE INDEX idx_thread_messages_metadata_gin ON thread_messages USING GIN(metadata);
+CREATE INDEX idx_thread_messages_is_bot ON thread_messages(is_bot_message) 
+    WHERE is_bot_message = TRUE;
 ```
+
+**Поле `is_bot_message`**:
+- Выставляется в `true` при применении `ThreadEffect::Reply`.
+- Используется для фильтрации feedback reactions - сохраняем только реакции на наши посты.
+- Partial index для эффективного поиска сообщений бота.
 
 ### Таблица `thread_reactions`
 
@@ -922,14 +1120,14 @@ lib/thread-bot/src/
 
 - `lib.rs` — public reexports и модульная склейка.
 - `error.rs` — `ThreadBotError`.
-- `types.rs` — `Thread`, `ThreadInfo`, `ThreadMessage`, `ThreadStatus`, DTO для store.
+- `types.rs` — `Thread`, `ThreadInfo`, `ThreadRecord`, `ThreadMessage`, `ThreadStatus`, `ReactionChange`, DTO для store.
 - `handler.rs` — `ThreadHandler`, `HandleOutcome`, `ThreadCloseReason`, `ThreadContext`.
 - `store.rs` — `ThreadStore` trait.
 - `pg_store.rs` — `PgThreadStore` и sqlx реализация.
-- `thread_bot.rs` — `ThreadBot` struct, `Plugin` impl, startup barrier и применение `ThreadEffect`.
+- `thread_bot.rs` — `ThreadBot` struct, `Plugin` impl, startup barrier, `build_thread_snapshot()` и применение `ThreadEffect`.
 - `reconciliation.rs` — channel catch-up, reconciliation активных тредов и replay backlog входящих событий.
 - `runtime.rs` — runtime state и debounce scheduling utilities.
-- `reactions.rs` — rules для resolve/stop/feedback reactions.
+- `reactions.rs` — `default_control_reactions()` helper и reaction routing logic.
 
 ## Зависимости `Cargo.toml`
 
@@ -979,11 +1177,14 @@ uuid = { version = "1", features = ["v4"] }
 - Mattermost + Postgres;
 - `ThreadBot` подключён как plugin в `mattermost_bot::Bot`;
 - root post создаёт tracked thread;
-- в БД сохраняются message references и metadata;
+- в БД сохраняются message references и metadata с флагом `is_bot_message`;
 - handler получает свежий snapshot треда из Mattermost API;
 - при нескольких быстрых сообщениях старый handler abort-ится, срабатывает debounce;
-- `✅` переводит тред в `Resolved`;
-- `🛑` переводит тред в `Stopped`;
+- control reactions на root post вызывают `on_control_reaction()`;
+- `✅` через default implementation переводит тред в `Resolved`;
+- `🛑` через default implementation переводит тред в `Stopped`;
+- feedback reactions на bot messages сохраняются в БД;
+- feedback reactions на user messages игнорируются;
 - startup barrier буферизует входящие события во время reconciliation;
 - `channel_checkpoints` обновляются только после прохождения события через ingestion pipeline;
 - restart catch-up по каналам находит новые треды и новые сообщения;
@@ -997,16 +1198,21 @@ uuid = { version = "1", features = ["v4"] }
 
 ## Открытые вопросы
 
-Это черновик, и в нём остаются места для уточнения:
+Уже решённые вопросы:
 
-1. Нужно ли учитывать `ReactionRemoved` в бизнес-логике, или только логировать? **Решено:** игнорировать в доменной логике.
-2. Нужен ли отдельный helper API в `ThreadContext` помимо `config/store/plugin_id`? **Решено:** side effects оформляются через `ThreadEffect`/`HandleResult`, а не direct helper calls.
-3. Нужна ли нормализация emoji names (`white_check_mark` vs `✅`) на уровне Layer 3? **Текущее решение:** нет, используем `emoji_name` как приходит из Mattermost API.
+1. **Обработка реакций**: Делегирована в `ThreadHandler::on_control_reaction()` - синхронный метод, возвращающий `Option<ThreadEffect>`. Default implementation обрабатывает `✅`/`🛑`.
 
-Уже уточнённые решения:
-- если `should_track()` вернул `false`, тред не сохраняется и дальше не трекается;
-- `thread_runs` нужен, но в минимальном виде;
-- основной mutable metadata state хранится на уровне сообщений, а не в одном большом thread-level JSON blob.
+2. **Feedback reactions**: Определяются через `ThreadHandler::is_feedback_reaction()`. Сохраняются только для bot messages (с флагом `is_bot_message = true`).
+
+3. **ReactionRemoved**: События сохраняются в БД и передаются в `on_control_reaction()`, но default implementation игнорирует их.
+
+4. **ThreadRecord vs Thread**: Control reactions получают легковесный `ThreadRecord` без загрузки сообщений. Полный `Thread` собирается только когда нужен (через `build_thread_snapshot()`).
+
+5. **Нормализация emoji**: Не делаем, используем `emoji_name` как приходит из Mattermost API.
+
+6. **Хранение metadata**: Основной mutable state на уровне сообщений (`thread_messages.metadata`), а не в thread-level JSON blob.
+
+7. **is_bot_message флаг**: Выставляется при применении `ThreadEffect::Reply`, используется для фильтрации feedback reactions.
 
 ## Предлагаемый план реализации
 
@@ -1028,15 +1234,19 @@ uuid = { version = "1", features = ["v4"] }
 - запускать handler с полным snapshot.
 
 ### Этап 4 — reactions + lifecycle
-- добавить `Resolved` / `Stopped` transitions;
-- добавить feedback reactions;
+- реализовать `on_control_reaction()` в `ThreadHandler`;
+- реализовать `default_control_reactions()` helper;
+- добавить `is_feedback_reaction()` метод;
+- реализовать routing реакций через `get_thread_by_post()`;
+- добавить `Resolved` / `Stopped` transitions через `ThreadEffect`;
+- сохранять feedback reactions только для bot messages;
 - вызывать `on_thread_closed()`.
 
 ### Этап 5 — reconciliation
 - реализовать startup reconciliation;
 - покрыть restart integration tests.
 
-## Решение (черновое)
+## Решение
 
 Предлагается принять следующую архитектуру Layer 3:
 - `lib/thread-bot` реализуется как plugin для `mattermost-bot`;
@@ -1044,6 +1254,9 @@ uuid = { version = "1", features = ["v4"] }
 - обработчик работает с полным thread snapshot;
 - concurrency model: `abort + debounce + full rerun`;
 - restart model: startup barrier + buffering входящих событий + channel catch-up + reconciliation всех `New`/`Active` threads при старте;
+- **reaction model**: делегирование в `ThreadHandler::on_control_reaction()` для гибкости, с default implementation для стандартных случаев;
+- **feedback reactions**: определяются через `is_feedback_reaction()`, сохраняются только для bot messages;
+- **легковесный routing**: `ThreadRecord` для быстрых проверок, полный `Thread` только когда нужен;
 - extension points для Layer 4 — через `ThreadHandler`, `ThreadContext`, `ThreadEffect` и JSONB metadata.
 
-Этот RFC пока остаётся черновиком и должен быть уточнён по открытым вопросам перед началом реализации.
+**Статус**: Готов к реализации после финального review.
