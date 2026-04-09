@@ -27,7 +27,7 @@ just test-env-stop     # Stop Mattermost
 
 1. **Start the test environment:**
    ```bash
-   docker-compose -f lib/mattermost-bot/tests/docker-compose.yml up -d
+   docker-compose up -d
    ```
 
 2. **Wait for Mattermost to be ready:**
@@ -43,19 +43,19 @@ just test-env-stop     # Stop Mattermost
 
 4. **Stop the environment:**
    ```bash
-   docker-compose -f lib/mattermost-bot/tests/docker-compose.yml down -v
+   docker-compose down -v
    ```
 
 ## Test Structure
 
-- **`docker-compose.yml`** - Defines Mattermost and PostgreSQL services
+- **`docker-compose.yml`** (in project root) - Defines Mattermost, PostgreSQL, and test-db services
 - **`common/mod.rs`** - Helper functions for setting up test resources (users, bots, teams, channels)
 - **`integration_tests.rs`** - Actual integration test cases
 - **`smoke_test.rs`** - Simple smoke test to verify testcontainers works
 
 ## How Tests Work
 
-1. Tests expect Mattermost to be running externally (via docker-compose)
+1. Tests expect Mattermost to be running externally (via `docker-compose up -d` from project root)
 2. Each test creates its own isolated resources:
    - Admin user (with unique name)
    - Team
@@ -81,7 +81,7 @@ just test-env-stop     # Stop Mattermost
 
 ```yaml
 - name: Start Mattermost
-  run: docker-compose -f lib/mattermost-bot/tests/docker-compose.yml up -d
+  run: docker-compose up -d
 
 - name: Wait for Mattermost
   run: |
@@ -99,7 +99,7 @@ just test-env-stop     # Stop Mattermost
 
 - name: Stop Mattermost
   if: always()
-  run: docker-compose -f lib/mattermost-bot/tests/docker-compose.yml down -v
+  run: docker-compose down -v
 ```
 
 ### GitLab CI
@@ -109,12 +109,12 @@ test:
   services:
     - docker:dind
   before_script:
-    - docker-compose -f lib/mattermost-bot/tests/docker-compose.yml up -d
+    - docker-compose up -d
     - # wait for ready
   script:
     - cargo test --test integration_tests
   after_script:
-    - docker-compose -f lib/mattermost-bot/tests/docker-compose.yml down -v
+    - docker-compose down -v
 ```
 
 ## Troubleshooting
@@ -123,7 +123,7 @@ test:
 
 Check logs:
 ```bash
-docker-compose -f lib/mattermost-bot/tests/docker-compose.yml logs
+docker-compose logs
 ```
 
 Common issues:

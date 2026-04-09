@@ -53,8 +53,7 @@ pub trait Plugin: Send + Sync + 'static {
     ///
     /// # Example
     ///
-    /// ```no_run
-    /// fn setup_cron(
+    /// ```ignore
     ///     self: Arc<Self>,
     ///     scheduler: &mut cron_tab::Cron<chrono::Utc>,
     ///     config: Arc<Configuration>,

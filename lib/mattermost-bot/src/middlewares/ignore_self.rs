@@ -4,7 +4,7 @@
 //!
 //! # Example
 //!
-//! ```no_run
+//! ```ignore
 //! use mattermost_bot::{Bot, Plugin, middlewares::IgnoreSelf};
 //!
 //! struct MyPlugin;

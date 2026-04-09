@@ -1,6 +1,7 @@
 // Public API
 pub mod error;
 pub mod handler;
+pub mod pg_store;
 pub mod store;
 pub mod types;
 
@@ -9,6 +10,7 @@ pub use error::ThreadBotError;
 pub use handler::{
     default_control_reactions, ThreadCloseReason, ThreadContext, ThreadEffect, ThreadHandler,
 };
+pub use pg_store::PgThreadStore;
 pub use store::ThreadStore;
 pub use types::{
     AppendReaction, ReactionAction, ReactionChange, Thread, ThreadInfo, ThreadMessage,

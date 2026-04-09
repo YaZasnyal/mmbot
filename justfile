@@ -1,5 +1,8 @@
 # Justfile for mmbot project
 
+# Auto-detect container runtime: podman > docker
+compose := `command -v podman > /dev/null 2>&1 && echo "podman compose" || echo "docker compose"`
+
 # Default recipe to display help information
 default:
     @just --list
@@ -24,10 +27,10 @@ fmt-check:
 check: fmt-check clippy build
     @echo "✅ All checks passed!"
 
-# Start Mattermost test environment
+# Start test environment (Mattermost + Postgres)
 test-env-start:
-    @echo "🚀 Starting Mattermost test environment..."
-    docker-compose -f lib/mattermost-bot/tests/docker-compose.yml up -d
+    @echo "🚀 Starting test environment..."
+    {{compose}} up -d
     @echo "⏳ Waiting for Mattermost to be ready..."
     @for i in {1..60}; do \
         if curl -sf http://localhost:8065/api/v4/system/ping > /dev/null 2>&1; then \
@@ -40,15 +43,15 @@ test-env-start:
     echo "❌ Mattermost failed to start"; \
     exit 1
 
-# Stop Mattermost test environment
+# Stop test environment
 test-env-stop:
-    @echo "🛑 Stopping Mattermost test environment..."
-    docker-compose -f lib/mattermost-bot/tests/docker-compose.yml down -v
+    @echo "🛑 Stopping test environment..."
+    {{compose}} down -v
     @echo "✅ Test environment cleaned up"
 
 # Show logs from test environment
 test-env-logs:
-    docker-compose -f lib/mattermost-bot/tests/docker-compose.yml logs -f
+    {{compose}} logs -f
 
 # Run integration tests (requires test environment to be running)
 test-integration:

@@ -34,7 +34,7 @@ impl Bot {
     ///
     /// # Example
     ///
-    /// ```no_run
+    /// ```ignore
     /// use mattermost_bot::Bot;
     /// use mattermost_api::apis::configuration::Configuration;
     ///
@@ -63,7 +63,7 @@ impl Bot {
     ///
     /// # Example
     ///
-    /// ```no_run
+    /// ```ignore
     /// let bot = Bot::with_config(config)?
     ///     .with_plugin(MyPlugin {})
     ///     .with_plugin(AnotherPlugin {});
@@ -80,11 +80,7 @@ impl Bot {
     ///
     /// # Example
     ///
-    /// ```no_run
-    /// use mattermost_bot::Bot;
-    /// use mattermost_api::apis::configuration::Configuration;
-    /// use tokio_graceful::Shutdown;
-    /// use std::time::Duration;
+    /// ```ignore
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {

@@ -5,6 +5,7 @@ members = [
     "lib/mattermost-api",
     "lib/bool_parser",
     "lib/mattermost-bot",
+    "lib/mattermost-test-helpers",
     "lib/thread-bot"
 ]
 
@@ -25,4 +26,5 @@ test-log = "0.2"
 
 mattermost_api = { path = "lib/mattermost-api" }
 mattermost_bot = { path = "lib/mattermost-bot" }
+mattermost_test_helpers = { path = "lib/mattermost-test-helpers" }
 bool_parser = { path = "lib/bool_parser" }
