@@ -32,11 +32,19 @@ pub struct ThreadRecord {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Full thread snapshot for handler (expensive to build)
+/// Full thread snapshot for handler (expensive to build).
+///
+/// Contains all messages and reactions in the thread. Each item has an
+/// [`is_new`](ThreadMessage::is_new) flag indicating whether it arrived
+/// since the last handler run.
 #[derive(Debug, Clone)]
 pub struct Thread {
     pub info: ThreadInfo,
+
+    /// All messages in the thread, ordered by creation time.
     pub messages: Vec<ThreadMessage>,
+
+    /// All reactions in the thread, ordered by creation time.
     pub reactions: Vec<ThreadReaction>,
 }
 
@@ -89,6 +97,8 @@ pub struct ThreadMessage {
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// `true` if this message arrived since the last handler run.
+    pub is_new: bool,
 }
 
 /// Thread reaction event
@@ -99,6 +109,8 @@ pub struct ThreadReaction {
     pub emoji_name: String,
     pub action: ReactionAction,
     pub created_at: DateTime<Utc>,
+    /// `true` if this reaction arrived since the last handler run.
+    pub is_new: bool,
 }
 
 /// Reaction action type

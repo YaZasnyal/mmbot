@@ -150,6 +150,7 @@ impl From<ReactionRow> for ThreadReaction {
             emoji_name: row.emoji_name,
             action: parse_reaction_action(&row.action),
             created_at: row.created_at,
+            is_new: false, // Set by build_thread_snapshot
         }
     }
 }
