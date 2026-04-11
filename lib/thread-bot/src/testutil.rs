@@ -507,6 +507,11 @@ pub async fn setup_mm_mock(posts: Vec<models::Post>) -> (MockServer, Arc<Configu
         .mount(&server)
         .await;
 
+    // GET /api/v4/posts/{id}/reactions — NOT mocked by default.
+    // Tests that need reactions use mount_reactions() explicitly.
+    // When unmocked, get_reactions() returns Err — the actor's
+    // `if let Ok(reactions)` silently skips the check.
+
     let mut config = Configuration::default();
     config.base_path = server.uri();
 
@@ -580,4 +585,28 @@ pub async fn spawn_test_actor(
     tokio::spawn(crate::actor::thread_actor(rx, actor_ctx));
 
     (tx, store, handler, server)
+}
+
+/// Mount a reactions response for a specific post on the mock server.
+///
+/// Overrides the default empty-array response for
+/// `GET /api/v4/posts/{post_id}/reactions`.
+pub async fn mount_reactions(server: &MockServer, post_id: &str, reactions: Vec<models::Reaction>) {
+    use wiremock::matchers::path;
+
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v4/posts/{post_id}/reactions")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&reactions))
+        .mount(server)
+        .await;
+}
+
+/// Create a Mattermost [`Reaction`](models::Reaction) for tests.
+pub fn make_mm_reaction(post_id: &str, user_id: &str, emoji_name: &str) -> models::Reaction {
+    models::Reaction {
+        user_id: Some(user_id.to_string()),
+        post_id: Some(post_id.to_string()),
+        emoji_name: Some(emoji_name.to_string()),
+        create_at: Some(Utc::now().timestamp_millis()),
+    }
 }

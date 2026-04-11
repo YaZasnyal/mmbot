@@ -39,8 +39,10 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, Mutex, RwLock};
 
+use std::collections::HashSet;
+
 use mattermost_api::apis::configuration::Configuration;
-use mattermost_api::apis::users_api;
+use mattermost_api::apis::{posts_api, users_api};
 use mattermost_api::models;
 use mattermost_bot::plugin::Event;
 use mattermost_bot::types::EventType;
@@ -56,6 +58,7 @@ use crate::types::*;
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 /// Configuration for the thread bot runtime.
+#[derive(Clone)]
 pub struct ThreadBotConfig {
     /// How long to wait after the last message before calling the handler.
     ///
@@ -69,6 +72,15 @@ pub struct ThreadBotConfig {
     ///
     /// Default: 64
     pub channel_buffer: usize,
+
+    /// Maximum gap since the last seen message to attempt reconciliation.
+    ///
+    /// If the bot was offline longer than this window, active threads are
+    /// force-closed (status → Stopped) instead of reconciled, and the bot
+    /// starts fresh from the current moment.
+    ///
+    /// Default: `None` (no limit — always reconcile)
+    pub max_reconcile_window: Option<Duration>,
 }
 
 impl Default for ThreadBotConfig {
@@ -76,6 +88,7 @@ impl Default for ThreadBotConfig {
         Self {
             debounce: Duration::from_secs(2),
             channel_buffer: 64,
+            max_reconcile_window: None,
         }
     }
 }
@@ -96,6 +109,19 @@ pub struct ThreadBotPlugin<H: ThreadHandler> {
 
     /// Bot's own user ID, fetched in [`Plugin::on_start`].
     bot_user_id: Arc<RwLock<Option<String>>>,
+}
+
+// Manual Clone — H doesn't need Clone because it's behind Arc.
+impl<H: ThreadHandler> Clone for ThreadBotPlugin<H> {
+    fn clone(&self) -> Self {
+        Self {
+            handler: Arc::clone(&self.handler),
+            store: Arc::clone(&self.store),
+            config: self.config.clone(),
+            actors: Arc::clone(&self.actors),
+            bot_user_id: Arc::clone(&self.bot_user_id),
+        }
+    }
 }
 
 impl<H: ThreadHandler> ThreadBotPlugin<H> {
@@ -119,6 +145,15 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
     /// Set the per-thread channel buffer size (default: 64).
     pub fn with_channel_buffer(mut self, size: usize) -> Self {
         self.config.channel_buffer = size;
+        self
+    }
+
+    /// Set the maximum reconciliation window.
+    ///
+    /// If the bot was offline longer than this, active threads are
+    /// force-closed instead of reconciled.
+    pub fn with_max_reconcile_window(mut self, window: Duration) -> Self {
+        self.config.max_reconcile_window = Some(window);
         self
     }
 
@@ -426,6 +461,146 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
         }
     }
 
+    // ── Reconciliation ───────────────────────────────────────────────────
+
+    /// Reconcile state after a (re)connection.
+    ///
+    /// Called on every `Hello` event — i.e. on initial connect **and** on
+    /// every WebSocket reconnect.  Because `process_event` blocks the WS
+    /// read loop, incoming events are buffered by the TCP/WS layer while
+    /// reconciliation runs and are processed normally afterwards.
+    ///
+    /// 1. Load active threads from DB → ensure actors exist → send `Reconcile`
+    ///    (each actor checks for new messages / control reactions).
+    /// 2. Scan known channels for root posts that arrived during the gap
+    ///    and route new ones through `handle_new_thread`.
+    async fn reconcile(&self, config: &Arc<Configuration>) {
+        let threads = match self
+            .store
+            .list_threads_by_status(&[ThreadStatus::New, ThreadStatus::Active])
+            .await
+        {
+            Ok(threads) => threads,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to load active threads for reconciliation");
+                return;
+            }
+        };
+
+        // Collect channels and the latest seen timestamp for scanning
+        let channels: HashSet<String> = threads.iter().map(|t| t.channel_id.clone()).collect();
+        let last_seen_at = threads.iter().filter_map(|t| t.last_seen_post_at).max();
+
+        // If the gap exceeds max_reconcile_window, force-close everything
+        // and start fresh instead of replaying a huge backlog.
+        if let (Some(window), Some(since)) = (self.config.max_reconcile_window, last_seen_at) {
+            let gap = chrono::Utc::now() - since;
+            if let Ok(window_chrono) = chrono::Duration::from_std(window) {
+                if gap > window_chrono {
+                    tracing::warn!(
+                        gap_secs = gap.num_seconds(),
+                        window_secs = window_chrono.num_seconds(),
+                        threads = threads.len(),
+                        "Reconciliation gap exceeds max window, force-closing active threads"
+                    );
+                    for thread in &threads {
+                        if let Err(e) = self
+                            .store
+                            .update_thread_status(&thread.thread_id, ThreadStatus::Stopped)
+                            .await
+                        {
+                            tracing::error!(
+                                thread_id = %thread.thread_id,
+                                error = %e,
+                                "Failed to force-close thread"
+                            );
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Ensure actors exist (idempotent on reconnect) and send Reconcile
+        if !threads.is_empty() {
+            let mut senders = Vec::with_capacity(threads.len());
+            for thread in &threads {
+                let tx = self.ensure_or_spawn_actor(&thread.thread_id, config).await;
+                senders.push((thread.thread_id.clone(), tx));
+            }
+
+            for (thread_id, tx) in &senders {
+                if let Err(e) = tx.send(ThreadCommand::Reconcile).await {
+                    tracing::error!(
+                        thread_id = %thread_id,
+                        error = %e,
+                        "Failed to send reconcile to actor"
+                    );
+                }
+            }
+
+            tracing::info!(count = senders.len(), "Reconciled active threads");
+        }
+
+        // Scan channels for new threads we might have missed during downtime.
+        if let Some(since) = last_seen_at {
+            let since_ms = since.timestamp_millis();
+            tracing::info!(
+                channels = channels.len(),
+                since = %since,
+                "Scanning channels for missed threads"
+            );
+
+            for channel_id in &channels {
+                let post_list = match posts_api::get_posts_for_channel(
+                    config,
+                    channel_id,
+                    None,
+                    Some(200),
+                    Some(since_ms),
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                {
+                    Ok(pl) => pl,
+                    Err(e) => {
+                        tracing::error!(
+                            channel_id = %channel_id,
+                            error = %e,
+                            "Failed to scan channel for missed threads"
+                        );
+                        continue;
+                    }
+                };
+
+                if let (Some(order), Some(posts)) = (post_list.order, post_list.posts) {
+                    for post_id in &order {
+                        if let Some(post) = posts.get(post_id) {
+                            if !is_root_post(post) {
+                                continue;
+                            }
+                            match self.store.get_thread(&post.id).await {
+                                Ok(Some(_)) => continue,
+                                Ok(None) => {}
+                                Err(e) => {
+                                    tracing::error!(
+                                        post_id = %post.id,
+                                        error = %e,
+                                        "Failed to check thread existence during scan"
+                                    );
+                                    continue;
+                                }
+                            }
+                            self.handle_new_thread(post, config).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ── Actor management ─────────────────────────────────────────────────
 
     /// Get an existing actor or spawn a new one for the given thread.
@@ -505,7 +680,8 @@ impl<H: ThreadHandler> mattermost_bot::Plugin for ThreadBotPlugin<H> {
             }
         }
 
-        // TODO: Startup reconciliation — load active threads from DB and spawn actors.
+        // Reconciliation is triggered by the Hello event (see process_event),
+        // which fires on every WebSocket connection — including reconnects.
 
         Ok(())
     }
@@ -531,12 +707,22 @@ impl<H: ThreadHandler> mattermost_bot::Plugin for ThreadBotPlugin<H> {
     fn filter(&self, event: &Arc<Event>) -> bool {
         matches!(
             event.data,
-            EventType::Posted(_) | EventType::ReactionAdded(_) | EventType::ReactionRemoved(_)
+            EventType::Hello(_)
+                | EventType::Posted(_)
+                | EventType::ReactionAdded(_)
+                | EventType::ReactionRemoved(_)
         )
     }
 
     async fn process_event(&self, event: &Arc<Event>, config: &Arc<Configuration>) {
         match &event.data {
+            EventType::Hello(_) => {
+                let plugin = self.clone();
+                let config = Arc::clone(config);
+                tokio::spawn(async move {
+                    plugin.reconcile(&config).await;
+                });
+            }
             EventType::Posted(posted) => {
                 self.handle_posted(posted, config).await;
             }

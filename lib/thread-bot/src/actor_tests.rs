@@ -9,7 +9,10 @@ use crate::actor::{
     get_root_post_id, is_root_post, ms_to_datetime, post_to_thread_message, ThreadCommand,
 };
 use crate::handler::{ThreadCloseReason, ThreadEffect};
-use crate::testutil::{make_mm_post, spawn_test_actor, MockHandler};
+use crate::store::ThreadStore;
+use crate::testutil::{
+    make_mm_post, make_mm_reaction, mount_reactions, spawn_test_actor, MockHandler,
+};
 use crate::types::*;
 
 // ── Helper function unit tests ───────────────────────────────────────────────
@@ -518,6 +521,195 @@ async fn actor_seen_position_updated_on_message() {
 
     let thread = store.thread_snapshot("thread1").await.unwrap();
     assert_eq!(thread.last_seen_post_id.as_deref(), Some("p1"));
+
+    drop(tx);
+}
+
+// ── Reconciliation tests ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn actor_reconcile_triggers_handler() {
+    let handler = MockHandler::new();
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+
+    let (tx, _store, handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
+
+    // Reconcile (simulates startup recovery)
+    tx.send(ThreadCommand::Reconcile).await.unwrap();
+
+    handler.wait_handle_entered().await;
+    assert_eq!(handler.call_count(), 1);
+
+    drop(tx);
+}
+
+#[tokio::test]
+async fn actor_reconcile_transitions_new_to_active() {
+    let handler = MockHandler::new();
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+
+    let (tx, store, _handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
+
+    let thread = store.thread_snapshot("thread1").await.unwrap();
+    assert!(matches!(thread.status, ThreadStatus::New));
+
+    tx.send(ThreadCommand::Reconcile).await.unwrap();
+    settle().await;
+
+    let thread = store.thread_snapshot("thread1").await.unwrap();
+    assert!(matches!(thread.status, ThreadStatus::Active));
+
+    drop(tx);
+}
+
+#[tokio::test]
+async fn actor_reconcile_no_new_messages_skips_handler() {
+    let handler = MockHandler::new();
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+
+    let (tx, store, handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
+
+    // Mark everything as already processed (timestamp far in the future)
+    let future = Utc::now() + chrono::Duration::hours(1);
+    store
+        .update_thread_processed("thread1", "p1", future)
+        .await
+        .unwrap();
+
+    tx.send(ThreadCommand::Reconcile).await.unwrap();
+    settle().await;
+
+    // Handler should NOT be called — no new messages
+    assert_eq!(handler.call_count(), 0);
+
+    drop(tx);
+}
+
+#[tokio::test]
+async fn actor_reconcile_only_bot_messages_skips_handler() {
+    let handler = MockHandler::new();
+    // Post is from the bot user (bot_user_id = "bot_user" in spawn_test_actor)
+    let post = make_mm_post("p1", "bot_user", "bot reply", Some("thread1"));
+
+    let (tx, _store, handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
+
+    tx.send(ThreadCommand::Reconcile).await.unwrap();
+    settle().await;
+
+    // Handler should NOT be called — only bot messages are new
+    assert_eq!(handler.call_count(), 0);
+
+    drop(tx);
+}
+
+#[tokio::test]
+async fn actor_reconcile_detects_control_reaction_resolved() {
+    let handler = MockHandler::new();
+    let post = make_mm_post("thread1", "user_1", "root", None);
+
+    let (tx, store, handler, server) =
+        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
+
+    // Mount a ✅ reaction on the root post (arrived during downtime)
+    mount_reactions(
+        &server,
+        "thread1",
+        vec![make_mm_reaction("thread1", "user_2", "white_check_mark")],
+    )
+    .await;
+
+    tx.send(ThreadCommand::Reconcile).await.unwrap();
+    settle().await;
+
+    // Thread should be resolved
+    let thread = store.thread_snapshot("thread1").await.unwrap();
+    assert!(matches!(thread.status, ThreadStatus::Resolved));
+
+    // on_thread_closed should have been called
+    let reasons = handler.closed_reasons.lock().await;
+    assert_eq!(reasons.len(), 1);
+    assert_eq!(reasons[0], ThreadCloseReason::ResolvedByReaction);
+
+    // Actor should have exited
+    assert!(tx.is_closed());
+}
+
+#[tokio::test]
+async fn actor_reconcile_detects_control_reaction_stopped() {
+    let handler = MockHandler::new();
+    let post = make_mm_post("thread1", "user_1", "root", None);
+
+    let (tx, store, _handler, server) =
+        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
+
+    mount_reactions(
+        &server,
+        "thread1",
+        vec![make_mm_reaction("thread1", "user_2", "stop_sign")],
+    )
+    .await;
+
+    tx.send(ThreadCommand::Reconcile).await.unwrap();
+    settle().await;
+
+    let thread = store.thread_snapshot("thread1").await.unwrap();
+    assert!(matches!(thread.status, ThreadStatus::Stopped));
+    assert!(tx.is_closed());
+}
+
+#[tokio::test]
+async fn actor_reconcile_control_reaction_takes_priority_over_new_messages() {
+    // Even if there are new messages, a control reaction should close the thread
+    let handler = MockHandler::new();
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+
+    let (tx, store, handler, server) =
+        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
+
+    // ✅ on root post
+    mount_reactions(
+        &server,
+        "thread1",
+        vec![make_mm_reaction("thread1", "user_2", "white_check_mark")],
+    )
+    .await;
+
+    tx.send(ThreadCommand::Reconcile).await.unwrap();
+    settle().await;
+
+    // Thread closed — handler never called
+    let thread = store.thread_snapshot("thread1").await.unwrap();
+    assert!(matches!(thread.status, ThreadStatus::Resolved));
+    assert_eq!(handler.call_count(), 0);
+    assert!(tx.is_closed());
+}
+
+#[tokio::test]
+async fn actor_reconcile_ignores_non_control_reactions() {
+    let handler = MockHandler::new();
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+
+    let (tx, _store, handler, server) =
+        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
+
+    // A thumbsup on root post is NOT a control reaction
+    mount_reactions(
+        &server,
+        "thread1",
+        vec![make_mm_reaction("thread1", "user_2", "thumbsup")],
+    )
+    .await;
+
+    tx.send(ThreadCommand::Reconcile).await.unwrap();
+    settle().await;
+
+    // Handler should be called (new messages exist, no control reaction)
+    assert_eq!(handler.call_count(), 1);
+    assert!(!tx.is_closed());
 
     drop(tx);
 }

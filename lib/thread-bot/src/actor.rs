@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::time::Instant;
 
 use mattermost_api::apis::configuration::Configuration;
-use mattermost_api::apis::posts_api;
+use mattermost_api::apis::{posts_api, reactions_api};
 use mattermost_api::models;
 
 use crate::error::ThreadBotError;
@@ -36,6 +36,10 @@ pub(crate) enum ThreadCommand {
         effect: ThreadEffect,
         change: ReactionChange,
     },
+
+    /// Startup reconciliation — triggers a debounced handler run to pick up
+    /// messages that arrived while the bot was offline.
+    Reconcile,
 
     /// Graceful shutdown signal.
     Shutdown,
@@ -72,6 +76,16 @@ type HandlerFuture = Pin<Box<dyn Future<Output = HandlerResult> + Send>>;
 /// handler is running.
 fn pending_handler() -> HandlerFuture {
     Box::pin(std::future::pending())
+}
+
+/// Result of [`handle_reconcile`] — tells the actor what to do next.
+pub(crate) enum ReconcileOutcome {
+    /// Thread was closed by a control reaction found during reconciliation.
+    ThreadClosed,
+    /// New non-bot messages found — handler should run with this snapshot.
+    RunHandler(Box<Thread>),
+    /// Nothing to do.
+    NoAction,
 }
 
 // ─── Actor main loop ─────────────────────────────────────────────────────────
@@ -125,6 +139,27 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                         }
                         if handle_control_reaction(&effect, &change, &a).await {
                             break;
+                        }
+                    }
+
+                    Some(ThreadCommand::Reconcile) => {
+                        if handler_running {
+                            handler_fut = pending_handler();
+                            handler_running = false;
+                        }
+                        match handle_reconcile(&a).await {
+                            ReconcileOutcome::ThreadClosed => break,
+                            ReconcileOutcome::RunHandler(snapshot) => {
+                                let handler = Arc::clone(&a.handler);
+                                let ctx = a.ctx.clone();
+                                handler_fut = Box::pin(async move {
+                                    let result =
+                                        handler.handle(&snapshot, &ctx).await;
+                                    (*snapshot, result)
+                                });
+                                handler_running = true;
+                            }
+                            ReconcileOutcome::NoAction => {}
                         }
                     }
 
@@ -284,6 +319,91 @@ async fn handle_control_reaction<H: ThreadHandler>(
     }
 
     false
+}
+
+// ─── Reconciliation ─────────────────────────────────────────────────────────
+
+/// Reconcile a thread after (re)connection.
+///
+/// 1. Build snapshot from Mattermost API.
+/// 2. Fetch reactions on the root post — if a control reaction (✅ / 🛑)
+///    is found, close the thread immediately.
+/// 3. Otherwise check for new non-bot messages and schedule a handler run.
+pub(crate) async fn handle_reconcile<H: ThreadHandler>(a: &ActorCtx<H>) -> ReconcileOutcome {
+    // Build snapshot
+    let snapshot = match build_thread_snapshot(&a.thread_id, &*a.store, &a.mm_config).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                thread_id = %a.thread_id,
+                error = %e,
+                "Failed to build snapshot for reconciliation"
+            );
+            return ReconcileOutcome::NoAction;
+        }
+    };
+
+    // Check control reactions on root post (may have arrived during downtime)
+    if let Ok(reactions) =
+        reactions_api::get_reactions(&a.mm_config, &snapshot.info.root_post_id).await
+    {
+        let thread_record = match a.store.get_thread(&a.thread_id).await {
+            Ok(Some(r)) => r,
+            _ => return ReconcileOutcome::NoAction,
+        };
+
+        for reaction in &reactions {
+            if let (Some(user_id), Some(emoji_name)) = (&reaction.user_id, &reaction.emoji_name) {
+                let change = ReactionChange {
+                    post_id: snapshot.info.root_post_id.clone(),
+                    user_id: user_id.clone(),
+                    emoji_name: emoji_name.clone(),
+                    action: ReactionAction::Added,
+                    created_at: reaction
+                        .create_at
+                        .map(ms_to_datetime)
+                        .unwrap_or_else(Utc::now),
+                };
+                if let Some(effect) = a.handler.on_control_reaction(&thread_record, &change) {
+                    if matches!(
+                        effect,
+                        ThreadEffect::MarkResolved | ThreadEffect::MarkStopped
+                    ) {
+                        tracing::info!(
+                            thread_id = %a.thread_id,
+                            emoji = %emoji_name,
+                            "Reconciliation: control reaction found, closing thread"
+                        );
+                        let (exit, _) =
+                            execute_effects(vec![effect], &snapshot, a, CloseSource::Reaction)
+                                .await;
+                        if exit {
+                            return ReconcileOutcome::ThreadClosed;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for new non-bot messages
+    let bot_id = a.bot_user_id.read().await;
+    let has_new = snapshot
+        .messages
+        .iter()
+        .any(|m| m.is_new && bot_id.as_deref() != Some(m.user_id.as_str()));
+    drop(bot_id);
+
+    if has_new {
+        tracing::info!(
+            thread_id = %a.thread_id,
+            "Reconciliation: unprocessed messages found, scheduling handler"
+        );
+        ReconcileOutcome::RunHandler(Box::new(snapshot))
+    } else {
+        tracing::debug!(thread_id = %a.thread_id, "Reconciliation: nothing new");
+        ReconcileOutcome::NoAction
+    }
 }
 
 // ─── Effect execution ────────────────────────────────────────────────────────

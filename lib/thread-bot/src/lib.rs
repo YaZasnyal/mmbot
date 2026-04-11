@@ -8,9 +8,9 @@ pub mod store;
 pub mod types;
 
 #[cfg(test)]
-mod testutil;
-#[cfg(test)]
 mod actor_tests;
+#[cfg(test)]
+mod testutil;
 
 // Re-exports for convenience
 pub use error::ThreadBotError;
