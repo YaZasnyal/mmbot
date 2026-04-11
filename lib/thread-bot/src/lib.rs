@@ -7,6 +7,11 @@ pub mod runtime;
 pub mod store;
 pub mod types;
 
+#[cfg(test)]
+mod testutil;
+#[cfg(test)]
+mod actor_tests;
+
 // Re-exports for convenience
 pub use error::ThreadBotError;
 pub use handler::{
