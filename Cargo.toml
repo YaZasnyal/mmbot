@@ -1,4 +1,5 @@
 [workspace]
+resolver = "2"
 
 members = [
     "mmbot",
@@ -6,25 +7,29 @@ members = [
     "lib/bool_parser",
     "lib/mattermost-bot",
     "lib/mattermost-test-helpers",
-    "lib/thread-bot"
+    "lib/thread-bot",
+    "examples/hello_thread_bot"
 ]
 
 [workspace.dependencies]
-tokio = "1.41.0"
+thread-bot = { path = "lib/thread-bot" }
+mattermost_bot = { path = "lib/mattermost-bot" }
+mattermost_api = { path = "lib/mattermost-api" }
+bool_parser = { path = "lib/bool_parser" }
+tokio = { version = "1.41.0", features = ["rt-multi-thread", "sync", "time", "macros"] }
 serde = { version = "1.0.213", features = ["derive"] }
 serde_json = "1.0.132"
 async-trait = "0.1.83"
 reqwest = "0.12"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+anyhow = "1.0"
 
 # Test dependencies
 testcontainers = "0.23"
 testcontainers-modules = "0.11"
-tracing-subscriber = "0.3"
-anyhow = "1.0"
 uuid = { version = "1.11", features = ["v4"] }
 test-log = "0.2"
 
-mattermost_api = { path = "lib/mattermost-api" }
-mattermost_bot = { path = "lib/mattermost-bot" }
 mattermost_test_helpers = { path = "lib/mattermost-test-helpers" }
-bool_parser = { path = "lib/bool_parser" }

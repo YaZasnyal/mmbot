@@ -1,0 +1,18 @@
+[package]
+name = "hello-thread-bot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tokio = { version = "1.41", features = ["rt-multi-thread", "sync", "time", "macros", "signal"] }
+serde_json = "1.0"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+tokio-graceful = "0.2"
+
+thread-bot = { path = "../../lib/thread-bot" }
+mattermost_bot = { path = "../../lib/mattermost-bot" }
+mattermost_api = { path = "../../lib/mattermost-api" }
