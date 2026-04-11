@@ -174,6 +174,19 @@ pub struct UpsertThreadMessage {
     pub post_deleted_at: Option<DateTime<Utc>>,
 }
 
+/// Channel checkpoint — tracks how far we've scanned each channel.
+///
+/// Used during reconciliation to know which messages were missed while offline.
+/// The `is_reconciled` flag prevents normal message processing from advancing
+/// the checkpoint while reconciliation is still in progress.
+#[derive(Debug, Clone)]
+pub struct ChannelCheckpoint {
+    pub channel_id: String,
+    pub last_seen_post_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub is_reconciled: bool,
+}
+
 /// Input for appending a reaction
 #[derive(Debug, Clone)]
 pub struct AppendReaction {

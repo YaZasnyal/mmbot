@@ -200,6 +200,22 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                     }
                 };
 
+                // Check for control reactions before running handler.
+                // User might have added ✅/🛑 during the debounce window
+                // but the WebSocket event hasn't arrived yet.
+                if let Some(effect) = check_api_control_reactions(&a, &snapshot).await {
+                    tracing::info!(
+                        thread_id = %a.thread_id,
+                        effect = ?effect,
+                        "Control reaction found before handler run, closing thread"
+                    );
+                    let (should_exit, _) =
+                        execute_effects(vec![effect], &snapshot, &a, CloseSource::Reaction).await;
+                    if should_exit {
+                        break;
+                    }
+                }
+
                 // Start handler — move snapshot in, get it back with the result
                 let handler = Arc::clone(&a.handler);
                 let ctx = a.ctx.clone();
@@ -323,6 +339,62 @@ async fn handle_control_reaction<H: ThreadHandler>(
 
 // ─── Reconciliation ─────────────────────────────────────────────────────────
 
+/// Check Mattermost API for control reactions on the root post.
+///
+/// Fetches live reactions and checks each against
+/// [`ThreadHandler::on_control_reaction`]. Returns the first closing effect
+/// found (`MarkResolved` or `MarkStopped`), or `None`.
+///
+/// Used both before handler runs (debounce path) and during reconciliation
+/// to catch reactions that arrived before the WebSocket event was processed.
+async fn check_api_control_reactions<H: ThreadHandler>(
+    a: &ActorCtx<H>,
+    snapshot: &Thread,
+) -> Option<ThreadEffect> {
+    let reactions =
+        match reactions_api::get_reactions(&a.mm_config, &snapshot.info.root_post_id).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(
+                    thread_id = %a.thread_id,
+                    error = %e,
+                    "Failed to fetch reactions for control check"
+                );
+                return None;
+            }
+        };
+
+    let thread_record = match a.store.get_thread(&a.thread_id).await {
+        Ok(Some(r)) => r,
+        _ => return None,
+    };
+
+    for reaction in &reactions {
+        if let (Some(user_id), Some(emoji_name)) = (&reaction.user_id, &reaction.emoji_name) {
+            let change = ReactionChange {
+                post_id: snapshot.info.root_post_id.clone(),
+                user_id: user_id.clone(),
+                emoji_name: emoji_name.clone(),
+                action: ReactionAction::Added,
+                created_at: reaction
+                    .create_at
+                    .map(ms_to_datetime)
+                    .unwrap_or_else(Utc::now),
+            };
+            if let Some(effect) = a.handler.on_control_reaction(&thread_record, &change) {
+                if matches!(
+                    effect,
+                    ThreadEffect::MarkResolved | ThreadEffect::MarkStopped
+                ) {
+                    return Some(effect);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Reconcile a thread after (re)connection.
 ///
 /// 1. Build snapshot from Mattermost API.
@@ -344,45 +416,15 @@ pub(crate) async fn handle_reconcile<H: ThreadHandler>(a: &ActorCtx<H>) -> Recon
     };
 
     // Check control reactions on root post (may have arrived during downtime)
-    if let Ok(reactions) =
-        reactions_api::get_reactions(&a.mm_config, &snapshot.info.root_post_id).await
-    {
-        let thread_record = match a.store.get_thread(&a.thread_id).await {
-            Ok(Some(r)) => r,
-            _ => return ReconcileOutcome::NoAction,
-        };
-
-        for reaction in &reactions {
-            if let (Some(user_id), Some(emoji_name)) = (&reaction.user_id, &reaction.emoji_name) {
-                let change = ReactionChange {
-                    post_id: snapshot.info.root_post_id.clone(),
-                    user_id: user_id.clone(),
-                    emoji_name: emoji_name.clone(),
-                    action: ReactionAction::Added,
-                    created_at: reaction
-                        .create_at
-                        .map(ms_to_datetime)
-                        .unwrap_or_else(Utc::now),
-                };
-                if let Some(effect) = a.handler.on_control_reaction(&thread_record, &change) {
-                    if matches!(
-                        effect,
-                        ThreadEffect::MarkResolved | ThreadEffect::MarkStopped
-                    ) {
-                        tracing::info!(
-                            thread_id = %a.thread_id,
-                            emoji = %emoji_name,
-                            "Reconciliation: control reaction found, closing thread"
-                        );
-                        let (exit, _) =
-                            execute_effects(vec![effect], &snapshot, a, CloseSource::Reaction)
-                                .await;
-                        if exit {
-                            return ReconcileOutcome::ThreadClosed;
-                        }
-                    }
-                }
-            }
+    if let Some(effect) = check_api_control_reactions(a, &snapshot).await {
+        tracing::info!(
+            thread_id = %a.thread_id,
+            effect = ?effect,
+            "Reconciliation: control reaction found, closing thread"
+        );
+        let (exit, _) = execute_effects(vec![effect], &snapshot, a, CloseSource::Reaction).await;
+        if exit {
+            return ReconcileOutcome::ThreadClosed;
         }
     }
 

@@ -21,10 +21,12 @@ pub use pg_store::PgThreadStore;
 pub use runtime::{ThreadBotConfig, ThreadBotPlugin};
 pub use store::ThreadStore;
 pub use types::{
-    AppendReaction, ReactionAction, ReactionChange, Thread, ThreadInfo, ThreadMessage,
-    ThreadMessageRecord, ThreadReaction, ThreadRecord, ThreadStatus, UpsertThread,
+    AppendReaction, ChannelCheckpoint, ReactionAction, ReactionChange, Thread, ThreadInfo,
+    ThreadMessage, ThreadMessageRecord, ThreadReaction, ThreadRecord, ThreadStatus, UpsertThread,
     UpsertThreadMessage,
 };
 
 // Re-export async_trait for convenience
 pub use async_trait::async_trait;
+
+pub use sqlx;

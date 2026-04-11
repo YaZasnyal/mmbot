@@ -1,7 +1,7 @@
 use crate::error::ThreadBotError;
 use crate::types::{
-    AppendReaction, ThreadMessageRecord, ThreadReaction, ThreadRecord, ThreadStatus, UpsertThread,
-    UpsertThreadMessage,
+    AppendReaction, ChannelCheckpoint, ThreadMessageRecord, ThreadReaction, ThreadRecord,
+    ThreadStatus, UpsertThread, UpsertThreadMessage,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -92,4 +92,36 @@ pub trait ThreadStore: Send + Sync + 'static {
         &self,
         thread_id: &str,
     ) -> Result<Vec<ThreadReaction>, ThreadBotError>;
+
+    // ── Channel checkpoints ─────────────────────────────────────────────
+
+    /// List all channel checkpoints.
+    async fn list_channel_checkpoints(&self) -> Result<Vec<ChannelCheckpoint>, ThreadBotError>;
+
+    /// Insert or update a channel checkpoint.
+    ///
+    /// On insert, sets `is_reconciled = true` (normal operation).
+    /// On conflict, updates `last_seen_post_at` only if it's newer.
+    async fn upsert_channel_checkpoint(
+        &self,
+        channel_id: &str,
+        last_seen_post_at: DateTime<Utc>,
+    ) -> Result<(), ThreadBotError>;
+
+    /// Advance checkpoint timestamp, but only when `is_reconciled = true`.
+    ///
+    /// During reconciliation (`is_reconciled = false`) updates are skipped
+    /// to prevent normal message processing from moving the checkpoint
+    /// past the reconciliation scan point.
+    async fn advance_channel_checkpoint(
+        &self,
+        channel_id: &str,
+        last_seen_post_at: DateTime<Utc>,
+    ) -> Result<(), ThreadBotError>;
+
+    /// Mark all channels as not reconciled (called at reconciliation start).
+    async fn set_all_channels_not_reconciled(&self) -> Result<(), ThreadBotError>;
+
+    /// Mark a single channel as reconciled (called after scanning that channel).
+    async fn set_channel_reconciled(&self, channel_id: &str) -> Result<(), ThreadBotError>;
 }

@@ -1,8 +1,8 @@
 use crate::error::ThreadBotError;
 use crate::store::ThreadStore;
 use crate::types::{
-    AppendReaction, ReactionAction, ThreadMessageRecord, ThreadReaction, ThreadRecord,
-    ThreadStatus, UpsertThread, UpsertThreadMessage,
+    AppendReaction, ChannelCheckpoint, ReactionAction, ThreadMessageRecord, ThreadReaction,
+    ThreadRecord, ThreadStatus, UpsertThread, UpsertThreadMessage,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -485,5 +485,107 @@ impl ThreadStore for PgThreadStore {
         .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    // ── Channel checkpoints ─────────────────────────────────────────────
+
+    async fn list_channel_checkpoints(&self) -> Result<Vec<ChannelCheckpoint>, ThreadBotError> {
+        let rows: Vec<CheckpointRow> = sqlx::query_as(
+            "SELECT channel_id, last_seen_post_at, updated_at, is_reconciled FROM channel_checkpoints",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    async fn upsert_channel_checkpoint(
+        &self,
+        channel_id: &str,
+        last_seen_post_at: DateTime<Utc>,
+    ) -> Result<(), ThreadBotError> {
+        let now = Utc::now();
+
+        sqlx::query(
+            r#"
+            INSERT INTO channel_checkpoints (channel_id, last_seen_post_at, updated_at, is_reconciled)
+            VALUES ($1, $2, $3, true)
+            ON CONFLICT (channel_id) DO UPDATE SET
+                last_seen_post_at = GREATEST(channel_checkpoints.last_seen_post_at, EXCLUDED.last_seen_post_at),
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(channel_id)
+        .bind(last_seen_post_at)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn advance_channel_checkpoint(
+        &self,
+        channel_id: &str,
+        last_seen_post_at: DateTime<Utc>,
+    ) -> Result<(), ThreadBotError> {
+        let now = Utc::now();
+
+        sqlx::query(
+            r#"
+            UPDATE channel_checkpoints
+            SET last_seen_post_at = GREATEST(last_seen_post_at, $2),
+                updated_at = $3
+            WHERE channel_id = $1 AND is_reconciled = true
+            "#,
+        )
+        .bind(channel_id)
+        .bind(last_seen_post_at)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn set_all_channels_not_reconciled(&self) -> Result<(), ThreadBotError> {
+        sqlx::query("UPDATE channel_checkpoints SET is_reconciled = false")
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn set_channel_reconciled(&self, channel_id: &str) -> Result<(), ThreadBotError> {
+        let now = Utc::now();
+
+        sqlx::query(
+            "UPDATE channel_checkpoints SET is_reconciled = true, updated_at = $2 WHERE channel_id = $1",
+        )
+        .bind(channel_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+}
+
+#[derive(FromRow)]
+struct CheckpointRow {
+    channel_id: String,
+    last_seen_post_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    is_reconciled: bool,
+}
+
+impl From<CheckpointRow> for ChannelCheckpoint {
+    fn from(row: CheckpointRow) -> Self {
+        Self {
+            channel_id: row.channel_id,
+            last_seen_post_at: row.last_seen_post_at,
+            updated_at: row.updated_at,
+            is_reconciled: row.is_reconciled,
+        }
     }
 }
