@@ -35,6 +35,7 @@ struct MockStoreState {
     threads: HashMap<String, ThreadRecord>,
     messages: HashMap<String, ThreadMessageRecord>,
     reactions: Vec<StoredReaction>,
+    checkpoints: HashMap<String, ChannelCheckpoint>,
 }
 
 struct StoredReaction {
@@ -53,6 +54,7 @@ impl MockStore {
                 threads: HashMap::new(),
                 messages: HashMap::new(),
                 reactions: Vec::new(),
+                checkpoints: HashMap::new(),
             }),
         }
     }
@@ -317,6 +319,65 @@ impl ThreadStore for MockStore {
             })
             .collect())
     }
+
+    async fn list_channel_checkpoints(&self) -> Result<Vec<ChannelCheckpoint>, ThreadBotError> {
+        let state = self.state.read().await;
+        Ok(state.checkpoints.values().cloned().collect())
+    }
+
+    async fn upsert_channel_checkpoint(
+        &self,
+        channel_id: &str,
+        last_seen_post_at: DateTime<Utc>,
+    ) -> Result<(), ThreadBotError> {
+        let mut state = self.state.write().await;
+        let now = Utc::now();
+        let entry = state
+            .checkpoints
+            .entry(channel_id.to_string())
+            .or_insert_with(|| ChannelCheckpoint {
+                channel_id: channel_id.to_string(),
+                last_seen_post_at,
+                updated_at: now,
+                is_reconciled: true,
+            });
+        if last_seen_post_at > entry.last_seen_post_at {
+            entry.last_seen_post_at = last_seen_post_at;
+            entry.updated_at = now;
+        }
+        Ok(())
+    }
+
+    async fn advance_channel_checkpoint(
+        &self,
+        channel_id: &str,
+        last_seen_post_at: DateTime<Utc>,
+    ) -> Result<(), ThreadBotError> {
+        let mut state = self.state.write().await;
+        if let Some(cp) = state.checkpoints.get_mut(channel_id) {
+            if cp.is_reconciled && last_seen_post_at > cp.last_seen_post_at {
+                cp.last_seen_post_at = last_seen_post_at;
+                cp.updated_at = Utc::now();
+            }
+        }
+        Ok(())
+    }
+
+    async fn set_all_channels_not_reconciled(&self) -> Result<(), ThreadBotError> {
+        let mut state = self.state.write().await;
+        for cp in state.checkpoints.values_mut() {
+            cp.is_reconciled = false;
+        }
+        Ok(())
+    }
+
+    async fn set_channel_reconciled(&self, channel_id: &str) -> Result<(), ThreadBotError> {
+        let mut state = self.state.write().await;
+        if let Some(cp) = state.checkpoints.get_mut(channel_id) {
+            cp.is_reconciled = true;
+        }
+        Ok(())
+    }
 }
 
 // ─── MockHandler ────────────────────────────────────────────────────────────
@@ -568,6 +629,7 @@ pub async fn spawn_test_actor(
         config: Arc::clone(&mm_config),
         store: Arc::clone(&store) as Arc<dyn ThreadStore>,
         plugin_id: "mock-handler",
+        bot_user_id: Some("bot_user".to_string()),
     };
 
     let (tx, rx) = mpsc::channel(64);
