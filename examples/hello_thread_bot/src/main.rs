@@ -34,7 +34,7 @@ impl ThreadHandler for HelloWorldHandler {
     async fn handle(
         &self,
         thread: &thread_bot::Thread,
-        _ctx: &thread_bot::ThreadContext,
+        ctx: &thread_bot::ThreadContext,
     ) -> Result<Vec<ThreadEffect>, thread_bot::ThreadBotError> {
         tracing::info!(
             thread_id = %thread.info.thread_id,
@@ -57,11 +57,11 @@ impl ThreadHandler for HelloWorldHandler {
         }
 
         mattermost_api::apis::reactions_api::save_reaction(
-            &_ctx.config,
+            &ctx.config,
             mattermost_api::models::Reaction {
-                user_id: None,
+                user_id: ctx.bot_user_id.clone(),
                 post_id: Some(root_id.clone()),
-                emoji_name: Some(":white_check_mark:".to_string()),
+                emoji_name: Some("white_check_mark".to_string()),
                 create_at: None,
             },
         )

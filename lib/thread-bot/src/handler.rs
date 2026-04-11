@@ -9,6 +9,7 @@ pub struct ThreadContext {
     pub config: Arc<mattermost_api::apis::configuration::Configuration>,
     pub store: Arc<dyn ThreadStore>,
     pub plugin_id: &'static str,
+    pub bot_user_id: Option<String>,
 }
 
 /// Side effect to be applied by Layer 3

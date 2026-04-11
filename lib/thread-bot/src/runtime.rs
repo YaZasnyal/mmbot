@@ -244,6 +244,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             config: Arc::clone(mm_config),
             store: Arc::clone(&self.store),
             plugin_id: self.handler.id(),
+            bot_user_id: self.bot_user_id.read().await.clone(),
         };
 
         // Ask handler if it wants to track this thread
@@ -292,7 +293,9 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
         // Spawn actor and send the initial message
         let tx = {
             let mut actors = self.actors.lock().await;
-            let tx = self.spawn_actor(thread_id.clone(), Arc::clone(mm_config));
+            let tx = self
+                .spawn_actor(thread_id.clone(), Arc::clone(mm_config))
+                .await;
             actors.insert(thread_id.clone(), tx.clone());
             tx
         };
@@ -693,13 +696,15 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             actors.remove(thread_id);
         }
 
-        let tx = self.spawn_actor(thread_id.to_string(), Arc::clone(mm_config));
+        let tx = self
+            .spawn_actor(thread_id.to_string(), Arc::clone(mm_config))
+            .await;
         actors.insert(thread_id.to_string(), tx.clone());
         tx
     }
 
     /// Spawn a new per-thread actor task.
-    fn spawn_actor(
+    async fn spawn_actor(
         &self,
         thread_id: String,
         mm_config: Arc<Configuration>,
@@ -715,6 +720,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
                 config: Arc::clone(&mm_config),
                 store: Arc::clone(&self.store),
                 plugin_id: self.handler.id(),
+                bot_user_id: self.bot_user_id.read().await.clone(),
             },
             mm_config,
             debounce: self.config.debounce,
