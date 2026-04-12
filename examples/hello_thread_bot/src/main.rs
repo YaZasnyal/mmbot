@@ -46,7 +46,7 @@ impl ThreadHandler for HelloWorldHandler {
 
         let mut effects = Vec::new();
 
-        if !thread.messages.is_empty() {
+        if thread.messages.len() < 3 {
             effects.push(ThreadEffect::Reply {
                 message: "Processed".to_string(),
                 metadata: serde_json::json!({
@@ -54,21 +54,29 @@ impl ThreadHandler for HelloWorldHandler {
                     "root_post_id": root_id
                 }),
             });
+        } else {
+            effects.push(ThreadEffect::Reply {
+                message: "Finished".to_string(),
+                metadata: serde_json::json!({
+                    "handler": self.id(),
+                    "root_post_id": root_id
+                }),
+            });
+
+            mattermost_api::apis::reactions_api::save_reaction(
+                &ctx.config,
+                mattermost_api::models::Reaction {
+                    user_id: ctx.bot_user_id.clone(),
+                    post_id: Some(root_id.clone()),
+                    emoji_name: Some("white_check_mark".to_string()),
+                    create_at: None,
+                },
+            )
+            .await
+            .ok();
         }
 
-        mattermost_api::apis::reactions_api::save_reaction(
-            &ctx.config,
-            mattermost_api::models::Reaction {
-                user_id: ctx.bot_user_id.clone(),
-                post_id: Some(root_id.clone()),
-                emoji_name: Some("white_check_mark".to_string()),
-                create_at: None,
-            },
-        )
-        .await
-        .ok();
-
-        effects.push(ThreadEffect::MarkResolved);
+        // effects.push(ThreadEffect::MarkResolved);
 
         Ok(effects)
     }
