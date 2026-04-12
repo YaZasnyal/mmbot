@@ -21,7 +21,20 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```no_run
+//! # use std::sync::Arc;
+//! # use thread_bot::{async_trait, ThreadHandler, ThreadEffect, ThreadBotError, Thread, ThreadContext};
+//! # struct MyHandler;
+//! # impl MyHandler { fn new() -> Self { Self } }
+//! # #[async_trait]
+//! # impl ThreadHandler for MyHandler {
+//! #     fn id(&self) -> &'static str { "my" }
+//! #     async fn should_track(&self, _: &Thread, _: &ThreadContext) -> Result<bool, ThreadBotError> { Ok(true) }
+//! #     async fn handle(&self, _: &Thread, _: &ThreadContext) -> Result<Vec<ThreadEffect>, ThreadBotError> { Ok(vec![]) }
+//! # }
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # let pool: thread_bot::sqlx::PgPool = todo!();
+//! # let config: mattermost_bot::Configuration = todo!();
 //! use std::time::Duration;
 //! use thread_bot::{ThreadBotPlugin, PgThreadStore};
 //!
@@ -29,8 +42,11 @@
 //! let plugin = ThreadBotPlugin::new(MyHandler::new(), Arc::new(store))
 //!     .with_debounce(Duration::from_secs(3));
 //!
+//! # use mattermost_bot::Bot;
 //! let bot = Bot::with_config(config)?
 //!     .with_plugin(plugin);
+//! # Ok(())
+//! # }
 //! ```
 
 use std::collections::HashMap;

@@ -53,23 +53,34 @@ pub trait Plugin: Send + Sync + 'static {
     ///
     /// # Example
     ///
-    /// ```ignore
-    ///     self: Arc<Self>,
-    ///     scheduler: &mut cron_tab::Cron<chrono::Utc>,
-    ///     config: Arc<Configuration>,
-    /// ) {
-    ///     let plugin = Arc::clone(&self);
-    ///     let config = Arc::clone(&config);
+    /// ```no_run
+    /// use std::sync::Arc;
+    /// use mattermost_bot::{async_trait, Plugin, Event, Configuration, cron_tab, chrono};
     ///
-    ///     scheduler.add_fn("0 0 * * * *", move || {
-    ///         let plugin = Arc::clone(&plugin);
+    /// struct MyPlugin;
+    ///
+    /// #[async_trait]
+    /// impl Plugin for MyPlugin {
+    /// #     fn id(&self) -> &'static str { "my" }
+    /// #     async fn process_event(&self, _: &Arc<Event>, _: &Arc<Configuration>) {}
+    ///     fn setup_cron(
+    ///         self: Arc<Self>,
+    ///         scheduler: &mut cron_tab::Cron<chrono::Utc>,
+    ///         config: Arc<Configuration>,
+    ///     ) {
+    ///         let plugin = Arc::clone(&self);
     ///         let config = Arc::clone(&config);
     ///
-    ///         tokio::runtime::Handle::current().block_on(async move {
-    ///             // Access plugin data here
-    ///             println!("Running cron for {}", plugin.id());
-    ///         });
-    ///     }).unwrap();
+    ///         scheduler.add_fn("0 0 * * * *", move || {
+    ///             let plugin = Arc::clone(&plugin);
+    ///             let config = Arc::clone(&config);
+    ///
+    ///             tokio::runtime::Handle::current().block_on(async move {
+    ///                 // Access plugin data here
+    ///                 println!("Running cron for {}", plugin.id());
+    ///             });
+    ///         }).unwrap();
+    ///     }
     /// }
     /// ```
     fn setup_cron(

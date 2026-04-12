@@ -4,17 +4,30 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use mattermost_bot::{Bot, Plugin, middlewares::IgnoreSelf};
+//! ```
+//! # use std::sync::Arc;
+//! # use mattermost_bot::{async_trait, Plugin, Event, Configuration};
+//! use mattermost_bot::{Bot, middlewares::IgnoreSelf};
 //!
 //! struct MyPlugin;
 //!
+//! # #[async_trait]
+//! # impl Plugin for MyPlugin {
+//! #     fn id(&self) -> &'static str { "my" }
+//! #     async fn process_event(&self, _: &Arc<Event>, _: &Arc<Configuration>) {}
+//! # }
+//! # fn main() -> mattermost_bot::Result<()> {
+//! # let mut config = Configuration::default();
+//! # config.base_path = "https://mm.example.com".to_string();
+//! # config.bearer_access_token = Some("token".to_string());
 //! // Wrap the plugin with IgnoreSelf middleware
 //! let plugin = MyPlugin;
 //! let plugin = IgnoreSelf::new(plugin);
 //!
 //! let bot = Bot::with_config(config)?
 //!     .with_plugin(plugin);
+//! # Ok(())
+//! # }
 //! ```
 
 use crate::types::EventType;

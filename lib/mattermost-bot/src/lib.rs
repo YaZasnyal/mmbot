@@ -10,6 +10,7 @@ pub mod middlewares;
 pub mod nested_decoder;
 pub mod plugin;
 pub mod types;
+pub use chrono;
 pub use cron_tab;
 
 pub use error::{BotError, Result};
@@ -34,9 +35,17 @@ impl Bot {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// use mattermost_bot::Bot;
-    /// use mattermost_api::apis::configuration::Configuration;
+    /// ```
+    /// # use std::sync::Arc;
+    /// # use mattermost_bot::{async_trait, Plugin, Event, Configuration};
+    /// # struct MyPlugin;
+    /// # #[async_trait]
+    /// # impl Plugin for MyPlugin {
+    /// #     fn id(&self) -> &'static str { "my" }
+    /// #     async fn process_event(&self, _: &Arc<Event>, _: &Arc<Configuration>) {}
+    /// # }
+    /// # fn main() -> mattermost_bot::Result<()> {
+    /// use mattermost_bot::{Bot, Configuration};
     ///
     /// // Using the builder pattern
     /// let mut config = Configuration::default();
@@ -44,7 +53,9 @@ impl Bot {
     /// config.bearer_access_token = Some("your_token".to_string());
     ///
     /// let bot = Bot::with_config(config)?
-    ///   .with_plugin(MyPlugin {})
+    ///   .with_plugin(MyPlugin {});
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn with_config(config: Configuration) -> Result<Self> {
         if config.bearer_access_token.is_none() {
@@ -63,10 +74,30 @@ impl Bot {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```
+    /// # use std::sync::Arc;
+    /// # use mattermost_bot::{async_trait, Bot, Plugin, Event, Configuration};
+    /// # struct MyPlugin;
+    /// # #[async_trait]
+    /// # impl Plugin for MyPlugin {
+    /// #     fn id(&self) -> &'static str { "my" }
+    /// #     async fn process_event(&self, _: &Arc<Event>, _: &Arc<Configuration>) {}
+    /// # }
+    /// # struct AnotherPlugin;
+    /// # #[async_trait]
+    /// # impl Plugin for AnotherPlugin {
+    /// #     fn id(&self) -> &'static str { "another" }
+    /// #     async fn process_event(&self, _: &Arc<Event>, _: &Arc<Configuration>) {}
+    /// # }
+    /// # fn main() -> mattermost_bot::Result<()> {
+    /// # let mut config = Configuration::default();
+    /// # config.base_path = "https://mm.example.com".to_string();
+    /// # config.bearer_access_token = Some("token".to_string());
     /// let bot = Bot::with_config(config)?
     ///     .with_plugin(MyPlugin {})
     ///     .with_plugin(AnotherPlugin {});
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn with_plugin(mut self, plugin: impl Plugin) -> Self {
         self.plugins.push(Arc::new(plugin));
@@ -80,14 +111,22 @@ impl Bot {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use mattermost_bot::{async_trait, Plugin, Event, Configuration};
+    /// # struct MyPlugin;
+    /// # #[async_trait]
+    /// # impl Plugin for MyPlugin {
+    /// #     fn id(&self) -> &'static str { "my" }
+    /// #     async fn process_event(&self, _: &Arc<Event>, _: &Arc<Configuration>) {}
+    /// # }
+    /// use mattermost_bot::{Bot, tokio_graceful};
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
     ///     // Setup graceful shutdown with Ctrl+C handler
-    ///     let shutdown = Shutdown::builder()
-    ///         .with_delay(Duration::from_secs(5))
-    ///         .with_overwrite_fn(tokio::signal::ctrl_c)
+    ///     let shutdown = tokio_graceful::Shutdown::builder()
+    ///         .with_signal(tokio::signal::ctrl_c())
     ///         .build();
     ///
     ///     let guard = shutdown.guard();

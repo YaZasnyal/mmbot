@@ -17,6 +17,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 
 [dev-dependencies]
+mattermost_bot = { path = "../mattermost-bot" }
 anyhow = "1"
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
