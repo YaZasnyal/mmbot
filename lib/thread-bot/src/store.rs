@@ -23,10 +23,17 @@ pub trait ThreadStore: Send + Sync + 'static {
         post_id: &str,
     ) -> Result<Option<ThreadRecord>, ThreadBotError>;
 
-    /// List threads by status
+    /// List threads by status, optionally filtered by `updated_at` range.
+    ///
+    /// - `updated_after`  — only threads updated **after** this timestamp.
+    /// - `updated_before` — only threads updated **before** this timestamp.
+    ///
+    /// Pass `None` to skip a bound.
     async fn list_threads_by_status(
         &self,
         statuses: &[ThreadStatus],
+        updated_after: Option<DateTime<Utc>>,
+        updated_before: Option<DateTime<Utc>>,
     ) -> Result<Vec<ThreadRecord>, ThreadBotError>;
 
     /// Update thread status

@@ -8,12 +8,14 @@
 //! - Replies with "Processed" to the root post
 //! - Marks the thread as resolved
 
-use std::sync::Arc;
+use std::{ops::Sub, sync::Arc};
 
 use async_trait::async_trait;
-use mattermost_api::apis::configuration::Configuration;
-use mattermost_bot::{tokio_graceful, Bot};
-use thread_bot::{ThreadEffect, ThreadHandler, ThreadStore};
+use mattermost_api::{apis::configuration::Configuration, models::CreatePostRequest};
+use mattermost_bot::{Bot, tokio_graceful};
+use thread_bot::{
+    ThreadBotHandle, ThreadEffect, ThreadHandler, ThreadStatus, ThreadStore, cron_tab,
+};
 
 struct HelloWorldHandler;
 
@@ -79,6 +81,63 @@ impl ThreadHandler for HelloWorldHandler {
         // effects.push(ThreadEffect::MarkResolved);
 
         Ok(effects)
+    }
+
+    fn setup_cron(
+        self: Arc<Self>,
+        scheduler: &mut cron_tab::Cron<chrono::Utc>,
+        handle: ThreadBotHandle,
+    ) {
+        let runtime = tokio::runtime::Handle::current();
+        scheduler
+            .add_fn("0 * * * * * *", move || {
+                runtime.block_on(close_stale_threads(handle.clone()));
+            })
+            .unwrap();
+    }
+}
+
+async fn close_stale_threads(handle: ThreadBotHandle) {
+    let Ok(opened_threads) = handle
+        .list_threads(&[ThreadStatus::Active, ThreadStatus::New], None, None)
+        .await
+        .inspect_err(|e| tracing::error!("unable to list active threads: {e:?}"))
+    else {
+        return;
+    };
+
+    let now = chrono::Utc::now();
+    for thread in opened_threads {
+        if let Some(ts) = &thread.last_processed_post_at
+            && now.sub(ts).num_minutes() > 1
+        {
+            handle
+                .stop_thread(&thread.thread_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(
+                        thread_id = thread.thread_id,
+                        "unable to close thread: {e:?}"
+                    );
+                })
+                .ok();
+
+            mattermost_api::apis::posts_api::create_post(
+                &handle.config(),
+                CreatePostRequest {
+                    channel_id: thread.channel_id.clone(),
+                    message: "Thread is closed by timeout".to_string(),
+                    root_id: Some(thread.root_post_id.clone()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .inspect_err(|e| {
+                tracing::error!("unable to send resolution post: {e:?}");
+            })
+            .ok();
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 // Public API
 mod actor;
 pub mod error;
+pub mod handle;
 pub mod handler;
 pub mod pg_store;
 pub mod runtime;
@@ -14,6 +15,7 @@ mod testutil;
 
 // Re-exports for convenience
 pub use error::ThreadBotError;
+pub use handle::ThreadBotHandle;
 pub use handler::{
     default_control_reactions, ThreadCloseReason, ThreadContext, ThreadEffect, ThreadHandler,
 };
@@ -29,4 +31,5 @@ pub use types::{
 // Re-export async_trait for convenience
 pub use async_trait::async_trait;
 
+pub use mattermost_bot::cron_tab;
 pub use sqlx;

@@ -60,6 +60,9 @@ use mattermost_api::apis::{posts_api, users_api};
 use mattermost_api::models;
 use mattermost_bot::plugin::Event;
 use mattermost_bot::types::EventType;
+use mattermost_bot::{chrono, cron_tab};
+
+use crate::handle::ThreadBotHandle;
 
 use crate::actor::{
     get_root_post_id, is_root_post, ms_to_datetime, post_to_thread_message, thread_actor, ActorCtx,
@@ -550,7 +553,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
 
         let threads = match self
             .store
-            .list_threads_by_status(&[ThreadStatus::New, ThreadStatus::Active])
+            .list_threads_by_status(&[ThreadStatus::New, ThreadStatus::Active], None, None)
             .await
         {
             Ok(threads) => threads,
@@ -858,5 +861,19 @@ impl<H: ThreadHandler> mattermost_bot::Plugin for ThreadBotPlugin<H> {
             }
             _ => {}
         }
+    }
+
+    fn setup_cron(
+        self: Arc<Self>,
+        scheduler: &mut cron_tab::Cron<chrono::Utc>,
+        config: Arc<Configuration>,
+    ) {
+        let handle = ThreadBotHandle::new(
+            Arc::clone(&self.store),
+            config,
+            Arc::clone(&self.actors),
+            Arc::clone(&self.bot_user_id),
+        );
+        Arc::clone(&self.handler).setup_cron(scheduler, handle);
     }
 }

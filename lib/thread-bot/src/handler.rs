@@ -1,6 +1,8 @@
 use crate::error::ThreadBotError;
+use crate::handle::ThreadBotHandle;
 use crate::types::{ReactionChange, Thread, ThreadRecord};
 use async_trait::async_trait;
+use mattermost_bot::{chrono, cron_tab};
 use std::sync::Arc;
 
 /// Context provided to thread handlers
@@ -53,6 +55,10 @@ pub enum ThreadCloseReason {
     StoppedByReaction,
     ResolvedByHandler,
     StoppedByHandler,
+    /// Thread resolved via ThreadBotHandle (cron job, admin, etc.)
+    ResolvedExternally,
+    /// Thread stopped via ThreadBotHandle (cron job, admin, etc.)
+    StoppedExternally,
 }
 
 /// Thread handler trait - implement this to create a thread-based bot
@@ -117,6 +123,23 @@ pub trait ThreadHandler: Send + Sync + 'static {
     ) -> Result<(), ThreadBotError> {
         let _ = (thread, reason, ctx);
         Ok(())
+    }
+
+    /// Configure periodic tasks for this handler.
+    ///
+    /// Called once at bot startup. Register cron jobs using `scheduler`,
+    /// and use `handle` to access thread data and actor commands.
+    ///
+    /// Cron closures are sync (`Fn() + Send + 'static`).
+    /// For async work use `tokio::runtime::Handle::current().block_on(...)`.
+    ///
+    /// Clone both `self` (Arc) and `handle` before each `scheduler.add_fn()`.
+    fn setup_cron(
+        self: Arc<Self>,
+        _scheduler: &mut cron_tab::Cron<chrono::Utc>,
+        _handle: ThreadBotHandle,
+    ) {
+        // Default: no cron jobs
     }
 }
 

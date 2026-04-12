@@ -43,6 +43,15 @@ pub(crate) enum ThreadCommand {
 
     /// Graceful shutdown signal.
     Shutdown,
+
+    /// External wake — triggers a handler re-run without cancelling
+    /// a currently running handler. Sent from [`ThreadBotHandle::wake_thread`].
+    Wake,
+
+    /// External close — closes the thread from outside the actor
+    /// (e.g. cron job). Sent from [`ThreadBotHandle::resolve_thread`]
+    /// or [`ThreadBotHandle::stop_thread`].
+    Close { reason: ThreadCloseReason },
 }
 
 /// Shared context passed to the per-thread actor.
@@ -165,6 +174,64 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
 
                     Some(ThreadCommand::Shutdown) => {
                         tracing::info!(thread_id = %a.thread_id, "Thread actor shutting down");
+                        break;
+                    }
+
+                    Some(ThreadCommand::Wake) => {
+                        // Don't cancel running handler — just ensure re-run after it completes
+                        has_pending = true;
+                        debounce_deadline = Instant::now();
+                        tracing::debug!(thread_id = %a.thread_id, "Thread woken by external trigger");
+                    }
+
+                    Some(ThreadCommand::Close { reason }) => {
+                        tracing::info!(
+                            thread_id = %a.thread_id,
+                            reason = ?reason,
+                            "Thread closed by external trigger"
+                        );
+
+                        // Running handler (if any) will be dropped when we break.
+
+                        let target_status = match reason {
+                            ThreadCloseReason::ResolvedExternally => ThreadStatus::Resolved,
+                            _ => ThreadStatus::Stopped,
+                        };
+
+                        if let Err(e) = a.store
+                            .update_thread_status(&a.thread_id, target_status)
+                            .await
+                        {
+                            tracing::error!(
+                                thread_id = %a.thread_id,
+                                error = %e,
+                                "Failed to update thread status on external close"
+                            );
+                        }
+
+                        match build_thread_snapshot(&a.thread_id, &*a.store, &a.mm_config).await {
+                            Ok(snapshot) => {
+                                if let Err(e) = a.handler
+                                    .on_thread_closed(&snapshot, reason, &a.ctx)
+                                    .await
+                                {
+                                    tracing::error!(
+                                        thread_id = %a.thread_id,
+                                        reason = ?reason,
+                                        error = %e,
+                                        "on_thread_closed failed"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    thread_id = %a.thread_id,
+                                    error = %e,
+                                    "Failed to build snapshot for on_thread_closed"
+                                );
+                            }
+                        }
+
                         break;
                     }
 
@@ -602,7 +669,7 @@ async fn execute_effects<H: ThreadHandler>(
 ///
 /// Each message and reaction is marked with `is_new = true` if it arrived
 /// after `last_processed_post_at`.
-pub(crate) async fn build_thread_snapshot(
+pub async fn build_thread_snapshot(
     thread_id: &str,
     store: &dyn ThreadStore,
     mm_config: &Configuration,

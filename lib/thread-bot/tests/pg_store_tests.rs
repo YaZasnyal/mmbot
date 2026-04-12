@@ -178,7 +178,7 @@ async fn list_threads_by_status_filters_correctly() {
 
     // Filter by single status
     let active = store
-        .list_threads_by_status(&[ThreadStatus::Active])
+        .list_threads_by_status(&[ThreadStatus::Active], None, None)
         .await
         .unwrap();
     assert_eq!(active.len(), 1);
@@ -186,13 +186,13 @@ async fn list_threads_by_status_filters_correctly() {
 
     // Filter by multiple statuses
     let open = store
-        .list_threads_by_status(&[ThreadStatus::New, ThreadStatus::Active])
+        .list_threads_by_status(&[ThreadStatus::New, ThreadStatus::Active], None, None)
         .await
         .unwrap();
     assert_eq!(open.len(), 2);
 
     // Empty filter returns nothing
-    let empty = store.list_threads_by_status(&[]).await.unwrap();
+    let empty = store.list_threads_by_status(&[], None, None).await.unwrap();
     assert_eq!(empty.len(), 0);
 
     db.cleanup().await;

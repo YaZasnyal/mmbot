@@ -237,15 +237,23 @@ impl ThreadStore for PgThreadStore {
     async fn list_threads_by_status(
         &self,
         statuses: &[ThreadStatus],
+        updated_after: Option<DateTime<Utc>>,
+        updated_before: Option<DateTime<Utc>>,
     ) -> Result<Vec<ThreadRecord>, ThreadBotError> {
         let status_strings: Vec<&str> = statuses.iter().map(status_str).collect();
 
         let sql = format!(
-            "SELECT {THREAD_COLUMNS} FROM threads WHERE status = ANY($1) ORDER BY updated_at DESC"
+            "SELECT {THREAD_COLUMNS} FROM threads \
+             WHERE status = ANY($1) \
+             AND ($2::timestamptz IS NULL OR updated_at > $2) \
+             AND ($3::timestamptz IS NULL OR updated_at < $3) \
+             ORDER BY updated_at DESC"
         );
 
         let rows: Vec<ThreadRow> = sqlx::query_as(&sql)
             .bind(&status_strings)
+            .bind(updated_after)
+            .bind(updated_before)
             .fetch_all(&self.pool)
             .await?;
 

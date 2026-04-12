@@ -130,12 +130,16 @@ impl ThreadStore for MockStore {
     async fn list_threads_by_status(
         &self,
         statuses: &[ThreadStatus],
+        updated_after: Option<DateTime<Utc>>,
+        updated_before: Option<DateTime<Utc>>,
     ) -> Result<Vec<ThreadRecord>, ThreadBotError> {
         let state = self.state.read().await;
         Ok(state
             .threads
             .values()
             .filter(|t| statuses.contains(&t.status))
+            .filter(|t| updated_after.map_or(true, |after| t.updated_at > after))
+            .filter(|t| updated_before.map_or(true, |before| t.updated_at < before))
             .cloned()
             .collect())
     }
