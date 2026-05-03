@@ -1,12 +1,16 @@
+use crate::llm::ChatMessage;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SupportThreadState {
     pub version: u32,
     pub selected_instruction_ids: Vec<String>,
     pub compact_history: Vec<SupportHistoryItem>,
-    pub debug: bool,
     pub engineer_thread: Option<EngineerThreadRef>,
+    #[serde(default)]
+    pub last_failure_trace: Vec<ChatMessage>,
+    #[serde(default)]
+    pub last_failure_trace_post_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,8 +31,9 @@ impl Default for SupportThreadState {
             version: 1,
             selected_instruction_ids: Vec::new(),
             compact_history: Vec::new(),
-            debug: false,
             engineer_thread: None,
+            last_failure_trace: Vec::new(),
+            last_failure_trace_post_id: None,
         }
     }
 }
@@ -41,7 +46,6 @@ mod tests {
     fn support_thread_state_round_trips_as_json() {
         let state = SupportThreadState {
             selected_instruction_ids: vec!["diagnostics.slow_requests".to_string()],
-            debug: true,
             engineer_thread: Some(EngineerThreadRef {
                 channel_id: "engineers".to_string(),
                 root_post_id: "post-1".to_string(),

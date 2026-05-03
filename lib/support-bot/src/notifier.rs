@@ -110,14 +110,28 @@ impl MattermostSupportNotifier {
         .await
     }
 
-    pub async fn send_debug_message(
+    pub async fn post_html_attachment_to_thread(
         &self,
-        thread: &Thread,
-        current_thread: Option<&EngineerThreadRef>,
+        channel_id: &str,
+        root_post_id: &str,
+        filename: &str,
+        html_content: String,
         message: String,
-    ) -> Result<Option<EngineerThreadRef>> {
-        self.post_engineer_thread_message(thread, current_thread, "debug", message)
+        props: serde_json::Value,
+    ) -> Result<()> {
+        let file_id = self
+            .upload_html_file(channel_id, filename, html_content.into_bytes())
+            .await?;
+
+        let mut request = models::CreatePostRequest::new(channel_id.to_string(), message);
+        request.root_id = Some(root_post_id.to_string());
+        request.file_ids = Some(vec![file_id]);
+        request.props = Some(props);
+
+        posts_api::create_post(&self.config, request, None)
             .await
+            .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
+        Ok(())
     }
 
     async fn post_engineer_thread_message(
@@ -152,6 +166,128 @@ impl MattermostSupportNotifier {
             }
         }
     }
+
+    async fn upload_html_file(
+        &self,
+        channel_id: &str,
+        filename: &str,
+        bytes: Vec<u8>,
+    ) -> Result<String> {
+        let url = format!(
+            "{}/api/v4/files",
+            self.config.base_path.trim_end_matches('/')
+        );
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(filename.to_string())
+            .mime_str("text/html; charset=utf-8")
+            .map_err(SupportBotError::Http)?;
+        let form = reqwest::multipart::Form::new()
+            .text("channel_id", channel_id.to_string())
+            .part("files", part);
+
+        let mut request = self.config.client.post(url).multipart(form);
+        if let Some(token) = &self.config.bearer_access_token {
+            request = request.bearer_auth(token);
+        }
+
+        let response = request.send().await.map_err(SupportBotError::Http)?;
+        let status = response.status();
+        let body = response.text().await.map_err(SupportBotError::Http)?;
+        if !status.is_success() {
+            return Err(SupportBotError::Mattermost(format!(
+                "file upload failed with {status}: {body}"
+            )));
+        }
+
+        let uploaded: models::UploadFile201Response =
+            serde_json::from_str(&body).map_err(SupportBotError::Serialization)?;
+        uploaded
+            .file_infos
+            .and_then(|infos| infos.into_iter().find_map(|info| info.id))
+            .ok_or_else(|| {
+                SupportBotError::Mattermost("file upload response did not contain file id".into())
+            })
+    }
+}
+
+pub fn render_thread_html_report(
+    thread_id: &str,
+    channel_id: &str,
+    root_post_id: &str,
+    posts: &[SupportReportPost],
+    trace_post_id: Option<&str>,
+    tool_trace: &[String],
+) -> String {
+    let items = posts
+        .iter()
+        .map(|post| {
+            let trace_block = if trace_post_id.is_some_and(|id| id == post.post_id) && !tool_trace.is_empty() {
+                let details = tool_trace
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, item)| {
+                        format!(
+                            "<details class=\"trace\"><summary>tool_trace[{idx}]</summary><pre>{}</pre></details>",
+                            escape_html(item)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("<section class=\"tool-trace\"><h3>Tool Trace (bound to this message)</h3>{details}</section>")
+            } else {
+                String::new()
+            };
+            format!(
+                "<article class=\"msg\"><header><code>{}</code> · <code>{}</code> · <time>{}</time></header><pre>{}</pre>{}</article>",
+                escape_html(&post.post_id),
+                escape_html(&post.user_id),
+                escape_html(&post.created_at),
+                escape_html(&post.message),
+                trace_block
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Support Thread {thread_id}</title>\
+         <style>body{{font-family:ui-monospace,Menlo,Consolas,monospace;background:#f5f7fb;color:#16202a;margin:0;padding:24px}}\
+         .wrap{{max-width:1100px;margin:0 auto}}h1{{margin:0 0 8px}}.meta{{background:#fff;border:1px solid #d8dee8;border-radius:10px;padding:12px;margin-bottom:16px}}\
+         .msg{{background:#fff;border:1px solid #d8dee8;border-radius:10px;padding:12px;margin:0 0 10px}}header{{font-size:12px;color:#4b5563;margin-bottom:8px}}\
+         .trace{{background:#fff;border:1px solid #d8dee8;border-radius:10px;padding:8px 12px;margin:0 0 10px}}\
+         .tool-trace{{margin-top:12px;background:#fff8e8;border:1px solid #f1d08b;border-radius:10px;padding:10px}}\
+         .tool-trace h3{{margin:0 0 8px;font-size:13px;color:#7c4f00}}\
+         pre{{white-space:pre-wrap;word-wrap:break-word;margin:0;font-family:inherit}}</style></head><body><div class=\"wrap\">\
+         <h1>Support Thread Report</h1><div class=\"meta\"><div><b>thread_id:</b> <code>{thread_id}</code></div>\
+         <div><b>channel_id:</b> <code>{channel_id}</code></div><div><b>root_post_id:</b> <code>{root_post_id}</code></div>\
+         <div><b>messages:</b> <code>{count}</code></div><div><b>trace_entries:</b> <code>{trace_count}</code></div>\
+         <div><b>trace_bound_post_id:</b> <code>{trace_post_id}</code></div></div>\
+         <h2>Messages</h2>{items}\
+         <script>document.querySelectorAll('pre').forEach((p)=>{{if(p.textContent.length>3000){{p.dataset.full=p.textContent;p.textContent=p.textContent.slice(0,3000)+'\\n...[trimmed in view]';}}}});</script>\
+         </div></body></html>",
+        thread_id = escape_html(thread_id),
+        channel_id = escape_html(channel_id),
+        root_post_id = escape_html(root_post_id),
+        count = posts.len(),
+        items = items,
+        trace_count = tool_trace.len(),
+        trace_post_id = escape_html(trace_post_id.unwrap_or("n/a"))
+    )
+}
+
+#[derive(Debug, Clone)]
+pub struct SupportReportPost {
+    pub post_id: String,
+    pub user_id: String,
+    pub message: String,
+    pub created_at: String,
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn engineer_thread_root_request(

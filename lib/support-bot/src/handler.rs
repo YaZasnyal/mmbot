@@ -1,10 +1,12 @@
 use crate::config::{EngineerNotificationTarget, SupportBotConfig};
 use crate::debug::{DebugCommand, DebugCommandHandler};
+use crate::error::SupportBotError;
 use crate::llm::{ChatMessage, ChatRole, LlmClient, LlmRequest};
-use crate::notifier::MattermostSupportNotifier;
+use crate::notifier::{render_thread_html_report, MattermostSupportNotifier, SupportReportPost};
 use crate::state::SupportThreadState;
 use crate::tools::{SupportAction, ToolContext, ToolExecutionOutcome, ToolRegistry, ToolResult};
 use async_trait::async_trait;
+use mattermost_api::apis::posts_api;
 use serde_json::json;
 use std::sync::Arc;
 use thread_bot::{
@@ -87,8 +89,8 @@ impl SupportBotHandler {
             return Ok(vec![ThreadEffect::Noop]);
         };
 
-        if command.name == "debug" {
-            return self.handle_debug_toggle(thread, ctx, command).await;
+        if command.name == "debug-report" {
+            return self.handle_debug_export_html(thread, ctx).await;
         }
 
         let response = match &self.debug_handler {
@@ -183,14 +185,6 @@ impl SupportBotHandler {
             };
             messages.push(assistant_tool_call_message.clone());
             trace.push(assistant_tool_call_message);
-            self.send_debug_message(
-                ctx,
-                thread,
-                &mut state,
-                format_debug_chat_message("assistant tool calls", messages.last().unwrap()),
-            )
-            .await?;
-
             let tool_context = ToolContext::new(Arc::new(thread.clone()));
             for call in tool_calls {
                 let tool_message = match self.tools.call(tool_context.clone(), call.clone()).await {
@@ -216,13 +210,6 @@ impl SupportBotHandler {
                 };
                 messages.push(tool_message.clone());
                 trace.push(tool_message);
-                self.send_debug_message(
-                    ctx,
-                    thread,
-                    &mut state,
-                    format_debug_chat_message("tool result", messages.last().unwrap()),
-                )
-                .await?;
             }
         }
 
@@ -258,12 +245,51 @@ impl SupportBotHandler {
             truncate_utf8(trace_summary, 2000)
         );
 
+        state.last_failure_trace = trace.iter().rev().take(64).cloned().collect::<Vec<_>>();
+        state.last_failure_trace.reverse();
+        state.last_failure_trace_post_id = Some(trigger_message.post_id.clone());
+
         if let Ok(Some(engineer_thread)) = self
             .engineer_notifier(ctx)
-            .notify_engineer(thread, state.engineer_thread.as_ref(), engineer_error_message)
+            .notify_engineer(
+                thread,
+                state.engineer_thread.as_ref(),
+                engineer_error_message,
+            )
             .await
         {
             state.engineer_thread = Some(engineer_thread);
+        }
+        if let Some(engineer_thread) = state.engineer_thread.as_ref() {
+            let report_html = render_thread_html_report(
+                &thread.info.thread_id,
+                &thread.info.channel_id,
+                &thread.info.root_post_id,
+                &report_posts_from_thread_messages(&thread.messages),
+                Some(&trigger_message.post_id),
+                &trace
+                    .iter()
+                    .map(|m| serde_json::to_string_pretty(m).unwrap_or_else(|_| "{}".to_string()))
+                    .collect::<Vec<_>>(),
+            );
+            let _ = self
+                .engineer_notifier(ctx)
+                .post_html_attachment_to_thread(
+                    &engineer_thread.channel_id,
+                    &engineer_thread.root_post_id,
+                    &format!("support-thread-{}-fatal.html", thread.info.thread_id),
+                    report_html,
+                    "Attached: full support thread HTML export captured at failure time."
+                        .to_string(),
+                    json!({
+                        STATE_KEY: {
+                            "kind": "thread_html_report",
+                            "source_thread_id": thread.info.thread_id,
+                            "reason": "tool_loop_limit"
+                        }
+                    }),
+                )
+                .await;
         }
 
         self.push_reply_effect(
@@ -492,63 +518,87 @@ impl SupportBotHandler {
         Ok(())
     }
 
-    async fn send_debug_message(
+    async fn handle_debug_export_html(
         &self,
+        engineer_thread: &Thread,
         ctx: &ThreadContext,
-        thread: &Thread,
-        state: &mut SupportThreadState,
-        message: String,
-    ) -> Result<(), ThreadBotError> {
-        if !state.debug {
-            return Ok(());
-        }
-
-        if let Some(engineer_thread) = self
-            .engineer_notifier(ctx)
-            .send_debug_message(thread, state.engineer_thread.as_ref(), message)
-            .await?
-        {
-            state.engineer_thread = Some(engineer_thread);
-        }
-        Ok(())
-    }
-
-    async fn handle_debug_toggle(
-        &self,
-        thread: &Thread,
-        ctx: &ThreadContext,
-        command: DebugCommand,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
-        let Some(user_thread_id) = source_user_thread_id(thread) else {
+        let Some(source_thread_id) = source_user_thread_id(engineer_thread) else {
             return Ok(vec![ThreadEffect::Reply {
                 message: "Cannot find source support thread for this engineer thread.".to_string(),
                 metadata: debug_response_metadata(),
             }]);
         };
-        let Some(record) = ctx.store.get_thread(&user_thread_id).await? else {
+        let Some(record) = ctx.store.get_thread(&source_thread_id).await? else {
             return Ok(vec![ThreadEffect::Reply {
-                message: format!("Source support thread not found: {user_thread_id}"),
+                message: format!("Source support thread not found: {source_thread_id}"),
                 metadata: debug_response_metadata(),
             }]);
         };
 
-        let mut state = load_state(&record.metadata)?;
-        let requested = command.args.first().map(String::as_str);
-        state.debug = match requested {
-            Some("on") | Some("true") | Some("1") => true,
-            Some("off") | Some("false") | Some("0") => false,
-            Some("status") => state.debug,
-            _ => !state.debug,
-        };
-        ctx.store
-            .set_thread_metadata(&user_thread_id, store_state(&record.metadata, &state)?)
+        let state = load_state(&record.metadata)?;
+
+        let post_list = posts_api::get_post_thread(
+            &ctx.config,
+            &record.root_post_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .map_err(|error| {
+            ThreadBotError::internal(SupportBotError::Mattermost(error.to_string()))
+        })?;
+
+        let mut posts = Vec::new();
+        if let (Some(order), Some(map)) = (post_list.order, post_list.posts) {
+            for post_id in order {
+                if let Some(post) = map.get(&post_id) {
+                    posts.push(report_post_from_mm_post(post));
+                }
+            }
+        }
+
+        let html = render_thread_html_report(
+            &record.thread_id,
+            &record.channel_id,
+            &record.root_post_id,
+            &posts,
+            state.last_failure_trace_post_id.as_deref(),
+            &state
+                .last_failure_trace
+                .iter()
+                .map(|m| serde_json::to_string_pretty(m).unwrap_or_else(|_| "{}".to_string()))
+                .collect::<Vec<_>>(),
+        );
+        self.engineer_notifier(ctx)
+            .post_html_attachment_to_thread(
+                &engineer_thread.info.channel_id,
+                &engineer_thread.info.root_post_id,
+                &format!("support-thread-{}.html", record.thread_id),
+                html,
+                format!(
+                    "Attached: support thread HTML export for `{}`.",
+                    record.thread_id
+                ),
+                json!({
+                    STATE_KEY: {
+                        "kind": "thread_html_report",
+                        "source_thread_id": record.thread_id,
+                        "reason": "engineer_request"
+                    }
+                }),
+            )
             .await?;
 
         Ok(vec![ThreadEffect::Reply {
             message: format!(
-                "Debug mode is {} for support thread {}.",
-                if state.debug { "on" } else { "off" },
-                user_thread_id
+                "Debug report exported for support thread `{}`.",
+                record.thread_id
             ),
             metadata: debug_response_metadata(),
         }])
@@ -624,9 +674,37 @@ fn debug_response_metadata() -> serde_json::Value {
     })
 }
 
-fn format_debug_chat_message(label: &str, message: &ChatMessage) -> String {
-    let value = serde_json::to_string_pretty(message).unwrap_or_else(|_| "{}".to_string());
-    format!("**Debug: {label}**\n\n```json\n{value}\n```")
+fn timestamp_ms_to_rfc3339(timestamp_ms: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp_ms)
+        .map(|ts| ts.to_rfc3339())
+        .unwrap_or_else(|| timestamp_ms.to_string())
+}
+
+fn report_posts_from_thread_messages(messages: &[ThreadMessage]) -> Vec<SupportReportPost> {
+    messages
+        .iter()
+        .map(|message| SupportReportPost {
+            post_id: message.post_id.clone(),
+            user_id: message.user_id.clone(),
+            message: message.message.clone(),
+            created_at: message.created_at.to_rfc3339(),
+        })
+        .collect()
+}
+
+fn report_post_from_mm_post(post: &mattermost_api::models::Post) -> SupportReportPost {
+    SupportReportPost {
+        post_id: post.id.clone(),
+        user_id: post
+            .user_id
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+        message: post.message.clone().unwrap_or_default(),
+        created_at: post
+            .create_at
+            .map(timestamp_ms_to_rfc3339)
+            .unwrap_or_else(|| "unknown".to_string()),
+    }
 }
 
 fn result_to_message(result: ToolResult, max_bytes: usize) -> ChatMessage {
@@ -699,18 +777,13 @@ mod tests {
     use crate::testutil::PanicStore;
     use crate::tools::{register_default_workflow_tools, ToolCall, ToolSpec};
     use async_trait::async_trait;
-    use chrono::DateTime;
     use chrono::Utc;
-    use std::collections::HashMap;
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::Duration;
-    use thread_bot::{
-        AppendReaction, ChannelCheckpoint, ThreadInfo, ThreadMessage, ThreadMessageRecord,
-        ThreadReaction, ThreadRecord, ThreadStatus, ThreadStore, UpsertThread, UpsertThreadMessage,
-    };
+    use thread_bot::{ThreadInfo, ThreadMessage, ThreadStatus};
 
     struct StaticLlm;
 
@@ -843,176 +916,6 @@ mod tests {
             store: Arc::new(PanicStore),
             plugin_id: "test",
             bot_user_id: Some("bot".to_string()),
-        }
-    }
-
-    fn context_with_store(store: Arc<dyn ThreadStore>) -> ThreadContext {
-        ThreadContext {
-            config: Arc::new(Default::default()),
-            store,
-            plugin_id: "test",
-            bot_user_id: Some("bot".to_string()),
-        }
-    }
-
-    struct TestStore {
-        threads: Mutex<HashMap<String, ThreadRecord>>,
-    }
-
-    impl TestStore {
-        fn new(records: Vec<ThreadRecord>) -> Self {
-            Self {
-                threads: Mutex::new(
-                    records
-                        .into_iter()
-                        .map(|record| (record.thread_id.clone(), record))
-                        .collect(),
-                ),
-            }
-        }
-
-        fn thread(&self, thread_id: &str) -> Option<ThreadRecord> {
-            self.threads.lock().unwrap().get(thread_id).cloned()
-        }
-    }
-
-    #[async_trait]
-    impl ThreadStore for TestStore {
-        async fn upsert_thread(
-            &self,
-            _input: UpsertThread,
-        ) -> Result<ThreadRecord, ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn get_thread(
-            &self,
-            thread_id: &str,
-        ) -> Result<Option<ThreadRecord>, ThreadBotError> {
-            Ok(self.threads.lock().unwrap().get(thread_id).cloned())
-        }
-
-        async fn get_thread_by_post(
-            &self,
-            _post_id: &str,
-        ) -> Result<Option<ThreadRecord>, ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn list_threads_by_status(
-            &self,
-            _statuses: &[ThreadStatus],
-            _updated_after: Option<DateTime<Utc>>,
-            _updated_before: Option<DateTime<Utc>>,
-        ) -> Result<Vec<ThreadRecord>, ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn update_thread_status(
-            &self,
-            _thread_id: &str,
-            _status: ThreadStatus,
-        ) -> Result<(), ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn set_thread_metadata(
-            &self,
-            thread_id: &str,
-            metadata: serde_json::Value,
-        ) -> Result<(), ThreadBotError> {
-            let mut threads = self.threads.lock().unwrap();
-            let Some(record) = threads.get_mut(thread_id) else {
-                return Err(ThreadBotError::ThreadNotFound(thread_id.to_string()));
-            };
-            record.metadata = metadata;
-            Ok(())
-        }
-
-        async fn update_thread_seen(
-            &self,
-            _thread_id: &str,
-            _post_id: &str,
-            _seen_at: DateTime<Utc>,
-        ) -> Result<(), ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn update_thread_processed(
-            &self,
-            _thread_id: &str,
-            _post_id: &str,
-            _processed_at: DateTime<Utc>,
-        ) -> Result<(), ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn upsert_message(
-            &self,
-            _input: UpsertThreadMessage,
-        ) -> Result<ThreadMessageRecord, ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn get_message(
-            &self,
-            _post_id: &str,
-        ) -> Result<Option<ThreadMessageRecord>, ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn list_thread_messages(
-            &self,
-            _thread_id: &str,
-        ) -> Result<Vec<ThreadMessageRecord>, ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn set_message_metadata(
-            &self,
-            _post_id: &str,
-            _metadata: serde_json::Value,
-        ) -> Result<(), ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn append_reaction(&self, _input: AppendReaction) -> Result<(), ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn list_thread_reactions(
-            &self,
-            _thread_id: &str,
-        ) -> Result<Vec<ThreadReaction>, ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn list_channel_checkpoints(&self) -> Result<Vec<ChannelCheckpoint>, ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn upsert_channel_checkpoint(
-            &self,
-            _channel_id: &str,
-            _last_seen_post_at: DateTime<Utc>,
-        ) -> Result<(), ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn advance_channel_checkpoint(
-            &self,
-            _channel_id: &str,
-            _last_seen_post_at: DateTime<Utc>,
-        ) -> Result<(), ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn set_all_channels_not_reconciled(&self) -> Result<(), ThreadBotError> {
-            panic!("not used in this test")
-        }
-
-        async fn set_channel_reconciled(&self, _channel_id: &str) -> Result<(), ThreadBotError> {
-            panic!("not used in this test")
         }
     }
 
@@ -1246,104 +1149,5 @@ mod tests {
             source_user_thread_id(&engineer_thread_with_source("user-thread-1")).as_deref(),
             Some("user-thread-1")
         );
-    }
-
-    #[test]
-    fn debug_chat_message_is_json_block() {
-        let message = ChatMessage::tool("call-1", "{\"ok\":true}");
-        let formatted = format_debug_chat_message("tool result", &message);
-
-        assert!(formatted.contains("**Debug: tool result**"));
-        assert!(formatted.contains("```json"));
-        assert!(formatted.contains("call-1"));
-    }
-
-    #[tokio::test]
-    async fn debug_on_command_updates_source_thread_metadata() {
-        let now = Utc::now();
-        let user_record = ThreadRecord {
-            thread_id: "user-thread-1".to_string(),
-            root_post_id: "user-root-1".to_string(),
-            channel_id: "users".to_string(),
-            creator_user_id: "user-1".to_string(),
-            status: ThreadStatus::Active,
-            metadata: json!({}),
-            last_seen_post_id: None,
-            last_seen_post_at: None,
-            last_processed_post_id: None,
-            last_processed_post_at: None,
-            created_at: now,
-            updated_at: now,
-        };
-        let store = Arc::new(TestStore::new(vec![user_record]));
-        let handler = SupportBotHandler::new(
-            "support",
-            test_config(),
-            Arc::new(StaticLlm),
-            Arc::new(ToolRegistry::new()),
-            "system",
-        );
-        let mut engineer_thread = engineer_thread_with_source("user-thread-1");
-        engineer_thread.messages[0].message = "!support debug on".to_string();
-
-        let effects = handler
-            .handle(&engineer_thread, &context_with_store(store.clone()))
-            .await
-            .unwrap();
-
-        assert!(effects.iter().any(|effect| {
-            matches!(
-                effect,
-                ThreadEffect::Reply { message, .. } if message.contains("Debug mode is on")
-            )
-        }));
-        let updated = store.thread("user-thread-1").expect("source thread");
-        let state = load_state(&updated.metadata).unwrap();
-        assert!(state.debug);
-    }
-
-    #[tokio::test]
-    async fn debug_status_command_keeps_state_value() {
-        let now = Utc::now();
-        let user_record = ThreadRecord {
-            thread_id: "user-thread-2".to_string(),
-            root_post_id: "user-root-2".to_string(),
-            channel_id: "users".to_string(),
-            creator_user_id: "user-1".to_string(),
-            status: ThreadStatus::Active,
-            metadata: store_state(
-                &json!({}),
-                &SupportThreadState {
-                    debug: true,
-                    ..Default::default()
-                },
-            )
-            .unwrap(),
-            last_seen_post_id: None,
-            last_seen_post_at: None,
-            last_processed_post_id: None,
-            last_processed_post_at: None,
-            created_at: now,
-            updated_at: now,
-        };
-        let store = Arc::new(TestStore::new(vec![user_record]));
-        let handler = SupportBotHandler::new(
-            "support",
-            test_config(),
-            Arc::new(StaticLlm),
-            Arc::new(ToolRegistry::new()),
-            "system",
-        );
-        let mut engineer_thread = engineer_thread_with_source("user-thread-2");
-        engineer_thread.messages[0].message = "!support debug status".to_string();
-
-        handler
-            .handle(&engineer_thread, &context_with_store(store.clone()))
-            .await
-            .unwrap();
-
-        let updated = store.thread("user-thread-2").expect("source thread");
-        let state = load_state(&updated.metadata).unwrap();
-        assert!(state.debug);
     }
 }

@@ -62,3 +62,6 @@ cargo run -p support-bot-example
 - If `SUPPORT_ENGINEER_CHANNEL_ID` is unset, engineer notifications stay in the same thread.
 - `SUPPORT_REMOTE_MCP_NAMES` is a comma-separated list. For each name `x`, provide `SUPPORT_REMOTE_MCP_X_URL` and optionally `SUPPORT_REMOTE_MCP_X_AUTH_HEADER` (name is uppercased, `-` becomes `_`).
 - The included instruction files are placeholders; replace them with your runbooks.
+- Engineer thread commands:
+  - `!support debug-report` to export full source support thread as a self-contained HTML attachment (includes tool-trace section).
+- On tool-loop fatal stop, the bot also uploads an HTML thread snapshot to the engineer thread automatically.
