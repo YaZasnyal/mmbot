@@ -6,12 +6,14 @@ members = [
     "lib/bool_parser",
     "lib/mattermost-bot",
     "lib/mattermost-test-helpers",
+    "lib/support-bot",
     "lib/thread-bot",
     "examples/hello_thread_bot"
 ]
 
 [workspace.dependencies]
 thread-bot = { path = "lib/thread-bot" }
+support-bot = { path = "lib/support-bot" }
 mattermost_bot = { path = "lib/mattermost-bot" }
 mattermost_api = { path = "lib/mattermost-api" }
 bool_parser = { path = "lib/bool_parser" }
