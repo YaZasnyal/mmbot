@@ -3,6 +3,7 @@
 //! This crate is an experimental skeleton for Mattermost support bots built on
 //! top of `thread-bot`.
 
+pub mod builder;
 pub mod config;
 pub mod debug;
 pub mod error;
@@ -18,6 +19,7 @@ pub mod tools;
 mod testutil;
 
 pub use async_trait::async_trait;
+pub use builder::{SupportBotBuilder, DEFAULT_SUPPORT_SYSTEM_PROMPT};
 pub use config::{
     DebugCommandConfig, EngineerNotificationConfig, EngineerNotificationTarget, InstructionConfig,
     LlmConfig, RemoteMcpEndpoint, SupportBotConfig, SupportBotLimits, SupportRouteConfig,

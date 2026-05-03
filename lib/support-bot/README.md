@@ -42,6 +42,8 @@ This crate now includes the first concrete `SupportBotHandler` skeleton:
   the engineer thread.
 - can register remote MCP tools from `ToolConfig.remote_mcp_endpoints` via
   `register_remote_mcp_tools`.
+- includes `SupportBotBuilder` with a default system prompt that enforces using
+  the `instructions` tool before inventing diagnostics.
 
 ## Instruction Format
 
