@@ -693,12 +693,18 @@ mod tests {
     use crate::testutil::PanicStore;
     use crate::tools::{register_default_workflow_tools, ToolCall, ToolSpec};
     use async_trait::async_trait;
+    use chrono::DateTime;
     use chrono::Utc;
+    use std::collections::HashMap;
     use std::collections::VecDeque;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::Duration;
-    use thread_bot::{ThreadInfo, ThreadMessage, ThreadStatus};
+    use thread_bot::{
+        AppendReaction, ChannelCheckpoint, ThreadInfo, ThreadMessage, ThreadMessageRecord,
+        ThreadReaction, ThreadRecord, ThreadStatus, ThreadStore, UpsertThread, UpsertThreadMessage,
+    };
 
     struct StaticLlm;
 
@@ -831,6 +837,176 @@ mod tests {
             store: Arc::new(PanicStore),
             plugin_id: "test",
             bot_user_id: Some("bot".to_string()),
+        }
+    }
+
+    fn context_with_store(store: Arc<dyn ThreadStore>) -> ThreadContext {
+        ThreadContext {
+            config: Arc::new(Default::default()),
+            store,
+            plugin_id: "test",
+            bot_user_id: Some("bot".to_string()),
+        }
+    }
+
+    struct TestStore {
+        threads: Mutex<HashMap<String, ThreadRecord>>,
+    }
+
+    impl TestStore {
+        fn new(records: Vec<ThreadRecord>) -> Self {
+            Self {
+                threads: Mutex::new(
+                    records
+                        .into_iter()
+                        .map(|record| (record.thread_id.clone(), record))
+                        .collect(),
+                ),
+            }
+        }
+
+        fn thread(&self, thread_id: &str) -> Option<ThreadRecord> {
+            self.threads.lock().unwrap().get(thread_id).cloned()
+        }
+    }
+
+    #[async_trait]
+    impl ThreadStore for TestStore {
+        async fn upsert_thread(
+            &self,
+            _input: UpsertThread,
+        ) -> Result<ThreadRecord, ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn get_thread(
+            &self,
+            thread_id: &str,
+        ) -> Result<Option<ThreadRecord>, ThreadBotError> {
+            Ok(self.threads.lock().unwrap().get(thread_id).cloned())
+        }
+
+        async fn get_thread_by_post(
+            &self,
+            _post_id: &str,
+        ) -> Result<Option<ThreadRecord>, ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn list_threads_by_status(
+            &self,
+            _statuses: &[ThreadStatus],
+            _updated_after: Option<DateTime<Utc>>,
+            _updated_before: Option<DateTime<Utc>>,
+        ) -> Result<Vec<ThreadRecord>, ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn update_thread_status(
+            &self,
+            _thread_id: &str,
+            _status: ThreadStatus,
+        ) -> Result<(), ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn set_thread_metadata(
+            &self,
+            thread_id: &str,
+            metadata: serde_json::Value,
+        ) -> Result<(), ThreadBotError> {
+            let mut threads = self.threads.lock().unwrap();
+            let Some(record) = threads.get_mut(thread_id) else {
+                return Err(ThreadBotError::ThreadNotFound(thread_id.to_string()));
+            };
+            record.metadata = metadata;
+            Ok(())
+        }
+
+        async fn update_thread_seen(
+            &self,
+            _thread_id: &str,
+            _post_id: &str,
+            _seen_at: DateTime<Utc>,
+        ) -> Result<(), ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn update_thread_processed(
+            &self,
+            _thread_id: &str,
+            _post_id: &str,
+            _processed_at: DateTime<Utc>,
+        ) -> Result<(), ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn upsert_message(
+            &self,
+            _input: UpsertThreadMessage,
+        ) -> Result<ThreadMessageRecord, ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn get_message(
+            &self,
+            _post_id: &str,
+        ) -> Result<Option<ThreadMessageRecord>, ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn list_thread_messages(
+            &self,
+            _thread_id: &str,
+        ) -> Result<Vec<ThreadMessageRecord>, ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn set_message_metadata(
+            &self,
+            _post_id: &str,
+            _metadata: serde_json::Value,
+        ) -> Result<(), ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn append_reaction(&self, _input: AppendReaction) -> Result<(), ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn list_thread_reactions(
+            &self,
+            _thread_id: &str,
+        ) -> Result<Vec<ThreadReaction>, ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn list_channel_checkpoints(&self) -> Result<Vec<ChannelCheckpoint>, ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn upsert_channel_checkpoint(
+            &self,
+            _channel_id: &str,
+            _last_seen_post_at: DateTime<Utc>,
+        ) -> Result<(), ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn advance_channel_checkpoint(
+            &self,
+            _channel_id: &str,
+            _last_seen_post_at: DateTime<Utc>,
+        ) -> Result<(), ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn set_all_channels_not_reconciled(&self) -> Result<(), ThreadBotError> {
+            panic!("not used in this test")
+        }
+
+        async fn set_channel_reconciled(&self, _channel_id: &str) -> Result<(), ThreadBotError> {
+            panic!("not used in this test")
         }
     }
 
@@ -1048,5 +1224,94 @@ mod tests {
         assert!(formatted.contains("**Debug: tool result**"));
         assert!(formatted.contains("```json"));
         assert!(formatted.contains("call-1"));
+    }
+
+    #[tokio::test]
+    async fn debug_on_command_updates_source_thread_metadata() {
+        let now = Utc::now();
+        let user_record = ThreadRecord {
+            thread_id: "user-thread-1".to_string(),
+            root_post_id: "user-root-1".to_string(),
+            channel_id: "users".to_string(),
+            creator_user_id: "user-1".to_string(),
+            status: ThreadStatus::Active,
+            metadata: json!({}),
+            last_seen_post_id: None,
+            last_seen_post_at: None,
+            last_processed_post_id: None,
+            last_processed_post_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let store = Arc::new(TestStore::new(vec![user_record]));
+        let handler = SupportBotHandler::new(
+            "support",
+            test_config(),
+            Arc::new(StaticLlm),
+            Arc::new(ToolRegistry::new()),
+            "system",
+        );
+        let mut engineer_thread = engineer_thread_with_source("user-thread-1");
+        engineer_thread.messages[0].message = "!support debug on".to_string();
+
+        let effects = handler
+            .handle(&engineer_thread, &context_with_store(store.clone()))
+            .await
+            .unwrap();
+
+        assert!(effects.iter().any(|effect| {
+            matches!(
+                effect,
+                ThreadEffect::Reply { message, .. } if message.contains("Debug mode is on")
+            )
+        }));
+        let updated = store.thread("user-thread-1").expect("source thread");
+        let state = load_state(&updated.metadata).unwrap();
+        assert!(state.debug);
+    }
+
+    #[tokio::test]
+    async fn debug_status_command_keeps_state_value() {
+        let now = Utc::now();
+        let user_record = ThreadRecord {
+            thread_id: "user-thread-2".to_string(),
+            root_post_id: "user-root-2".to_string(),
+            channel_id: "users".to_string(),
+            creator_user_id: "user-1".to_string(),
+            status: ThreadStatus::Active,
+            metadata: store_state(
+                &json!({}),
+                &SupportThreadState {
+                    debug: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+            last_seen_post_id: None,
+            last_seen_post_at: None,
+            last_processed_post_id: None,
+            last_processed_post_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let store = Arc::new(TestStore::new(vec![user_record]));
+        let handler = SupportBotHandler::new(
+            "support",
+            test_config(),
+            Arc::new(StaticLlm),
+            Arc::new(ToolRegistry::new()),
+            "system",
+        );
+        let mut engineer_thread = engineer_thread_with_source("user-thread-2");
+        engineer_thread.messages[0].message = "!support debug status".to_string();
+
+        handler
+            .handle(&engineer_thread, &context_with_store(store.clone()))
+            .await
+            .unwrap();
+
+        let updated = store.thread("user-thread-2").expect("source thread");
+        let state = load_state(&updated.metadata).unwrap();
+        assert!(state.debug);
     }
 }
