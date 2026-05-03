@@ -34,3 +34,9 @@ impl SupportBotError {
         Self::Internal(Box::new(err))
     }
 }
+
+impl From<SupportBotError> for thread_bot::ThreadBotError {
+    fn from(error: SupportBotError) -> Self {
+        thread_bot::ThreadBotError::internal(error)
+    }
+}

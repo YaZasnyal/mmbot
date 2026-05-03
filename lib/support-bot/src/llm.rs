@@ -72,6 +72,8 @@ pub struct ChatMessage {
     pub content: Option<String>,
     pub name: Option<String>,
     pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -102,6 +104,7 @@ impl ChatMessage {
             content: Some(content.into()),
             name: None,
             tool_call_id: Some(call_id.into()),
+            tool_calls: Vec::new(),
         }
     }
 
@@ -111,6 +114,7 @@ impl ChatMessage {
             content: Some(content.into()),
             name: None,
             tool_call_id: None,
+            tool_calls: Vec::new(),
         }
     }
 }
@@ -153,7 +157,7 @@ impl From<ChatMessage> for OpenAiMessage {
             content: message.content,
             name: message.name,
             tool_call_id: message.tool_call_id,
-            tool_calls: Vec::new(),
+            tool_calls: message.tool_calls.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -165,6 +169,7 @@ impl From<OpenAiMessage> for ChatMessage {
             content: message.content,
             name: message.name,
             tool_call_id: message.tool_call_id,
+            tool_calls: Vec::new(),
         }
     }
 }
@@ -215,9 +220,11 @@ impl TryFrom<OpenAiChatResponse> for LlmResponse {
             .iter()
             .map(ToolCall::try_from)
             .collect::<Result<Vec<_>>>()?;
+        let mut message = ChatMessage::from(choice.message);
+        message.tool_calls = tool_calls.clone();
 
         Ok(Self {
-            message: choice.message.into(),
+            message,
             tool_calls,
         })
     }
@@ -231,7 +238,28 @@ struct OpenAiChoice {
 #[derive(Debug, Serialize, Deserialize)]
 struct OpenAiToolCall {
     id: String,
+    #[serde(rename = "type")]
+    kind: OpenAiToolCallType,
     function: OpenAiToolCallFunction,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OpenAiToolCallType {
+    Function,
+}
+
+impl From<ToolCall> for OpenAiToolCall {
+    fn from(call: ToolCall) -> Self {
+        Self {
+            id: call.id,
+            kind: OpenAiToolCallType::Function,
+            function: OpenAiToolCallFunction {
+                name: call.name,
+                arguments: call.arguments.to_string(),
+            },
+        }
+    }
 }
 
 impl TryFrom<&OpenAiToolCall> for ToolCall {
@@ -318,5 +346,31 @@ mod tests {
         assert_eq!(response.tool_calls[0].id, "call_1");
         assert_eq!(response.tool_calls[0].name, "search_logs");
         assert_eq!(response.tool_calls[0].arguments["query"], "timeout");
+        assert_eq!(response.message.tool_calls[0].id, "call_1");
+    }
+
+    #[test]
+    fn serializes_assistant_tool_calls() {
+        let message = ChatMessage {
+            role: ChatRole::Assistant,
+            content: None,
+            name: None,
+            tool_call_id: None,
+            tool_calls: vec![ToolCall {
+                id: "call_1".to_string(),
+                name: "instructions".to_string(),
+                arguments: serde_json::json!({ "action": "list" }),
+            }],
+        };
+
+        let wire = OpenAiMessage::from(message);
+        let value = serde_json::to_value(wire).unwrap();
+
+        assert_eq!(value["tool_calls"][0]["type"], "function");
+        assert_eq!(value["tool_calls"][0]["function"]["name"], "instructions");
+        assert_eq!(
+            value["tool_calls"][0]["function"]["arguments"],
+            "{\"action\":\"list\"}"
+        );
     }
 }

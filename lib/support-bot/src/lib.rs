@@ -6,11 +6,15 @@
 pub mod config;
 pub mod debug;
 pub mod error;
+pub mod handler;
 pub mod instructions;
 pub mod llm;
 pub mod notifier;
 pub mod state;
 pub mod tools;
+
+#[cfg(test)]
+mod testutil;
 
 pub use async_trait::async_trait;
 pub use config::{
@@ -20,6 +24,7 @@ pub use config::{
 };
 pub use debug::{DebugCommand, DebugCommandHandler, DebugCommandMatch, DebugResponse};
 pub use error::{Result, SupportBotError};
+pub use handler::SupportBotHandler;
 pub use instructions::{
     InstructionDocument, InstructionManifest, InstructionRepository, LoadedInstruction,
 };
@@ -29,6 +34,6 @@ pub use llm::{
 pub use notifier::SupportNotifier;
 pub use state::{EngineerThreadRef, SupportHistoryItem, SupportThreadState};
 pub use tools::{
-    SupportAction, SupportTool, ToolCall, ToolContext, ToolExecutionOutcome, ToolKind,
-    ToolRegistry, ToolResult, ToolSpec,
+    register_default_workflow_tools, SupportAction, SupportTool, ToolCall, ToolContext,
+    ToolExecutionOutcome, ToolKind, ToolRegistry, ToolResult, ToolSpec,
 };

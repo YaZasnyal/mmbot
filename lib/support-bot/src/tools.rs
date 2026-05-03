@@ -116,3 +116,182 @@ impl ToolRegistry {
         tool.call(ctx, call).await
     }
 }
+
+pub fn register_default_workflow_tools(registry: &mut ToolRegistry) -> Result<()> {
+    registry.register(WorkflowTool::send_user_message())?;
+    registry.register(WorkflowTool::notify_engineer())?;
+    registry.register(WorkflowTool::wait_for_user())?;
+    registry.register(WorkflowTool::finish_request())?;
+    Ok(())
+}
+
+struct WorkflowTool {
+    name: &'static str,
+    description: &'static str,
+    kind: WorkflowToolKind,
+}
+
+impl WorkflowTool {
+    fn send_user_message() -> Self {
+        Self {
+            name: "send_user_message",
+            description: "Send a message to the user in the support thread.",
+            kind: WorkflowToolKind::SendUserMessage,
+        }
+    }
+
+    fn notify_engineer() -> Self {
+        Self {
+            name: "notify_engineer",
+            description: "Send diagnostic context or a question to the engineer channel.",
+            kind: WorkflowToolKind::NotifyEngineer,
+        }
+    }
+
+    fn wait_for_user() -> Self {
+        Self {
+            name: "wait_for_user",
+            description: "Pause active handling until the user sends more information.",
+            kind: WorkflowToolKind::WaitForUser,
+        }
+    }
+
+    fn finish_request() -> Self {
+        Self {
+            name: "finish_request",
+            description: "Mark the support request as finished.",
+            kind: WorkflowToolKind::FinishRequest,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum WorkflowToolKind {
+    SendUserMessage,
+    NotifyEngineer,
+    WaitForUser,
+    FinishRequest,
+}
+
+#[async_trait]
+impl SupportTool for WorkflowTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: self.name.to_string(),
+            description: self.description.to_string(),
+            input_schema: match self.kind {
+                WorkflowToolKind::SendUserMessage | WorkflowToolKind::NotifyEngineer => {
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "message": { "type": "string" }
+                        },
+                        "required": ["message"],
+                        "additionalProperties": false
+                    })
+                }
+                WorkflowToolKind::WaitForUser => serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "reason": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                }),
+                WorkflowToolKind::FinishRequest => serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "summary": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+            kind: ToolKind::Workflow,
+        }
+    }
+
+    async fn call(&self, _ctx: ToolContext, call: ToolCall) -> Result<ToolExecutionOutcome> {
+        let action = match self.kind {
+            WorkflowToolKind::SendUserMessage => SupportAction::SendUserMessage {
+                message: required_string(&call.arguments, "message")?,
+            },
+            WorkflowToolKind::NotifyEngineer => SupportAction::NotifyEngineer {
+                message: required_string(&call.arguments, "message")?,
+            },
+            WorkflowToolKind::WaitForUser => SupportAction::WaitForUser {
+                reason: optional_string(&call.arguments, "reason"),
+            },
+            WorkflowToolKind::FinishRequest => SupportAction::FinishRequest {
+                summary: optional_string(&call.arguments, "summary"),
+            },
+        };
+
+        Ok(ToolExecutionOutcome::Action(action))
+    }
+}
+
+fn required_string(arguments: &serde_json::Value, key: &str) -> Result<String> {
+    arguments
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| SupportBotError::Tool(format!("missing required string argument: {key}")))
+}
+
+fn optional_string(arguments: &serde_json::Value, key: &str) -> Option<String> {
+    arguments
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registers_default_workflow_tools() {
+        let mut registry = ToolRegistry::new();
+        register_default_workflow_tools(&mut registry).unwrap();
+
+        let names = registry
+            .specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "finish_request",
+                "notify_engineer",
+                "send_user_message",
+                "wait_for_user"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_tool_returns_support_action() {
+        let tool = WorkflowTool::send_user_message();
+        let outcome = tool
+            .call(
+                ToolContext::without_thread(),
+                ToolCall {
+                    id: "call-1".to_string(),
+                    name: "send_user_message".to_string(),
+                    arguments: serde_json::json!({ "message": "hello" }),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            ToolExecutionOutcome::Action(SupportAction::SendUserMessage {
+                message: "hello".to_string()
+            })
+        );
+    }
+}

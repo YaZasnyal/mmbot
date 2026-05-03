@@ -28,9 +28,17 @@ mattermost-bot / mattermost-api
 
 ## Current Scope
 
-This initial crate provides contracts and lightweight utilities. The bounded
-LLM/tool execution loop and concrete `SupportBotHandler` are added in later
-steps so their API can be reviewed independently.
+This crate now includes the first concrete `SupportBotHandler` skeleton:
+
+- routes user-channel threads into the LLM/tool loop;
+- routes engineer-channel threads through debug command handling before LLM;
+- persists `SupportThreadState` under the `support_bot` thread metadata key;
+- executes local tools through `ToolRegistry` with bounded tool rounds.
+- provides default workflow tools for user replies, engineer notifications,
+  waiting for user input, and finishing a request.
+
+Mattermost-specific engineer notification delivery and remote MCP tool loading
+are intentionally left for later reviewable steps.
 
 ## Instruction Format
 
