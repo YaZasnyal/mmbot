@@ -31,7 +31,7 @@ pub use instructions::{
 pub use llm::{
     ChatMessage, ChatRole, LlmClient, LlmRequest, LlmResponse, OpenAiChatCompletionsClient,
 };
-pub use notifier::SupportNotifier;
+pub use notifier::MattermostSupportNotifier;
 pub use state::{EngineerThreadRef, SupportHistoryItem, SupportThreadState};
 pub use tools::{
     register_default_workflow_tools, SupportAction, SupportTool, ToolCall, ToolContext,

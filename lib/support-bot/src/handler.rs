@@ -1,7 +1,7 @@
-use crate::config::SupportBotConfig;
+use crate::config::{EngineerNotificationTarget, SupportBotConfig};
 use crate::debug::{DebugCommand, DebugCommandHandler};
 use crate::llm::{ChatMessage, ChatRole, LlmClient, LlmRequest};
-use crate::notifier::SupportNotifier;
+use crate::notifier::MattermostSupportNotifier;
 use crate::state::SupportThreadState;
 use crate::tools::{SupportAction, ToolContext, ToolExecutionOutcome, ToolRegistry, ToolResult};
 use async_trait::async_trait;
@@ -20,7 +20,6 @@ pub struct SupportBotHandler {
     llm: Arc<dyn LlmClient>,
     tools: Arc<ToolRegistry>,
     debug_handler: Option<Arc<dyn DebugCommandHandler>>,
-    notifier: Option<Arc<dyn SupportNotifier>>,
     system_prompt: String,
 }
 
@@ -38,18 +37,12 @@ impl SupportBotHandler {
             llm,
             tools,
             debug_handler: None,
-            notifier: None,
             system_prompt: system_prompt.into(),
         }
     }
 
     pub fn with_debug_handler(mut self, handler: Arc<dyn DebugCommandHandler>) -> Self {
         self.debug_handler = Some(handler);
-        self
-    }
-
-    pub fn with_notifier(mut self, notifier: Arc<dyn SupportNotifier>) -> Self {
-        self.notifier = Some(notifier);
         self
     }
 
@@ -94,6 +87,10 @@ impl SupportBotHandler {
             return Ok(vec![ThreadEffect::Noop]);
         };
 
+        if command.name == "debug" {
+            return self.handle_debug_toggle(thread, ctx, command).await;
+        }
+
         let response = match &self.debug_handler {
             Some(handler) => handler.handle_debug_command(command).await?,
             None => crate::debug::DebugResponse {
@@ -121,7 +118,16 @@ impl SupportBotHandler {
         };
 
         let mut state = load_state(&thread.info.metadata)?;
-        state.waiting_for_user = false;
+        if let Some(engineer_thread) = self
+            .engineer_notifier(ctx)
+            .ensure_engineer_thread(thread, state.engineer_thread.as_ref())
+            .await?
+        {
+            state.engineer_thread = Some(engineer_thread);
+        }
+        self.mirror_user_message(ctx, thread, &mut state, trigger_message)
+            .await?;
+
         let mut messages = self.build_llm_messages(thread, &state, ctx)?;
         let mut trace = Vec::new();
         let mut effects = Vec::new();
@@ -142,15 +148,19 @@ impl SupportBotHandler {
                     .content
                     .filter(|content| !content.is_empty())
                 {
-                    state.last_action = Some("assistant_reply".to_string());
-                    effects.push(ThreadEffect::Reply {
-                        message: content,
-                        metadata: json!({
+                    self.push_reply_effect(
+                        ctx,
+                        thread,
+                        &mut state,
+                        &mut effects,
+                        content,
+                        json!({
                             STATE_KEY: {
                                 "kind": "assistant_response"
                             }
                         }),
-                    });
+                    )
+                    .await?;
                 }
                 if !trace.is_empty() {
                     effects.push(ThreadEffect::UpdateMessage {
@@ -180,6 +190,13 @@ impl SupportBotHandler {
             };
             messages.push(assistant_tool_call_message.clone());
             trace.push(assistant_tool_call_message);
+            self.send_debug_message(
+                ctx,
+                thread,
+                &mut state,
+                format_debug_chat_message("assistant tool calls", messages.last().unwrap()),
+            )
+            .await?;
 
             let tool_context = ToolContext::new(Arc::new(thread.clone()));
             for call in tool_calls {
@@ -189,8 +206,8 @@ impl SupportBotHandler {
                     }
                     Ok(ToolExecutionOutcome::Action(action)) => {
                         let result = self
-                            .apply_action(thread, &mut state, &mut effects, &call.id, action)
-                            .await;
+                            .apply_action(ctx, thread, &mut state, &mut effects, &call.id, action)
+                            .await?;
                         result_to_message(result, self.config.limits.max_tool_result_bytes)
                     }
                     Err(error) => result_to_message(
@@ -206,6 +223,13 @@ impl SupportBotHandler {
                 };
                 messages.push(tool_message.clone());
                 trace.push(tool_message);
+                self.send_debug_message(
+                    ctx,
+                    thread,
+                    &mut state,
+                    format_debug_chat_message("tool result", messages.last().unwrap()),
+                )
+                .await?;
             }
         }
 
@@ -217,19 +241,22 @@ impl SupportBotHandler {
             });
         }
 
-        state.last_action = Some("tool_loop_limit_reached".to_string());
-        effects.push(ThreadEffect::SetThreadMetadata {
-            metadata: store_state(&thread.info.metadata, &state)?,
-        });
-        effects.push(ThreadEffect::Reply {
-            message:
-                "I could not complete the support workflow because the tool loop limit was reached."
-                    .to_string(),
-            metadata: json!({
+        self.push_reply_effect(
+            ctx,
+            thread,
+            &mut state,
+            &mut effects,
+            "I could not complete the support workflow because the tool loop limit was reached."
+                .to_string(),
+            json!({
                 STATE_KEY: {
                     "kind": "tool_loop_limit"
                 }
             }),
+        )
+        .await?;
+        effects.push(ThreadEffect::SetThreadMetadata {
+            metadata: store_state(&thread.info.metadata, &state)?,
         });
         Ok(effects)
     }
@@ -277,25 +304,30 @@ impl SupportBotHandler {
 
     async fn apply_action(
         &self,
+        ctx: &ThreadContext,
         thread: &Thread,
         state: &mut SupportThreadState,
         effects: &mut Vec<ThreadEffect>,
         call_id: &str,
         action: SupportAction,
-    ) -> ToolResult {
-        match action {
+    ) -> Result<ToolResult, ThreadBotError> {
+        let result = match action {
             SupportAction::SendUserMessage { message } => {
-                state.last_action = Some("send_user_message".to_string());
-                effects.push(ThreadEffect::Reply {
+                self.push_reply_effect(
+                    ctx,
+                    thread,
+                    state,
+                    effects,
                     message,
-                    metadata: json!({
+                    json!({
                         STATE_KEY: {
                             "kind": "tool_action",
                             "tool_call_id": call_id,
                             "action": "send_user_message"
                         }
                     }),
-                });
+                )
+                .await?;
                 ToolResult {
                     call_id: call_id.to_string(),
                     content: json!({ "status": "sent" }),
@@ -303,31 +335,53 @@ impl SupportBotHandler {
                 }
             }
             SupportAction::NotifyEngineer { message } => {
-                state.last_action = Some("notify_engineer".to_string());
-                state.waiting_for_engineer = true;
-                let notify_result = match &self.notifier {
-                    Some(notifier) => notifier.notify_engineer(thread, message.clone()).await,
-                    None => {
-                        return ToolResult {
-                            call_id: call_id.to_string(),
-                            content: json!({
-                                "status": "failed",
-                                "error": "engineer notifier is not configured"
+                match &self.config.engineer_notifications.target {
+                    EngineerNotificationTarget::SameThread => {
+                        effects.push(ThreadEffect::Reply {
+                            message: message.clone(),
+                            metadata: json!({
+                                STATE_KEY: {
+                                    "kind": "engineer_notification",
+                                    "tool_call_id": call_id
+                                }
                             }),
-                            is_error: true,
-                        };
+                        });
                     }
-                };
+                    EngineerNotificationTarget::MattermostChannel { .. } => {
+                        let notify_result = self
+                            .engineer_notifier(ctx)
+                            .notify_engineer(
+                                thread,
+                                state.engineer_thread.as_ref(),
+                                message.clone(),
+                            )
+                            .await;
 
-                if let Err(error) = notify_result {
-                    return ToolResult {
-                        call_id: call_id.to_string(),
-                        content: json!({
-                            "status": "failed",
-                            "error": error.to_string()
-                        }),
-                        is_error: true,
-                    };
+                        let thread_ref = match notify_result {
+                            Ok(Some(thread_ref)) => thread_ref,
+                            Ok(None) => {
+                                return Ok(ToolResult {
+                                    call_id: call_id.to_string(),
+                                    content: json!({
+                                        "status": "failed",
+                                        "error": "engineer thread was not created"
+                                    }),
+                                    is_error: true,
+                                });
+                            }
+                            Err(error) => {
+                                return Ok(ToolResult {
+                                    call_id: call_id.to_string(),
+                                    content: json!({
+                                        "status": "failed",
+                                        "error": error.to_string()
+                                    }),
+                                    is_error: true,
+                                });
+                            }
+                        };
+                        state.engineer_thread = Some(thread_ref);
+                    }
                 }
 
                 ToolResult {
@@ -339,22 +393,15 @@ impl SupportBotHandler {
                     is_error: false,
                 }
             }
-            SupportAction::WaitForUser { reason } => {
-                state.last_action = Some("wait_for_user".to_string());
-                state.waiting_for_user = true;
-                ToolResult {
-                    call_id: call_id.to_string(),
-                    content: json!({
-                        "status": "waiting",
-                        "reason": reason
-                    }),
-                    is_error: false,
-                }
-            }
+            SupportAction::WaitForUser { reason } => ToolResult {
+                call_id: call_id.to_string(),
+                content: json!({
+                    "status": "waiting",
+                    "reason": reason
+                }),
+                is_error: false,
+            },
             SupportAction::FinishRequest { summary } => {
-                state.last_action = Some("finish_request".to_string());
-                state.waiting_for_user = false;
-                state.waiting_for_engineer = false;
                 effects.push(ThreadEffect::MarkResolved);
                 ToolResult {
                     call_id: call_id.to_string(),
@@ -365,7 +412,121 @@ impl SupportBotHandler {
                     is_error: false,
                 }
             }
+        };
+        Ok(result)
+    }
+
+    fn engineer_notifier(&self, ctx: &ThreadContext) -> MattermostSupportNotifier {
+        MattermostSupportNotifier::new(
+            ctx.config.clone(),
+            self.config.engineer_notifications.target.clone(),
+        )
+    }
+
+    async fn push_reply_effect(
+        &self,
+        ctx: &ThreadContext,
+        thread: &Thread,
+        state: &mut SupportThreadState,
+        effects: &mut Vec<ThreadEffect>,
+        message: String,
+        metadata: serde_json::Value,
+    ) -> Result<(), ThreadBotError> {
+        effects.push(ThreadEffect::Reply {
+            message: message.clone(),
+            metadata,
+        });
+        if let Some(engineer_thread) = self
+            .engineer_notifier(ctx)
+            .mirror_bot_message(thread, state.engineer_thread.as_ref(), message)
+            .await?
+        {
+            state.engineer_thread = Some(engineer_thread);
         }
+        Ok(())
+    }
+
+    async fn mirror_user_message(
+        &self,
+        ctx: &ThreadContext,
+        thread: &Thread,
+        state: &mut SupportThreadState,
+        message: &ThreadMessage,
+    ) -> Result<(), ThreadBotError> {
+        if message.post_id == thread.info.root_post_id {
+            return Ok(());
+        }
+
+        if let Some(engineer_thread) = self
+            .engineer_notifier(ctx)
+            .mirror_user_message(thread, state.engineer_thread.as_ref(), message)
+            .await?
+        {
+            state.engineer_thread = Some(engineer_thread);
+        }
+        Ok(())
+    }
+
+    async fn send_debug_message(
+        &self,
+        ctx: &ThreadContext,
+        thread: &Thread,
+        state: &mut SupportThreadState,
+        message: String,
+    ) -> Result<(), ThreadBotError> {
+        if !state.debug {
+            return Ok(());
+        }
+
+        if let Some(engineer_thread) = self
+            .engineer_notifier(ctx)
+            .send_debug_message(thread, state.engineer_thread.as_ref(), message)
+            .await?
+        {
+            state.engineer_thread = Some(engineer_thread);
+        }
+        Ok(())
+    }
+
+    async fn handle_debug_toggle(
+        &self,
+        thread: &Thread,
+        ctx: &ThreadContext,
+        command: DebugCommand,
+    ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
+        let Some(user_thread_id) = source_user_thread_id(thread) else {
+            return Ok(vec![ThreadEffect::Reply {
+                message: "Cannot find source support thread for this engineer thread.".to_string(),
+                metadata: debug_response_metadata(),
+            }]);
+        };
+        let Some(record) = ctx.store.get_thread(&user_thread_id).await? else {
+            return Ok(vec![ThreadEffect::Reply {
+                message: format!("Source support thread not found: {user_thread_id}"),
+                metadata: debug_response_metadata(),
+            }]);
+        };
+
+        let mut state = load_state(&record.metadata)?;
+        let requested = command.args.first().map(String::as_str);
+        state.debug = match requested {
+            Some("on") | Some("true") | Some("1") => true,
+            Some("off") | Some("false") | Some("0") => false,
+            Some("status") => state.debug,
+            _ => !state.debug,
+        };
+        ctx.store
+            .set_thread_metadata(&user_thread_id, store_state(&record.metadata, &state)?)
+            .await?;
+
+        Ok(vec![ThreadEffect::Reply {
+            message: format!(
+                "Debug mode is {} for support thread {}.",
+                if state.debug { "on" } else { "off" },
+                user_thread_id
+            ),
+            metadata: debug_response_metadata(),
+        }])
     }
 }
 
@@ -416,6 +577,31 @@ fn last_new_external_message<'a>(
     }
 
     Some(message)
+}
+
+fn source_user_thread_id(thread: &Thread) -> Option<String> {
+    thread
+        .messages
+        .iter()
+        .find(|message| message.post_id == thread.info.root_post_id)
+        .or_else(|| thread.messages.first())
+        .and_then(|message| message.props.get(STATE_KEY))
+        .and_then(|props| props.get("source_thread_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn debug_response_metadata() -> serde_json::Value {
+    json!({
+        STATE_KEY: {
+            "kind": "debug_response"
+        }
+    })
+}
+
+fn format_debug_chat_message(label: &str, message: &ChatMessage) -> String {
+    let value = serde_json::to_string_pretty(message).unwrap_or_else(|_| "{}".to_string());
+    format!("**Debug: {label}**\n\n```json\n{value}\n```")
 }
 
 fn result_to_message(result: ToolResult, max_bytes: usize) -> ChatMessage {
@@ -629,6 +815,16 @@ mod tests {
         }
     }
 
+    fn engineer_thread_with_source(source_thread_id: &str) -> Thread {
+        let mut thread = thread("engineers", "engineer root");
+        thread.messages[0].props = json!({
+            STATE_KEY: {
+                "source_thread_id": source_thread_id
+            }
+        });
+        thread
+    }
+
     fn context() -> ThreadContext {
         ThreadContext {
             config: Arc::new(Default::default()),
@@ -776,6 +972,49 @@ mod tests {
         assert_eq!(llm.requests().len(), 2);
     }
 
+    #[tokio::test]
+    async fn notify_engineer_same_thread_uses_reply_effect() {
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "notify_engineer".to_string(),
+            arguments: json!({ "message": "need help" }),
+        };
+        let llm = Arc::new(SequenceLlm::new(vec![
+            LlmResponse {
+                message: ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: None,
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: vec![call.clone()],
+                },
+                tool_calls: vec![call],
+            },
+            LlmResponse {
+                message: ChatMessage::assistant("sent"),
+                tool_calls: Vec::new(),
+            },
+        ]));
+        let mut registry = ToolRegistry::new();
+        register_default_workflow_tools(&mut registry).unwrap();
+        let handler =
+            SupportBotHandler::new("support", test_config(), llm, Arc::new(registry), "system");
+
+        let effects = handler
+            .handle(&thread("users", "help"), &context())
+            .await
+            .unwrap();
+
+        assert!(effects.iter().any(|effect| {
+            matches!(
+                effect,
+                ThreadEffect::Reply { message, metadata }
+                    if message == "need help"
+                        && metadata["support_bot"]["kind"] == "engineer_notification"
+            )
+        }));
+    }
+
     #[test]
     fn state_is_stored_under_support_bot_key() {
         let metadata = json!({ "other": true });
@@ -791,5 +1030,23 @@ mod tests {
         let specs: Vec<ToolSpec> = registry.specs();
 
         assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn source_user_thread_id_is_read_from_engineer_root_props() {
+        assert_eq!(
+            source_user_thread_id(&engineer_thread_with_source("user-thread-1")).as_deref(),
+            Some("user-thread-1")
+        );
+    }
+
+    #[test]
+    fn debug_chat_message_is_json_block() {
+        let message = ChatMessage::tool("call-1", "{\"ok\":true}");
+        let formatted = format_debug_chat_message("tool result", &message);
+
+        assert!(formatted.contains("**Debug: tool result**"));
+        assert!(formatted.contains("```json"));
+        assert!(formatted.contains("call-1"));
     }
 }

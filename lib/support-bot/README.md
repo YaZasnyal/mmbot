@@ -36,9 +36,12 @@ This crate now includes the first concrete `SupportBotHandler` skeleton:
 - executes local tools through `ToolRegistry` with bounded tool rounds.
 - provides default workflow tools for user replies, engineer notifications,
   waiting for user input, and finishing a request.
+- mirrors user and bot messages into a dedicated engineer channel thread when
+  configured.
+- supports a per-thread debug flag for streaming tool calls and tool results to
+  the engineer thread.
 
-Mattermost-specific engineer notification delivery and remote MCP tool loading
-are intentionally left for later reviewable steps.
+Remote MCP tool loading is intentionally left for a later reviewable step.
 
 ## Instruction Format
 

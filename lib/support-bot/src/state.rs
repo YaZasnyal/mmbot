@@ -5,9 +5,7 @@ pub struct SupportThreadState {
     pub version: u32,
     pub selected_instruction_ids: Vec<String>,
     pub compact_history: Vec<SupportHistoryItem>,
-    pub last_action: Option<String>,
-    pub waiting_for_user: bool,
-    pub waiting_for_engineer: bool,
+    pub debug: bool,
     pub engineer_thread: Option<EngineerThreadRef>,
 }
 
@@ -29,9 +27,7 @@ impl Default for SupportThreadState {
             version: 1,
             selected_instruction_ids: Vec::new(),
             compact_history: Vec::new(),
-            last_action: None,
-            waiting_for_user: false,
-            waiting_for_engineer: false,
+            debug: false,
             engineer_thread: None,
         }
     }
@@ -45,8 +41,7 @@ mod tests {
     fn support_thread_state_round_trips_as_json() {
         let state = SupportThreadState {
             selected_instruction_ids: vec!["diagnostics.slow_requests".to_string()],
-            last_action: Some("notify_engineer".to_string()),
-            waiting_for_engineer: true,
+            debug: true,
             engineer_thread: Some(EngineerThreadRef {
                 channel_id: "engineers".to_string(),
                 root_post_id: "post-1".to_string(),

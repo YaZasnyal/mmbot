@@ -192,10 +192,9 @@ Resume-состояние support-бота хранится в `Thread.info.meta
 ```rust
 pub struct SupportThreadState {
     pub version: u32,
-    pub phase: SupportPhase,
     pub selected_instruction_ids: Vec<String>,
     pub compact_history: Vec<SupportHistoryItem>,
-    pub last_action: Option<String>,
+    pub debug: bool,
     pub engineer_thread: Option<EngineerThreadRef>,
 }
 
@@ -204,18 +203,11 @@ pub struct EngineerThreadRef {
     pub root_post_id: String,
 }
 
-pub enum SupportPhase {
-    New,
-    Diagnosing,
-    WaitingForUser,
-    WaitingForEngineer,
-    Resolved,
-}
 ```
 
 Layer 4 обновляет state через `ThreadEffect::SetThreadMetadata`.
 
-Thread state не должен становиться полным transcript store. Полные сообщения остаются в Mattermost/thread snapshot, а state хранит только то, что нужно для продолжения выполнения: фазу, выбранные инструкции, компактную историю reasoning-relevant действий и последний action marker.
+Thread state не должен становиться полным transcript store. Полные сообщения остаются в Mattermost/thread snapshot, а state хранит только то, что нужно для продолжения выполнения: выбранные инструкции, компактную историю reasoning-relevant действий, ссылку на engineer thread и флаг debug.
 
 ## Message metadata и audit trail
 
@@ -306,24 +298,15 @@ else:
 Сообщения разделяются на два sink-а:
 
 1. user sink — текущий Mattermost thread;
-2. engineer sink — отдельный канал, endpoint или custom notifier.
+2. engineer sink — текущий thread или отдельный Mattermost channel.
 
-Engineer sink для Mattermost может быть настроен на другой канал. В этом режиме первое уведомление создаёт отдельный engineer thread в engineer channel, а последующие уведомления по тому же user thread отправляются reply-сообщениями в этот engineer thread. Связь `user_thread_id -> engineer_thread_root_post_id` хранится в `SupportThreadState` или thread metadata.
+User sink всегда работает через `ThreadEffect::Reply`, чтобы Layer 3 сохранял единый flow отправки сообщений. Для engineer sink core поддерживает opinionated Mattermost-вариант без публичного notifier trait.
 
-Публичная абстракция:
+Если engineer sink настроен на отдельный канал, первый `handle()` для интересного user thread создаёт отдельный engineer thread в engineer channel. Root-сообщение должно содержать текст исходного запроса и ссылку на исходный Mattermost post. Связь `user_thread_id -> engineer_thread_root_post_id` хранится в `SupportThreadState`.
 
-```rust
-#[async_trait]
-pub trait SupportNotifier: Send + Sync {
-    async fn send_user_message(&self, thread: &Thread, message: String)
-        -> Result<(), SupportBotError>;
+Последующие сообщения пользователя и сообщения бота зеркалируются reply-сообщениями в сохранённый engineer thread, чтобы инженер видел полный ход обращения в одном месте. Engineer notifications по тому же user thread тоже отправляются туда. Если engineer sink настроен на `SameThread`, уведомления инженеру идут через `ThreadEffect::Reply`.
 
-    async fn notify_engineer(&self, thread: &Thread, message: String)
-        -> Result<(), SupportBotError>;
-}
-```
-
-Mattermost implementation может использовать `ThreadEffect::Reply` для user sink и Mattermost API для engineer sink. Если engineer sink пишет в отдельный канал, notifier должен идемпотентно создать engineer thread при первом уведомлении и переиспользовать его root post для следующих уведомлений. Встроенные tools должны идти через notifier, чтобы пользователь мог заменить транспорт.
+Команда `!support debug on/off` в engineer thread включает флаг `debug` в state исходного user thread. Когда debug включён, бот дополнительно отправляет в engineer thread tool calls, tool results и другие диагностические артефакты, полезные для анализа поведения модели.
 
 ### Future tool approval queue
 
@@ -358,7 +341,6 @@ pub struct SupportBotConfig {
 pub enum EngineerNotificationTarget {
     SameThread,
     MattermostChannel { channel_id: String },
-    Custom,
 }
 ```
 

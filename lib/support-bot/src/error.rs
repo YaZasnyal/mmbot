@@ -25,6 +25,9 @@ pub enum SupportBotError {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
+    #[error("Mattermost API error: {0}")]
+    Mattermost(String),
+
     #[error("Internal error: {0}")]
     Internal(#[source] Box<dyn std::error::Error + Send + Sync>),
 }

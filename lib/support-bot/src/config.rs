@@ -53,7 +53,6 @@ pub struct EngineerNotificationConfig {
 pub enum EngineerNotificationTarget {
     SameThread,
     MattermostChannel { channel_id: String },
-    Custom,
 }
 
 #[derive(Debug, Clone, Default)]
