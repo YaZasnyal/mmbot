@@ -8,7 +8,8 @@ members = [
     "lib/mattermost-test-helpers",
     "lib/support-bot",
     "lib/thread-bot",
-    "examples/hello_thread_bot"
+    "examples/hello_thread_bot",
+    "examples/support_bot"
 ]
 
 [workspace.dependencies]

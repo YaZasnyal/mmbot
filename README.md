@@ -101,7 +101,9 @@ impl ThreadHandler for MyHandler {
 }
 ```
 
-Full working example: [`examples/hello_thread_bot`](examples/hello_thread_bot/src/main.rs).
+Full working examples:
+- [`examples/hello_thread_bot`](examples/hello_thread_bot/src/main.rs)
+- [`examples/support_bot`](examples/support_bot/README.md)
 
 ## Middleware
 
@@ -152,7 +154,8 @@ mmbot/
 │   ├── bool_parser/            # Utility for Mattermost API quirks
 │   └── mattermost-test-helpers/# Integration test helpers
 └── examples/
-    └── hello_thread_bot/       # Thread bot example
+    ├── hello_thread_bot/       # Thread bot example
+    └── support_bot/            # Support-bot runnable example
 ```
 
 ## Tech stack

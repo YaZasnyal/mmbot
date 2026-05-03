@@ -162,13 +162,6 @@ impl SupportBotHandler {
                     )
                     .await?;
                 }
-                if !trace.is_empty() {
-                    effects.push(ThreadEffect::UpdateMessage {
-                        post_id: trigger_message.post_id.clone(),
-                        message: None,
-                        metadata: Some(store_trace(&trigger_message.metadata, &trace)?),
-                    });
-                }
                 effects.push(ThreadEffect::SetThreadMetadata {
                     metadata: store_state(&thread.info.metadata, &state)?,
                 });
@@ -233,12 +226,44 @@ impl SupportBotHandler {
             }
         }
 
-        if !trace.is_empty() {
-            effects.push(ThreadEffect::UpdateMessage {
-                post_id: trigger_message.post_id.clone(),
-                message: None,
-                metadata: Some(store_trace(&trigger_message.metadata, &trace)?),
-            });
+        let failure_message = "I ran into an internal issue while processing your request. "
+            .to_string()
+            + "I've notified the engineering team and stopped this thread for now.";
+
+        let trace_summary = if trace.is_empty() {
+            "(no trace captured)".to_string()
+        } else {
+            format!(
+                "trace_messages={}, last_trace={}",
+                trace.len(),
+                serde_json::to_string(trace.last().unwrap_or(&ChatMessage::assistant("none")))
+                    .unwrap_or_else(|_| "{}".to_string())
+            )
+        };
+
+        let engineer_error_message = format!(
+            "**Support bot stopped due to tool loop limit**\n\n\
+            - source_thread_id: `{}`\n\
+            - source_channel_id: `{}`\n\
+            - source_post_id: `{}`\n\
+            - max_tool_rounds: `{}`\n\
+            - max_tool_calls_per_round: `{}`\n\
+            - detail: `{}`\n\n\
+            No further bot messages will be posted in this support thread until an engineer restarts handling.",
+            thread.info.thread_id,
+            thread.info.channel_id,
+            trigger_message.post_id,
+            self.config.limits.max_tool_rounds,
+            self.config.limits.max_tool_calls_per_round,
+            truncate_utf8(trace_summary, 2000)
+        );
+
+        if let Ok(Some(engineer_thread)) = self
+            .engineer_notifier(ctx)
+            .notify_engineer(thread, state.engineer_thread.as_ref(), engineer_error_message)
+            .await
+        {
+            state.engineer_thread = Some(engineer_thread);
         }
 
         self.push_reply_effect(
@@ -246,8 +271,7 @@ impl SupportBotHandler {
             thread,
             &mut state,
             &mut effects,
-            "I could not complete the support workflow because the tool loop limit was reached."
-                .to_string(),
+            failure_message,
             json!({
                 STATE_KEY: {
                     "kind": "tool_loop_limit"
@@ -258,6 +282,7 @@ impl SupportBotHandler {
         effects.push(ThreadEffect::SetThreadMetadata {
             metadata: store_state(&thread.info.metadata, &state)?,
         });
+        effects.push(ThreadEffect::MarkStopped);
         Ok(effects)
     }
 
@@ -628,25 +653,6 @@ fn load_trace(metadata: &serde_json::Value) -> Result<Vec<ChatMessage>, ThreadBo
         Some(value) => serde_json::from_value(value.clone()).map_err(ThreadBotError::from),
         None => Ok(Vec::new()),
     }
-}
-
-fn store_trace(
-    metadata: &serde_json::Value,
-    trace: &[ChatMessage],
-) -> Result<serde_json::Value, ThreadBotError> {
-    let mut metadata = metadata.clone();
-    if !metadata.is_object() {
-        metadata = json!({});
-    }
-    if !metadata
-        .get(STATE_KEY)
-        .is_some_and(serde_json::Value::is_object)
-    {
-        metadata[STATE_KEY] = json!({});
-    }
-
-    metadata[STATE_KEY][TRACE_KEY] = serde_json::to_value(trace).map_err(ThreadBotError::from)?;
-    Ok(metadata)
 }
 
 fn truncate_utf8(value: String, max_bytes: usize) -> String {
@@ -1086,7 +1092,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn user_tool_trace_is_stored_on_triggering_message_metadata() {
+    async fn user_tool_trace_is_not_written_via_update_message() {
         let call = ToolCall {
             id: "call-1".to_string(),
             name: "send_user_message".to_string(),
@@ -1122,29 +1128,9 @@ mod tests {
             .handle(&thread("users", "help"), &context())
             .await
             .unwrap();
-        let metadata = effects
+        assert!(!effects
             .iter()
-            .find_map(|effect| match effect {
-                ThreadEffect::UpdateMessage {
-                    post_id, metadata, ..
-                } if post_id == "post-1" => metadata.clone(),
-                _ => None,
-            })
-            .expect("tool trace update effect");
-
-        let trace = load_trace(&metadata).unwrap();
-        assert_eq!(trace.len(), 2);
-        assert_eq!(trace[0].tool_calls[0].name, "send_user_message");
-        assert_eq!(trace[1].tool_call_id.as_deref(), Some("call-1"));
-
-        let mut next_thread = thread("users", "help");
-        next_thread.messages[0].metadata = metadata;
-        let rebuilt = handler
-            .build_llm_messages(&next_thread, &SupportThreadState::default(), &context())
-            .unwrap();
-        assert!(rebuilt
-            .iter()
-            .any(|message| message.tool_call_id.as_deref() == Some("call-1")));
+            .any(|effect| matches!(effect, ThreadEffect::UpdateMessage { .. })));
         assert_eq!(llm.requests().len(), 2);
     }
 
@@ -1189,6 +1175,52 @@ mod tests {
                         && metadata["support_bot"]["kind"] == "engineer_notification"
             )
         }));
+    }
+
+    #[tokio::test]
+    async fn tool_loop_limit_replies_with_generic_error_and_stops_thread() {
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "missing_tool".to_string(),
+            arguments: json!({}),
+        };
+        let llm = Arc::new(SequenceLlm::new(vec![LlmResponse {
+            message: ChatMessage {
+                role: ChatRole::Assistant,
+                content: None,
+                name: None,
+                tool_call_id: None,
+                tool_calls: vec![call.clone()],
+            },
+            tool_calls: vec![call],
+        }]));
+        let mut config = test_config();
+        config.limits.max_tool_rounds = 1;
+
+        let handler = SupportBotHandler::new(
+            "support",
+            config,
+            llm,
+            Arc::new(ToolRegistry::new()),
+            "system",
+        );
+
+        let effects = handler
+            .handle(&thread("users", "help"), &context())
+            .await
+            .unwrap();
+
+        assert!(effects.iter().any(|effect| {
+            matches!(
+                effect,
+                ThreadEffect::Reply { message, metadata }
+                    if message.contains("internal issue")
+                        && metadata["support_bot"]["kind"] == "tool_loop_limit"
+            )
+        }));
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, ThreadEffect::MarkStopped)));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::tools::{
     ToolSpec,
 };
 use async_trait::async_trait;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
 
 pub async fn register_remote_mcp_tools(
@@ -86,7 +86,11 @@ impl RemoteMcpClient {
         serde_json::from_value(tools_value).map_err(SupportBotError::Serialization)
     }
 
-    async fn call_tool(&self, name: &str, arguments: serde_json::Value) -> Result<serde_json::Value> {
+    async fn call_tool(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "id": "call-tool",
@@ -121,7 +125,10 @@ impl RemoteMcpClient {
             .error_for_status()
             .map_err(SupportBotError::Http)?;
 
-        response.json::<serde_json::Value>().await.map_err(SupportBotError::Http)
+        response
+            .json::<serde_json::Value>()
+            .await
+            .map_err(SupportBotError::Http)
     }
 }
 
@@ -178,7 +185,7 @@ impl SupportTool for RemoteMcpTool {
 mod tests {
     use super::*;
     use crate::config::{RemoteMcpEndpoint, ToolConfig};
-    use wiremock::matchers::{header, method, path, body_partial_json};
+    use wiremock::matchers::{body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
@@ -229,7 +236,9 @@ mod tests {
             }],
         };
 
-        register_remote_mcp_tools(&mut registry, &config).await.unwrap();
+        register_remote_mcp_tools(&mut registry, &config)
+            .await
+            .unwrap();
 
         let specs = registry.specs();
         assert_eq!(specs.len(), 1);
@@ -288,7 +297,9 @@ mod tests {
                 auth_header: Some("Bearer test-token".to_string()),
             }],
         };
-        register_remote_mcp_tools(&mut registry, &config).await.unwrap();
+        register_remote_mcp_tools(&mut registry, &config)
+            .await
+            .unwrap();
 
         let outcome = registry
             .call(

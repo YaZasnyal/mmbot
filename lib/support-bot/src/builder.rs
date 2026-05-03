@@ -4,7 +4,9 @@ use crate::error::Result;
 use crate::handler::SupportBotHandler;
 use crate::instructions::InstructionRepository;
 use crate::llm::LlmClient;
-use crate::tools::{register_default_workflow_tools, register_remote_mcp_tools, SupportTool, ToolRegistry};
+use crate::tools::{
+    register_default_workflow_tools, register_remote_mcp_tools, SupportTool, ToolRegistry,
+};
 use std::sync::Arc;
 
 pub const DEFAULT_SUPPORT_SYSTEM_PROMPT: &str = concat!(
@@ -70,7 +72,10 @@ impl SupportBotBuilder {
         Ok(self)
     }
 
-    pub fn with_instruction_repository(mut self, repository: InstructionRepository) -> Result<Self> {
+    pub fn with_instruction_repository(
+        mut self,
+        repository: InstructionRepository,
+    ) -> Result<Self> {
         self.tools.register(repository)?;
         Ok(self)
     }
