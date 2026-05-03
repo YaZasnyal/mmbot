@@ -32,6 +32,11 @@ pub enum ThreadEffect {
     },
     /// Set thread-level metadata
     SetThreadMetadata { metadata: serde_json::Value },
+    /// Set message-level metadata in DB (full replacement)
+    SetMessageMetadata {
+        post_id: String,
+        metadata: serde_json::Value,
+    },
     /// Reschedule handler run after applying effects
     ///
     /// Useful for:

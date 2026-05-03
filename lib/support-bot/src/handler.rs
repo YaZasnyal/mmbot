@@ -2,7 +2,9 @@ use crate::config::{EngineerNotificationTarget, SupportBotConfig};
 use crate::debug::{DebugCommand, DebugCommandHandler};
 use crate::error::SupportBotError;
 use crate::llm::{ChatMessage, ChatRole, LlmClient, LlmRequest};
-use crate::notifier::{render_thread_html_report, MattermostSupportNotifier, SupportReportPost};
+use crate::notifier::{
+    render_thread_html_report, MattermostSupportNotifier, SupportReportPost, SupportReportTrace,
+};
 use crate::state::SupportThreadState;
 use crate::tools::{SupportAction, ToolContext, ToolExecutionOutcome, ToolRegistry, ToolResult};
 use async_trait::async_trait;
@@ -12,6 +14,7 @@ use std::sync::Arc;
 use thread_bot::{
     Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadHandler, ThreadMessage,
 };
+use tracing::{info, warn};
 
 const STATE_KEY: &str = "support_bot";
 const TRACE_KEY: &str = "llm_trace";
@@ -79,17 +82,39 @@ impl SupportBotHandler {
         ctx: &ThreadContext,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
         let Some(message) = last_new_external_message(thread, ctx) else {
+            info!(
+                thread_id = %thread.info.thread_id,
+                channel_id = %thread.info.channel_id,
+                "support-bot: engineer thread has no new external message"
+            );
             return Ok(vec![ThreadEffect::Noop]);
         };
+        info!(
+            thread_id = %thread.info.thread_id,
+            channel_id = %thread.info.channel_id,
+            post_id = %message.post_id,
+            "support-bot: received engineer thread message"
+        );
 
         let Some(command) =
             DebugCommand::parse(&message.message, &self.config.routes.debug_commands)
                 .map(|matched| matched.command)
         else {
+            info!(
+                thread_id = %thread.info.thread_id,
+                post_id = %message.post_id,
+                message = %truncate_utf8(message.message.clone(), 200),
+                "support-bot: engineer message is not a debug command"
+            );
             return Ok(vec![ThreadEffect::Noop]);
         };
 
         if command.name == "debug-report" {
+            info!(
+                thread_id = %thread.info.thread_id,
+                channel_id = %thread.info.channel_id,
+                "support-bot: received debug-report command"
+            );
             return self.handle_debug_export_html(thread, ctx).await;
         }
 
@@ -118,6 +143,12 @@ impl SupportBotHandler {
         let Some(trigger_message) = last_new_external_message(thread, ctx) else {
             return Ok(vec![ThreadEffect::Noop]);
         };
+        info!(
+            thread_id = %thread.info.thread_id,
+            channel_id = %thread.info.channel_id,
+            post_id = %trigger_message.post_id,
+            "support-bot: handling user thread message"
+        );
 
         let mut state = load_state(&thread.info.metadata)?;
         if let Some(engineer_thread) = self
@@ -145,6 +176,12 @@ impl SupportBotHandler {
                 .await?;
 
             if response.tool_calls.is_empty() {
+                info!(
+                    thread_id = %thread.info.thread_id,
+                    post_id = %trigger_message.post_id,
+                    trace_len = trace.len(),
+                    "support-bot: llm completed without further tools"
+                );
                 if let Some(content) = response
                     .message
                     .content
@@ -164,6 +201,14 @@ impl SupportBotHandler {
                     )
                     .await?;
                 }
+                let trace_metadata = with_trace_metadata(
+                    &trigger_message.metadata,
+                    &trace,
+                )?;
+                effects.push(ThreadEffect::SetMessageMetadata {
+                    post_id: trigger_message.post_id.clone(),
+                    metadata: trace_metadata,
+                });
                 effects.push(ThreadEffect::SetThreadMetadata {
                     metadata: store_state(&thread.info.metadata, &state)?,
                 });
@@ -175,6 +220,12 @@ impl SupportBotHandler {
                 .into_iter()
                 .take(self.config.limits.max_tool_calls_per_round)
                 .collect::<Vec<_>>();
+            info!(
+                thread_id = %thread.info.thread_id,
+                post_id = %trigger_message.post_id,
+                tool_calls = tool_calls.len(),
+                "support-bot: executing tool calls from llm response"
+            );
 
             let assistant_tool_call_message = ChatMessage {
                 role: ChatRole::Assistant,
@@ -236,7 +287,8 @@ impl SupportBotHandler {
             - max_tool_rounds: `{}`\n\
             - max_tool_calls_per_round: `{}`\n\
             - detail: `{}`\n\n\
-            No further bot messages will be posted in this support thread until an engineer restarts handling.",
+            No further bot messages will be posted in this support thread until an engineer restarts handling.\n\
+            To export diagnostics HTML, run `!support debug-report` in this engineer thread.",
             thread.info.thread_id,
             thread.info.channel_id,
             trigger_message.post_id,
@@ -244,10 +296,6 @@ impl SupportBotHandler {
             self.config.limits.max_tool_calls_per_round,
             truncate_utf8(trace_summary, 2000)
         );
-
-        state.last_failure_trace = trace.iter().rev().take(64).cloned().collect::<Vec<_>>();
-        state.last_failure_trace.reverse();
-        state.last_failure_trace_post_id = Some(trigger_message.post_id.clone());
 
         if let Ok(Some(engineer_thread)) = self
             .engineer_notifier(ctx)
@@ -260,38 +308,15 @@ impl SupportBotHandler {
         {
             state.engineer_thread = Some(engineer_thread);
         }
-        if let Some(engineer_thread) = state.engineer_thread.as_ref() {
-            let report_html = render_thread_html_report(
-                &thread.info.thread_id,
-                &thread.info.channel_id,
-                &thread.info.root_post_id,
-                &report_posts_from_thread_messages(&thread.messages),
-                Some(&trigger_message.post_id),
-                &trace
-                    .iter()
-                    .map(|m| serde_json::to_string_pretty(m).unwrap_or_else(|_| "{}".to_string()))
-                    .collect::<Vec<_>>(),
-            );
-            let _ = self
-                .engineer_notifier(ctx)
-                .post_html_attachment_to_thread(
-                    &engineer_thread.channel_id,
-                    &engineer_thread.root_post_id,
-                    &format!("support-thread-{}-fatal.html", thread.info.thread_id),
-                    report_html,
-                    "Attached: full support thread HTML export captured at failure time."
-                        .to_string(),
-                    json!({
-                        STATE_KEY: {
-                            "kind": "thread_html_report",
-                            "source_thread_id": thread.info.thread_id,
-                            "reason": "tool_loop_limit"
-                        }
-                    }),
-                )
-                .await;
-        }
 
+        let trace_metadata = with_trace_metadata(
+            &trigger_message.metadata,
+            &trace,
+        )?;
+        effects.push(ThreadEffect::SetMessageMetadata {
+            post_id: trigger_message.post_id.clone(),
+            metadata: trace_metadata,
+        });
         self.push_reply_effect(
             ctx,
             thread,
@@ -344,7 +369,7 @@ impl SupportBotHandler {
                 )),
                 name: None,
                 tool_call_id: None,
-                tool_calls: Vec::new(),
+                tool_calls: load_tool_calls(&message.metadata),
             });
 
             messages.extend(load_trace(&message.metadata)?);
@@ -524,19 +549,30 @@ impl SupportBotHandler {
         ctx: &ThreadContext,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
         let Some(source_thread_id) = source_user_thread_id(engineer_thread) else {
+            warn!(
+                engineer_thread_id = %engineer_thread.info.thread_id,
+                "support-bot: debug-report source thread id missing in engineer thread props"
+            );
             return Ok(vec![ThreadEffect::Reply {
                 message: "Cannot find source support thread for this engineer thread.".to_string(),
                 metadata: debug_response_metadata(),
             }]);
         };
+        info!(
+            engineer_thread_id = %engineer_thread.info.thread_id,
+            source_thread_id = %source_thread_id,
+            "support-bot: exporting debug-report"
+        );
         let Some(record) = ctx.store.get_thread(&source_thread_id).await? else {
+            warn!(
+                source_thread_id = %source_thread_id,
+                "support-bot: debug-report source thread not found in store"
+            );
             return Ok(vec![ThreadEffect::Reply {
                 message: format!("Source support thread not found: {source_thread_id}"),
                 metadata: debug_response_metadata(),
             }]);
         };
-
-        let state = load_state(&record.metadata)?;
 
         let post_list = posts_api::get_post_thread(
             &ctx.config,
@@ -562,19 +598,43 @@ impl SupportBotHandler {
                 }
             }
         }
+        info!(
+            source_thread_id = %record.thread_id,
+            messages = posts.len(),
+            "support-bot: fetched source thread posts for debug-report"
+        );
+
+        let traces_by_post = ctx
+            .store
+            .list_thread_messages(&record.thread_id)
+            .await?
+            .into_iter()
+            .filter_map(|message| {
+                let trace = load_trace(&message.metadata).ok()?;
+                if trace.is_empty() {
+                    return None;
+                }
+                Some(SupportReportTrace {
+                    post_id: message.post_id,
+                    entries: trace
+                        .iter()
+                        .map(|entry| {
+                            serde_json::to_string_pretty(entry)
+                                .unwrap_or_else(|_| "{}".to_string())
+                        })
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>();
 
         let html = render_thread_html_report(
             &record.thread_id,
             &record.channel_id,
             &record.root_post_id,
             &posts,
-            state.last_failure_trace_post_id.as_deref(),
-            &state
-                .last_failure_trace
-                .iter()
-                .map(|m| serde_json::to_string_pretty(m).unwrap_or_else(|_| "{}".to_string()))
-                .collect::<Vec<_>>(),
+            &traces_by_post,
         );
+        let html_size = html.len();
         self.engineer_notifier(ctx)
             .post_html_attachment_to_thread(
                 &engineer_thread.info.channel_id,
@@ -594,6 +654,12 @@ impl SupportBotHandler {
                 }),
             )
             .await?;
+        info!(
+            source_thread_id = %record.thread_id,
+            engineer_thread_id = %engineer_thread.info.thread_id,
+            html_bytes = html_size,
+            "support-bot: debug-report uploaded to engineer thread"
+        );
 
         Ok(vec![ThreadEffect::Reply {
             message: format!(
@@ -628,9 +694,30 @@ impl ThreadHandler for SupportBotHandler {
         ctx: &ThreadContext,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
         match self.route(&thread.info.channel_id) {
-            SupportRoute::User => self.handle_user_thread(thread, ctx).await,
-            SupportRoute::Engineer => self.handle_engineer_thread(thread, ctx).await,
-            SupportRoute::Ignored => Ok(vec![ThreadEffect::Noop]),
+            SupportRoute::User => {
+                info!(
+                    thread_id = %thread.info.thread_id,
+                    channel_id = %thread.info.channel_id,
+                    "support-bot: route=user"
+                );
+                self.handle_user_thread(thread, ctx).await
+            }
+            SupportRoute::Engineer => {
+                info!(
+                    thread_id = %thread.info.thread_id,
+                    channel_id = %thread.info.channel_id,
+                    "support-bot: route=engineer"
+                );
+                self.handle_engineer_thread(thread, ctx).await
+            }
+            SupportRoute::Ignored => {
+                info!(
+                    thread_id = %thread.info.thread_id,
+                    channel_id = %thread.info.channel_id,
+                    "support-bot: route=ignored"
+                );
+                Ok(vec![ThreadEffect::Noop])
+            }
         }
     }
 }
@@ -680,18 +767,6 @@ fn timestamp_ms_to_rfc3339(timestamp_ms: i64) -> String {
         .unwrap_or_else(|| timestamp_ms.to_string())
 }
 
-fn report_posts_from_thread_messages(messages: &[ThreadMessage]) -> Vec<SupportReportPost> {
-    messages
-        .iter()
-        .map(|message| SupportReportPost {
-            post_id: message.post_id.clone(),
-            user_id: message.user_id.clone(),
-            message: message.message.clone(),
-            created_at: message.created_at.to_rfc3339(),
-        })
-        .collect()
-}
-
 fn report_post_from_mm_post(post: &mattermost_api::models::Post) -> SupportReportPost {
     SupportReportPost {
         post_id: post.id.clone(),
@@ -731,6 +806,31 @@ fn load_trace(metadata: &serde_json::Value) -> Result<Vec<ChatMessage>, ThreadBo
         Some(value) => serde_json::from_value(value.clone()).map_err(ThreadBotError::from),
         None => Ok(Vec::new()),
     }
+}
+
+fn load_tool_calls(metadata: &serde_json::Value) -> Vec<crate::tools::ToolCall> {
+    load_trace(metadata)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|message| message.role == ChatRole::Assistant)
+        .flat_map(|message| message.tool_calls)
+        .collect()
+}
+
+fn with_trace_metadata(
+    metadata: &serde_json::Value,
+    trace: &[ChatMessage],
+) -> Result<serde_json::Value, ThreadBotError> {
+    if trace.is_empty() {
+        return Ok(metadata.clone());
+    }
+
+    let mut metadata = metadata.clone();
+    if !metadata.is_object() {
+        metadata = json!({});
+    }
+    metadata[STATE_KEY][TRACE_KEY] = serde_json::to_value(trace).map_err(ThreadBotError::from)?;
+    Ok(metadata)
 }
 
 fn truncate_utf8(value: String, max_bytes: usize) -> String {

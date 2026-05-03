@@ -1,4 +1,3 @@
-use crate::llm::ChatMessage;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -7,10 +6,6 @@ pub struct SupportThreadState {
     pub selected_instruction_ids: Vec<String>,
     pub compact_history: Vec<SupportHistoryItem>,
     pub engineer_thread: Option<EngineerThreadRef>,
-    #[serde(default)]
-    pub last_failure_trace: Vec<ChatMessage>,
-    #[serde(default)]
-    pub last_failure_trace_post_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -32,8 +27,6 @@ impl Default for SupportThreadState {
             selected_instruction_ids: Vec::new(),
             compact_history: Vec::new(),
             engineer_thread: None,
-            last_failure_trace: Vec::new(),
-            last_failure_trace_post_id: None,
         }
     }
 }

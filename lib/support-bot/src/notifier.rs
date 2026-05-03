@@ -5,6 +5,7 @@ use mattermost_api::apis::posts_api;
 use mattermost_api::{apis::configuration::Configuration, models};
 use std::sync::Arc;
 use thread_bot::Thread;
+use tracing::info;
 
 pub struct MattermostSupportNotifier {
     config: Arc<Configuration>,
@@ -119,9 +120,22 @@ impl MattermostSupportNotifier {
         message: String,
         props: serde_json::Value,
     ) -> Result<()> {
+        info!(
+            channel_id = %channel_id,
+            root_post_id = %root_post_id,
+            filename = %filename,
+            html_bytes = html_content.len(),
+            "support-bot: uploading html report attachment"
+        );
         let file_id = self
             .upload_html_file(channel_id, filename, html_content.into_bytes())
             .await?;
+        info!(
+            channel_id = %channel_id,
+            root_post_id = %root_post_id,
+            file_id = %file_id,
+            "support-bot: html report file uploaded"
+        );
 
         let mut request = models::CreatePostRequest::new(channel_id.to_string(), message);
         request.root_id = Some(root_post_id.to_string());
@@ -131,6 +145,11 @@ impl MattermostSupportNotifier {
         posts_api::create_post(&self.config, request, None)
             .await
             .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
+        info!(
+            channel_id = %channel_id,
+            root_post_id = %root_post_id,
+            "support-bot: html report post created"
+        );
         Ok(())
     }
 
@@ -215,14 +234,17 @@ pub fn render_thread_html_report(
     channel_id: &str,
     root_post_id: &str,
     posts: &[SupportReportPost],
-    trace_post_id: Option<&str>,
-    tool_trace: &[String],
+    traces: &[SupportReportTrace],
 ) -> String {
+    let traces_by_post = traces
+        .iter()
+        .map(|trace| (trace.post_id.as_str(), trace.entries.as_slice()))
+        .collect::<std::collections::HashMap<_, _>>();
     let items = posts
         .iter()
         .map(|post| {
-            let trace_block = if trace_post_id.is_some_and(|id| id == post.post_id) && !tool_trace.is_empty() {
-                let details = tool_trace
+            let trace_block = if let Some(entries) = traces_by_post.get(post.post_id.as_str()) {
+                let details = entries
                     .iter()
                     .enumerate()
                     .map(|(idx, item)| {
@@ -260,8 +282,7 @@ pub fn render_thread_html_report(
          pre{{white-space:pre-wrap;word-wrap:break-word;margin:0;font-family:inherit}}</style></head><body><div class=\"wrap\">\
          <h1>Support Thread Report</h1><div class=\"meta\"><div><b>thread_id:</b> <code>{thread_id}</code></div>\
          <div><b>channel_id:</b> <code>{channel_id}</code></div><div><b>root_post_id:</b> <code>{root_post_id}</code></div>\
-         <div><b>messages:</b> <code>{count}</code></div><div><b>trace_entries:</b> <code>{trace_count}</code></div>\
-         <div><b>trace_bound_post_id:</b> <code>{trace_post_id}</code></div></div>\
+         <div><b>messages:</b> <code>{count}</code></div><div><b>trace_posts:</b> <code>{trace_posts}</code></div>\
          <h2>Messages</h2>{items}\
          <script>document.querySelectorAll('pre').forEach((p)=>{{if(p.textContent.length>3000){{p.dataset.full=p.textContent;p.textContent=p.textContent.slice(0,3000)+'\\n...[trimmed in view]';}}}});</script>\
          </div></body></html>",
@@ -270,8 +291,7 @@ pub fn render_thread_html_report(
         root_post_id = escape_html(root_post_id),
         count = posts.len(),
         items = items,
-        trace_count = tool_trace.len(),
-        trace_post_id = escape_html(trace_post_id.unwrap_or("n/a"))
+        trace_posts = traces.len(),
     )
 }
 
@@ -281,6 +301,12 @@ pub struct SupportReportPost {
     pub user_id: String,
     pub message: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SupportReportTrace {
+    pub post_id: String,
+    pub entries: Vec<String>,
 }
 
 fn escape_html(value: &str) -> String {

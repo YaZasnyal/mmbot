@@ -592,6 +592,17 @@ async fn execute_effects<H: ThreadHandler>(
                 }
             }
 
+            ThreadEffect::SetMessageMetadata { post_id, metadata } => {
+                if let Err(e) = a.store.set_message_metadata(&post_id, metadata).await {
+                    tracing::error!(
+                        thread_id = %a.thread_id,
+                        post_id = %post_id,
+                        error = %e,
+                        "Failed to set message metadata"
+                    );
+                }
+            }
+
             ThreadEffect::Reschedule => {
                 should_reschedule = true;
             }
@@ -736,7 +747,7 @@ async fn save_incoming_message(a: &ActorCtx<impl ThreadHandler>, post: &models::
         is_bot_message: is_bot,
         root_id: post.root_id.clone(),
         parent_post_id: post.root_id.clone(),
-        metadata: serde_json::Value::Null,
+        metadata: post.props.clone().unwrap_or(serde_json::Value::Null),
         post_created_at: post.create_at.map(ms_to_datetime).unwrap_or_else(Utc::now),
         post_updated_at: post.update_at.map(ms_to_datetime),
         post_deleted_at: post.delete_at.and_then(|ts| {
