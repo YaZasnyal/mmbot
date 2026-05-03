@@ -2463,6 +2463,7 @@ dependencies = [
  "thread-bot",
  "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]

@@ -40,8 +40,8 @@ This crate now includes the first concrete `SupportBotHandler` skeleton:
   configured.
 - supports a per-thread debug flag for streaming tool calls and tool results to
   the engineer thread.
-
-Remote MCP tool loading is intentionally left for a later reviewable step.
+- can register remote MCP tools from `ToolConfig.remote_mcp_endpoints` via
+  `register_remote_mcp_tools`.
 
 ## Instruction Format
 

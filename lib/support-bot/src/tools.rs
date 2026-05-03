@@ -124,6 +124,7 @@ pub fn register_default_workflow_tools(registry: &mut ToolRegistry) -> Result<()
     registry.register(WorkflowTool::finish_request())?;
     Ok(())
 }
+pub use crate::remote_mcp::register_remote_mcp_tools;
 
 struct WorkflowTool {
     name: &'static str,
@@ -294,4 +295,5 @@ mod tests {
             })
         );
     }
+
 }

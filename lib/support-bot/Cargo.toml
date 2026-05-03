@@ -14,3 +14,6 @@ mattermost_api = { workspace = true }
 thread-bot = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+wiremock = "0.6"
