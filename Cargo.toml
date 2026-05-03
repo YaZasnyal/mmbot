@@ -2,7 +2,6 @@
 resolver = "2"
 
 members = [
-    "mmbot",
     "lib/mattermost-api",
     "lib/bool_parser",
     "lib/mattermost-bot",
