@@ -6,6 +6,10 @@ pub struct SupportThreadState {
     pub selected_instruction_ids: Vec<String>,
     pub compact_history: Vec<SupportHistoryItem>,
     pub engineer_thread: Option<EngineerThreadRef>,
+    #[serde(default)]
+    pub status: SupportThreadStatus,
+    #[serde(default)]
+    pub finished_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -20,6 +24,19 @@ pub struct SupportHistoryItem {
     pub summary: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportThreadStatus {
+    Active,
+    Finished,
+}
+
+impl Default for SupportThreadStatus {
+    fn default() -> Self {
+        Self::Active
+    }
+}
+
 impl Default for SupportThreadState {
     fn default() -> Self {
         Self {
@@ -27,6 +44,8 @@ impl Default for SupportThreadState {
             selected_instruction_ids: Vec::new(),
             compact_history: Vec::new(),
             engineer_thread: None,
+            status: SupportThreadStatus::Active,
+            finished_summary: None,
         }
     }
 }

@@ -8,6 +8,8 @@ This report summarizes completed work for Layer 4 `support-bot` since the initia
 - Prompt/instruction bootstrap builder
 - Runnable `examples/support_bot`
 - Failure-path hardening for tool loop limit
+- Debug HTML export flow via engineer command
+- Trace persistence redesign (message metadata, not thread state)
 - Mattermost API compatibility fix for `permalink` embeds
 - Notes update for post-generation API patching
 
@@ -85,11 +87,52 @@ Adjusted behavior when tool loop limit is reached:
 
 - User-facing message is now generic and non-technical
 - Detailed diagnostic message is sent to engineer thread
+- Engineer message includes explicit command to export report:
+  - `!support debug-report`
 - Handler stops thread via `ThreadEffect::MarkStopped`
 - Removed trace persistence via `UpdateMessage` patching of user post metadata
   - this removed a likely source of Mattermost `400 Bad Request` during `patch_post`
 
-### 5) Mattermost API compatibility fix
+### 5) Debug HTML export flow
+
+Implemented on-demand export in engineer thread:
+
+- Command:
+  - `!support debug-report`
+- Behavior:
+  - Resolves source support thread from engineer thread root props
+  - Fetches source posts from Mattermost
+  - Uploads self-contained HTML file to engineer thread
+  - Includes per-message tool traces in the report
+
+Added detailed `tracing::info`/`warn` diagnostics for:
+
+- route resolution (`user/engineer/ignored`)
+- debug command parsing path
+- source thread lookup
+- report generation/upload/posting
+
+### 6) Trace persistence redesign
+
+Refactored trace model to avoid fragile coupling and keep history aligned with user messages:
+
+- Removed trace storage from `SupportThreadState`
+- Added DB-only message metadata update path:
+  - `ThreadEffect::SetMessageMetadata { post_id, metadata }`
+  - handled by thread actor through `store.set_message_metadata(...)`
+- LLM traces (`support_bot.llm_trace`) are now written to the **trigger user message** metadata
+  - not to a newly created bot reply
+- `build_llm_messages(...)` now restores:
+  - assistant `tool_calls` from stored trace metadata
+  - tool result messages from stored trace metadata
+- `debug-report` now reads traces from `thread_messages.metadata` in DB
+
+Also fixed metadata persistence gap in `thread-bot`:
+
+- incoming post metadata now stores `post.props` instead of `Null` in `save_incoming_message(...)`
+- this ensures trace props survive and are available for report generation
+
+### 7) Mattermost API compatibility fix
 
 Observed runtime deserialization failure due to embed type `permalink`.
 
@@ -101,7 +144,7 @@ Fix applied in generated API model:
   - `Permalink` with `#[serde(rename = "permalink")]`
   - `Unknown` with `#[serde(other)]` for forward compatibility
 
-### 6) Notes update for regeneration workflow
+### 8) Notes update for regeneration workflow
 
 Updated generation notes with explicit manual diff to re-apply post-generation:
 
@@ -115,6 +158,8 @@ Executed during implementation:
 
 - `cargo check -p support-bot-example`
 - `cargo test -p support-bot`
+- `cargo test -p support-bot` after trace redesign and `SetMessageMetadata` integration
+- `cargo test -p thread-bot` compile path validated; runtime test suite may fail in restricted sandbox due to mock server bind permissions
 
 Note: `wiremock` tests require local port binding; in sandboxed mode this may require elevated execution.
 
@@ -123,12 +168,15 @@ Note: `wiremock` tests require local port binding; in sandboxed mode this may re
 - `de8545c` feat(support-bot): add remote MCP loader and wiremock tests
 - `8c696f5` feat(support-bot): add builder with instruction-first prompt
 - `5204270` feat(support-bot): add runnable example and harden failure handling
+- `7fa93e2` refactor(support-bot): replace debug toggle with debug-report
+- `1da1ca7` refactor(support-bot): persist traces in message metadata
 
 ## Known Current Behavior
 
 - Debug command parser expects `!support ...` or `/support ...`
 - `!debug` alone is not recognized
-- Currently implemented built-in command path is for `debug` toggle/status
+- Supported built-in engineer command:
+  - `!support debug-report`
 - `state/trace/retry` command set is still pending implementation
 
 ## Suggested Next Task
@@ -140,7 +188,4 @@ Implement engineer control commands:
 3. `!support retry`
 
 And optionally add thread export:
-
-- HTML transcript export to engineer channel
-- auto-send on fatal failure
-- on-demand send via debug/control command
+- add `!support retry` flow to restart stopped threads safely

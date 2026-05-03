@@ -31,10 +31,11 @@ impl DebugCommand {
         }
 
         let trimmed = message.trim();
-        let prefix = config
-            .prefixes
-            .iter()
-            .find(|prefix| trimmed.starts_with(prefix.as_str()))?;
+        let prefix = config.prefixes.iter().find(|prefix| {
+            trimmed
+                .strip_prefix(prefix.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        })?;
         let rest = trimmed[prefix.len()..].trim();
         if rest.is_empty() {
             return None;
@@ -72,5 +73,12 @@ mod tests {
         let config = DebugCommandConfig::default();
 
         assert!(DebugCommand::parse("normal engineer discussion", &config).is_none());
+    }
+
+    #[test]
+    fn does_not_match_longer_prefix_words() {
+        let config = DebugCommandConfig::default();
+
+        assert!(DebugCommand::parse("!supportive state", &config).is_none());
     }
 }

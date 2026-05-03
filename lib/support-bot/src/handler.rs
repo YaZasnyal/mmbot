@@ -1,23 +1,22 @@
-use crate::config::{EngineerNotificationTarget, SupportBotConfig};
-use crate::debug::{DebugCommand, DebugCommandHandler};
-use crate::error::SupportBotError;
-use crate::llm::{ChatMessage, ChatRole, LlmClient, LlmRequest};
-use crate::notifier::{
-    render_thread_html_report, MattermostSupportNotifier, SupportReportPost, SupportReportTrace,
+use crate::config::SupportBotConfig;
+use crate::conversation::{
+    build_llm_messages, load_state, result_to_message, truncate_utf8, STATE_KEY,
 };
-use crate::state::SupportThreadState;
-use crate::tools::{SupportAction, ToolContext, ToolExecutionOutcome, ToolRegistry, ToolResult};
+use crate::debug::{DebugCommand, DebugCommandHandler};
+use crate::debug_export::handle_debug_export_html;
+use crate::llm::{LlmClient, LlmRequest};
+use crate::notifier::MattermostSupportNotifier;
+use crate::tools::ToolCall;
+use crate::tools::{ToolContext, ToolExecutionOutcome, ToolRegistry, ToolResult};
+use crate::user_thread_run::UserThreadRun;
+use crate::workflow::apply_action;
 use async_trait::async_trait;
-use mattermost_api::apis::posts_api;
 use serde_json::json;
 use std::sync::Arc;
 use thread_bot::{
     Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadHandler, ThreadMessage,
 };
-use tracing::{info, warn};
-
-const STATE_KEY: &str = "support_bot";
-const TRACE_KEY: &str = "llm_trace";
+use tracing::info;
 
 pub struct SupportBotHandler {
     id: &'static str,
@@ -115,7 +114,12 @@ impl SupportBotHandler {
                 channel_id = %thread.info.channel_id,
                 "support-bot: received debug-report command"
             );
-            return self.handle_debug_export_html(thread, ctx).await;
+            return handle_debug_export_html(
+                &self.config.engineer_notifications.target,
+                thread,
+                ctx,
+            )
+            .await;
         }
 
         let response = match &self.debug_handler {
@@ -158,19 +162,28 @@ impl SupportBotHandler {
         {
             state.engineer_thread = Some(engineer_thread);
         }
-        self.mirror_user_message(ctx, thread, &mut state, trigger_message)
-            .await?;
+        let messages = build_llm_messages(
+            &self.system_prompt,
+            thread,
+            &state,
+            ctx.bot_user_id.as_deref(),
+        )?;
+        let mut run = UserThreadRun::new(state, messages);
 
-        let mut messages = self.build_llm_messages(thread, &state, ctx)?;
-        let mut trace = Vec::new();
-        let mut effects = Vec::new();
+        run.mirror_user_message(
+            &self.config.engineer_notifications.target,
+            ctx,
+            thread,
+            trigger_message,
+        )
+        .await?;
 
         for _round in 0..self.config.limits.max_tool_rounds {
             let response = self
                 .llm
                 .complete(LlmRequest {
                     model: self.config.llm.model.clone(),
-                    messages: messages.clone(),
+                    messages: run.messages().to_vec(),
                     tools: self.tools.specs(),
                 })
                 .await?;
@@ -179,7 +192,7 @@ impl SupportBotHandler {
                 info!(
                     thread_id = %thread.info.thread_id,
                     post_id = %trigger_message.post_id,
-                    trace_len = trace.len(),
+                    trace_len = run.trace_len(),
                     "support-bot: llm completed without further tools"
                 );
                 if let Some(content) = response
@@ -187,11 +200,10 @@ impl SupportBotHandler {
                     .content
                     .filter(|content| !content.is_empty())
                 {
-                    self.push_reply_effect(
+                    run.reply(
+                        &self.config.engineer_notifications.target,
                         ctx,
                         thread,
-                        &mut state,
-                        &mut effects,
                         content,
                         json!({
                             STATE_KEY: {
@@ -201,18 +213,7 @@ impl SupportBotHandler {
                     )
                     .await?;
                 }
-                let trace_metadata = with_trace_metadata(
-                    &trigger_message.metadata,
-                    &trace,
-                )?;
-                effects.push(ThreadEffect::SetMessageMetadata {
-                    post_id: trigger_message.post_id.clone(),
-                    metadata: trace_metadata,
-                });
-                effects.push(ThreadEffect::SetThreadMetadata {
-                    metadata: store_state(&thread.info.metadata, &state)?,
-                });
-                return Ok(effects);
+                return run.into_effects(thread, trigger_message);
             }
 
             let tool_calls = response
@@ -227,40 +228,17 @@ impl SupportBotHandler {
                 "support-bot: executing tool calls from llm response"
             );
 
-            let assistant_tool_call_message = ChatMessage {
-                role: ChatRole::Assistant,
-                content: response.message.content,
-                name: None,
-                tool_call_id: None,
-                tool_calls: tool_calls.clone(),
-            };
-            messages.push(assistant_tool_call_message.clone());
-            trace.push(assistant_tool_call_message);
-            let tool_context = ToolContext::new(Arc::new(thread.clone()));
-            for call in tool_calls {
-                let tool_message = match self.tools.call(tool_context.clone(), call.clone()).await {
-                    Ok(ToolExecutionOutcome::ToolResult(result)) => {
-                        result_to_message(result, self.config.limits.max_tool_result_bytes)
-                    }
-                    Ok(ToolExecutionOutcome::Action(action)) => {
-                        let result = self
-                            .apply_action(ctx, thread, &mut state, &mut effects, &call.id, action)
-                            .await?;
-                        result_to_message(result, self.config.limits.max_tool_result_bytes)
-                    }
-                    Err(error) => result_to_message(
-                        ToolResult {
-                            call_id: call.id,
-                            content: json!({
-                                "error": error.to_string()
-                            }),
-                            is_error: true,
-                        },
-                        self.config.limits.max_tool_result_bytes,
-                    ),
-                };
-                messages.push(tool_message.clone());
-                trace.push(tool_message);
+            self.process_tool_calls(ctx, thread, &mut run, response.message.content, tool_calls)
+                .await?;
+
+            if run.should_stop_after_tools() {
+                info!(
+                    thread_id = %thread.info.thread_id,
+                    post_id = %trigger_message.post_id,
+                    trace_len = run.trace_len(),
+                    "support-bot: finishing request after finish_request action"
+                );
+                return run.into_resolved_effects(thread, trigger_message);
             }
         }
 
@@ -268,60 +246,28 @@ impl SupportBotHandler {
             .to_string()
             + "I've notified the engineering team and stopped this thread for now.";
 
-        let trace_summary = if trace.is_empty() {
-            "(no trace captured)".to_string()
-        } else {
-            format!(
-                "trace_messages={}, last_trace={}",
-                trace.len(),
-                serde_json::to_string(trace.last().unwrap_or(&ChatMessage::assistant("none")))
-                    .unwrap_or_else(|_| "{}".to_string())
-            )
-        };
-
-        let engineer_error_message = format!(
-            "**Support bot stopped due to tool loop limit**\n\n\
-            - source_thread_id: `{}`\n\
-            - source_channel_id: `{}`\n\
-            - source_post_id: `{}`\n\
-            - max_tool_rounds: `{}`\n\
-            - max_tool_calls_per_round: `{}`\n\
-            - detail: `{}`\n\n\
-            No further bot messages will be posted in this support thread until an engineer restarts handling.\n\
-            To export diagnostics HTML, run `!support debug-report` in this engineer thread.",
-            thread.info.thread_id,
-            thread.info.channel_id,
-            trigger_message.post_id,
-            self.config.limits.max_tool_rounds,
-            self.config.limits.max_tool_calls_per_round,
-            truncate_utf8(trace_summary, 2000)
-        );
-
         if let Ok(Some(engineer_thread)) = self
             .engineer_notifier(ctx)
             .notify_engineer(
                 thread,
-                state.engineer_thread.as_ref(),
-                engineer_error_message,
+                run.engineer_thread(),
+                tool_loop_limit_engineer_message(
+                    thread,
+                    trigger_message,
+                    self.config.limits.max_tool_rounds,
+                    self.config.limits.max_tool_calls_per_round,
+                    run.trace_summary(),
+                ),
             )
             .await
         {
-            state.engineer_thread = Some(engineer_thread);
+            run.set_engineer_thread(engineer_thread);
         }
 
-        let trace_metadata = with_trace_metadata(
-            &trigger_message.metadata,
-            &trace,
-        )?;
-        effects.push(ThreadEffect::SetMessageMetadata {
-            post_id: trigger_message.post_id.clone(),
-            metadata: trace_metadata,
-        });
-        self.push_reply_effect(
+        run.reply(
+            &self.config.engineer_notifications.target,
             ctx,
             thread,
-            &mut state,
-            &mut effects,
             failure_message,
             json!({
                 STATE_KEY: {
@@ -330,166 +276,52 @@ impl SupportBotHandler {
             }),
         )
         .await?;
-        effects.push(ThreadEffect::SetThreadMetadata {
-            metadata: store_state(&thread.info.metadata, &state)?,
-        });
-        effects.push(ThreadEffect::MarkStopped);
-        Ok(effects)
+        run.into_stopped_effects(thread, trigger_message)
     }
 
-    fn build_llm_messages(
+    async fn process_tool_calls(
         &self,
-        thread: &Thread,
-        state: &SupportThreadState,
         ctx: &ThreadContext,
-    ) -> Result<Vec<ChatMessage>, ThreadBotError> {
-        let mut messages = vec![
-            ChatMessage::system(self.system_prompt.clone()),
-            ChatMessage::system(format!(
-                "Current support state JSON: {}",
-                serde_json::to_string(state).unwrap_or_else(|_| "{}".to_string())
-            )),
-        ];
+        thread: &Thread,
+        run: &mut UserThreadRun,
+        assistant_content: Option<String>,
+        tool_calls: Vec<ToolCall>,
+    ) -> Result<(), ThreadBotError> {
+        run.push_tool_round(assistant_content, tool_calls.clone());
+        let tool_context = ToolContext::new(Arc::new(thread.clone()));
 
-        for message in &thread.messages {
-            if message.message.trim().is_empty() {
-                continue;
-            }
-
-            let role = if ctx.bot_user_id.as_deref() == Some(message.user_id.as_str()) {
-                ChatRole::Assistant
-            } else {
-                ChatRole::User
+        for call in tool_calls {
+            let tool_message = match self.tools.call(tool_context.clone(), call.clone()).await {
+                Ok(ToolExecutionOutcome::ToolResult(result)) => {
+                    result_to_message(result, self.config.limits.max_tool_result_bytes)
+                }
+                Ok(ToolExecutionOutcome::Action(action)) => {
+                    let result = apply_action(
+                        &self.config.engineer_notifications.target,
+                        ctx,
+                        thread,
+                        run,
+                        &call.id,
+                        action,
+                    )
+                    .await?;
+                    result_to_message(result, self.config.limits.max_tool_result_bytes)
+                }
+                Err(error) => result_to_message(
+                    ToolResult {
+                        call_id: call.id,
+                        content: json!({
+                            "error": error.to_string()
+                        }),
+                        is_error: true,
+                    },
+                    self.config.limits.max_tool_result_bytes,
+                ),
             };
-            messages.push(ChatMessage {
-                role,
-                content: Some(format!(
-                    "[post_id={}, user_id={}] {}",
-                    message.post_id, message.user_id, message.message
-                )),
-                name: None,
-                tool_call_id: None,
-                tool_calls: load_tool_calls(&message.metadata),
-            });
-
-            messages.extend(load_trace(&message.metadata)?);
+            run.push_tool_message(tool_message);
         }
 
-        Ok(messages)
-    }
-
-    async fn apply_action(
-        &self,
-        ctx: &ThreadContext,
-        thread: &Thread,
-        state: &mut SupportThreadState,
-        effects: &mut Vec<ThreadEffect>,
-        call_id: &str,
-        action: SupportAction,
-    ) -> Result<ToolResult, ThreadBotError> {
-        let result = match action {
-            SupportAction::SendUserMessage { message } => {
-                self.push_reply_effect(
-                    ctx,
-                    thread,
-                    state,
-                    effects,
-                    message,
-                    json!({
-                        STATE_KEY: {
-                            "kind": "tool_action",
-                            "tool_call_id": call_id,
-                            "action": "send_user_message"
-                        }
-                    }),
-                )
-                .await?;
-                ToolResult {
-                    call_id: call_id.to_string(),
-                    content: json!({ "status": "sent" }),
-                    is_error: false,
-                }
-            }
-            SupportAction::NotifyEngineer { message } => {
-                match &self.config.engineer_notifications.target {
-                    EngineerNotificationTarget::SameThread => {
-                        effects.push(ThreadEffect::Reply {
-                            message: message.clone(),
-                            metadata: json!({
-                                STATE_KEY: {
-                                    "kind": "engineer_notification",
-                                    "tool_call_id": call_id
-                                }
-                            }),
-                        });
-                    }
-                    EngineerNotificationTarget::MattermostChannel { .. } => {
-                        let notify_result = self
-                            .engineer_notifier(ctx)
-                            .notify_engineer(
-                                thread,
-                                state.engineer_thread.as_ref(),
-                                message.clone(),
-                            )
-                            .await;
-
-                        let thread_ref = match notify_result {
-                            Ok(Some(thread_ref)) => thread_ref,
-                            Ok(None) => {
-                                return Ok(ToolResult {
-                                    call_id: call_id.to_string(),
-                                    content: json!({
-                                        "status": "failed",
-                                        "error": "engineer thread was not created"
-                                    }),
-                                    is_error: true,
-                                });
-                            }
-                            Err(error) => {
-                                return Ok(ToolResult {
-                                    call_id: call_id.to_string(),
-                                    content: json!({
-                                        "status": "failed",
-                                        "error": error.to_string()
-                                    }),
-                                    is_error: true,
-                                });
-                            }
-                        };
-                        state.engineer_thread = Some(thread_ref);
-                    }
-                }
-
-                ToolResult {
-                    call_id: call_id.to_string(),
-                    content: json!({
-                        "status": "sent",
-                        "message": message
-                    }),
-                    is_error: false,
-                }
-            }
-            SupportAction::WaitForUser { reason } => ToolResult {
-                call_id: call_id.to_string(),
-                content: json!({
-                    "status": "waiting",
-                    "reason": reason
-                }),
-                is_error: false,
-            },
-            SupportAction::FinishRequest { summary } => {
-                effects.push(ThreadEffect::MarkResolved);
-                ToolResult {
-                    call_id: call_id.to_string(),
-                    content: json!({
-                        "status": "finished",
-                        "summary": summary
-                    }),
-                    is_error: false,
-                }
-            }
-        };
-        Ok(result)
+        Ok(())
     }
 
     fn engineer_notifier(&self, ctx: &ThreadContext) -> MattermostSupportNotifier {
@@ -497,177 +329,6 @@ impl SupportBotHandler {
             ctx.config.clone(),
             self.config.engineer_notifications.target.clone(),
         )
-    }
-
-    async fn push_reply_effect(
-        &self,
-        ctx: &ThreadContext,
-        thread: &Thread,
-        state: &mut SupportThreadState,
-        effects: &mut Vec<ThreadEffect>,
-        message: String,
-        metadata: serde_json::Value,
-    ) -> Result<(), ThreadBotError> {
-        effects.push(ThreadEffect::Reply {
-            message: message.clone(),
-            metadata,
-        });
-        if let Some(engineer_thread) = self
-            .engineer_notifier(ctx)
-            .mirror_bot_message(thread, state.engineer_thread.as_ref(), message)
-            .await?
-        {
-            state.engineer_thread = Some(engineer_thread);
-        }
-        Ok(())
-    }
-
-    async fn mirror_user_message(
-        &self,
-        ctx: &ThreadContext,
-        thread: &Thread,
-        state: &mut SupportThreadState,
-        message: &ThreadMessage,
-    ) -> Result<(), ThreadBotError> {
-        if message.post_id == thread.info.root_post_id {
-            return Ok(());
-        }
-
-        if let Some(engineer_thread) = self
-            .engineer_notifier(ctx)
-            .mirror_user_message(thread, state.engineer_thread.as_ref(), message)
-            .await?
-        {
-            state.engineer_thread = Some(engineer_thread);
-        }
-        Ok(())
-    }
-
-    async fn handle_debug_export_html(
-        &self,
-        engineer_thread: &Thread,
-        ctx: &ThreadContext,
-    ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
-        let Some(source_thread_id) = source_user_thread_id(engineer_thread) else {
-            warn!(
-                engineer_thread_id = %engineer_thread.info.thread_id,
-                "support-bot: debug-report source thread id missing in engineer thread props"
-            );
-            return Ok(vec![ThreadEffect::Reply {
-                message: "Cannot find source support thread for this engineer thread.".to_string(),
-                metadata: debug_response_metadata(),
-            }]);
-        };
-        info!(
-            engineer_thread_id = %engineer_thread.info.thread_id,
-            source_thread_id = %source_thread_id,
-            "support-bot: exporting debug-report"
-        );
-        let Some(record) = ctx.store.get_thread(&source_thread_id).await? else {
-            warn!(
-                source_thread_id = %source_thread_id,
-                "support-bot: debug-report source thread not found in store"
-            );
-            return Ok(vec![ThreadEffect::Reply {
-                message: format!("Source support thread not found: {source_thread_id}"),
-                metadata: debug_response_metadata(),
-            }]);
-        };
-
-        let post_list = posts_api::get_post_thread(
-            &ctx.config,
-            &record.root_post_id,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await
-        .map_err(|error| {
-            ThreadBotError::internal(SupportBotError::Mattermost(error.to_string()))
-        })?;
-
-        let mut posts = Vec::new();
-        if let (Some(order), Some(map)) = (post_list.order, post_list.posts) {
-            for post_id in order {
-                if let Some(post) = map.get(&post_id) {
-                    posts.push(report_post_from_mm_post(post));
-                }
-            }
-        }
-        info!(
-            source_thread_id = %record.thread_id,
-            messages = posts.len(),
-            "support-bot: fetched source thread posts for debug-report"
-        );
-
-        let traces_by_post = ctx
-            .store
-            .list_thread_messages(&record.thread_id)
-            .await?
-            .into_iter()
-            .filter_map(|message| {
-                let trace = load_trace(&message.metadata).ok()?;
-                if trace.is_empty() {
-                    return None;
-                }
-                Some(SupportReportTrace {
-                    post_id: message.post_id,
-                    entries: trace
-                        .iter()
-                        .map(|entry| {
-                            serde_json::to_string_pretty(entry)
-                                .unwrap_or_else(|_| "{}".to_string())
-                        })
-                        .collect::<Vec<_>>(),
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let html = render_thread_html_report(
-            &record.thread_id,
-            &record.channel_id,
-            &record.root_post_id,
-            &posts,
-            &traces_by_post,
-        );
-        let html_size = html.len();
-        self.engineer_notifier(ctx)
-            .post_html_attachment_to_thread(
-                &engineer_thread.info.channel_id,
-                &engineer_thread.info.root_post_id,
-                &format!("support-thread-{}.html", record.thread_id),
-                html,
-                format!(
-                    "Attached: support thread HTML export for `{}`.",
-                    record.thread_id
-                ),
-                json!({
-                    STATE_KEY: {
-                        "kind": "thread_html_report",
-                        "source_thread_id": record.thread_id,
-                        "reason": "engineer_request"
-                    }
-                }),
-            )
-            .await?;
-        info!(
-            source_thread_id = %record.thread_id,
-            engineer_thread_id = %engineer_thread.info.thread_id,
-            html_bytes = html_size,
-            "support-bot: debug-report uploaded to engineer thread"
-        );
-
-        Ok(vec![ThreadEffect::Reply {
-            message: format!(
-                "Debug report exported for support thread `{}`.",
-                record.thread_id
-            ),
-            metadata: debug_response_metadata(),
-        }])
     }
 }
 
@@ -741,128 +402,30 @@ fn last_new_external_message<'a>(
     Some(message)
 }
 
-fn source_user_thread_id(thread: &Thread) -> Option<String> {
-    thread
-        .messages
-        .iter()
-        .find(|message| message.post_id == thread.info.root_post_id)
-        .or_else(|| thread.messages.first())
-        .and_then(|message| message.props.get(STATE_KEY))
-        .and_then(|props| props.get("source_thread_id"))
-        .and_then(serde_json::Value::as_str)
-        .map(ToString::to_string)
-}
-
-fn debug_response_metadata() -> serde_json::Value {
-    json!({
-        STATE_KEY: {
-            "kind": "debug_response"
-        }
-    })
-}
-
-fn timestamp_ms_to_rfc3339(timestamp_ms: i64) -> String {
-    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp_ms)
-        .map(|ts| ts.to_rfc3339())
-        .unwrap_or_else(|| timestamp_ms.to_string())
-}
-
-fn report_post_from_mm_post(post: &mattermost_api::models::Post) -> SupportReportPost {
-    SupportReportPost {
-        post_id: post.id.clone(),
-        user_id: post
-            .user_id
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string()),
-        message: post.message.clone().unwrap_or_default(),
-        created_at: post
-            .create_at
-            .map(timestamp_ms_to_rfc3339)
-            .unwrap_or_else(|| "unknown".to_string()),
-    }
-}
-
-fn result_to_message(result: ToolResult, max_bytes: usize) -> ChatMessage {
-    let content = if result.is_error {
-        json!({
-            "is_error": true,
-            "content": result.content
-        })
-    } else {
-        result.content
-    };
-
-    ChatMessage::tool(
-        result.call_id,
-        truncate_utf8(content.to_string(), max_bytes),
+fn tool_loop_limit_engineer_message(
+    thread: &Thread,
+    trigger_message: &ThreadMessage,
+    max_tool_rounds: usize,
+    max_tool_calls_per_round: usize,
+    trace_summary: String,
+) -> String {
+    format!(
+        "**Support bot stopped due to tool loop limit**\n\n\
+        - source_thread_id: `{}`\n\
+        - source_channel_id: `{}`\n\
+        - source_post_id: `{}`\n\
+        - max_tool_rounds: `{}`\n\
+        - max_tool_calls_per_round: `{}`\n\
+        - detail: `{}`\n\n\
+        No further bot messages will be posted in this support thread until an engineer restarts handling.\n\
+        To export diagnostics HTML, run `!support debug-report` in this engineer thread.",
+        thread.info.thread_id,
+        thread.info.channel_id,
+        trigger_message.post_id,
+        max_tool_rounds,
+        max_tool_calls_per_round,
+        truncate_utf8(trace_summary, 2000)
     )
-}
-
-fn load_trace(metadata: &serde_json::Value) -> Result<Vec<ChatMessage>, ThreadBotError> {
-    match metadata
-        .get(STATE_KEY)
-        .and_then(|value| value.get(TRACE_KEY))
-    {
-        Some(value) => serde_json::from_value(value.clone()).map_err(ThreadBotError::from),
-        None => Ok(Vec::new()),
-    }
-}
-
-fn load_tool_calls(metadata: &serde_json::Value) -> Vec<crate::tools::ToolCall> {
-    load_trace(metadata)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|message| message.role == ChatRole::Assistant)
-        .flat_map(|message| message.tool_calls)
-        .collect()
-}
-
-fn with_trace_metadata(
-    metadata: &serde_json::Value,
-    trace: &[ChatMessage],
-) -> Result<serde_json::Value, ThreadBotError> {
-    if trace.is_empty() {
-        return Ok(metadata.clone());
-    }
-
-    let mut metadata = metadata.clone();
-    if !metadata.is_object() {
-        metadata = json!({});
-    }
-    metadata[STATE_KEY][TRACE_KEY] = serde_json::to_value(trace).map_err(ThreadBotError::from)?;
-    Ok(metadata)
-}
-
-fn truncate_utf8(value: String, max_bytes: usize) -> String {
-    if max_bytes == 0 || value.len() <= max_bytes {
-        return value;
-    }
-
-    let mut end = max_bytes;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}...[truncated]", &value[..end])
-}
-
-fn load_state(metadata: &serde_json::Value) -> Result<SupportThreadState, ThreadBotError> {
-    match metadata.get(STATE_KEY) {
-        Some(value) => serde_json::from_value(value.clone()).map_err(ThreadBotError::from),
-        None => Ok(SupportThreadState::default()),
-    }
-}
-
-fn store_state(
-    metadata: &serde_json::Value,
-    state: &SupportThreadState,
-) -> Result<serde_json::Value, ThreadBotError> {
-    let mut metadata = metadata.clone();
-    if !metadata.is_object() {
-        metadata = json!({});
-    }
-
-    metadata[STATE_KEY] = serde_json::to_value(state).map_err(ThreadBotError::from)?;
-    Ok(metadata)
 }
 
 #[cfg(test)]
@@ -872,8 +435,11 @@ mod tests {
         DebugCommandConfig, EngineerNotificationConfig, EngineerNotificationTarget,
         InstructionConfig, LlmConfig, SupportBotLimits, SupportRouteConfig, ToolConfig,
     };
+    use crate::conversation::{store_state, TRACE_KEY};
     use crate::debug::DebugResponse;
-    use crate::llm::LlmResponse;
+    use crate::debug_export::source_user_thread_id;
+    use crate::llm::{ChatMessage, ChatRole, LlmResponse};
+    use crate::state::SupportThreadState;
     use crate::testutil::PanicStore;
     use crate::tools::{register_default_workflow_tools, ToolCall, ToolSpec};
     use async_trait::async_trait;
@@ -1226,6 +792,70 @@ mod tests {
             .any(|effect| matches!(effect, ThreadEffect::MarkStopped)));
     }
 
+    #[tokio::test]
+    async fn finish_request_persists_finished_state_before_mark_resolved() {
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "finish_request".to_string(),
+            arguments: json!({ "summary": "resolved by cache flush" }),
+        };
+        let llm = Arc::new(SequenceLlm::new(vec![
+            LlmResponse {
+                message: ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: None,
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: vec![call.clone()],
+                },
+                tool_calls: vec![call],
+            },
+            LlmResponse {
+                message: ChatMessage::assistant("should not run"),
+                tool_calls: Vec::new(),
+            },
+        ]));
+        let mut registry = ToolRegistry::new();
+        register_default_workflow_tools(&mut registry).unwrap();
+        let handler = SupportBotHandler::new(
+            "support",
+            test_config(),
+            llm.clone(),
+            Arc::new(registry),
+            "system",
+        );
+
+        let effects = handler
+            .handle(&thread("users", "help"), &context())
+            .await
+            .unwrap();
+
+        assert_eq!(llm.requests().len(), 1);
+
+        let set_idx = effects
+            .iter()
+            .position(|effect| matches!(effect, ThreadEffect::SetThreadMetadata { .. }))
+            .expect("SetThreadMetadata must be emitted");
+        let resolved_idx = effects
+            .iter()
+            .position(|effect| matches!(effect, ThreadEffect::MarkResolved))
+            .expect("MarkResolved must be emitted");
+        assert!(set_idx < resolved_idx);
+
+        let state_meta = effects
+            .iter()
+            .find_map(|effect| match effect {
+                ThreadEffect::SetThreadMetadata { metadata } => Some(metadata),
+                _ => None,
+            })
+            .expect("state metadata must exist");
+        assert_eq!(state_meta[STATE_KEY]["status"], "finished");
+        assert_eq!(
+            state_meta[STATE_KEY]["finished_summary"],
+            "resolved by cache flush"
+        );
+    }
+
     #[test]
     fn state_is_stored_under_support_bot_key() {
         let metadata = json!({ "other": true });
@@ -1249,5 +879,58 @@ mod tests {
             source_user_thread_id(&engineer_thread_with_source("user-thread-1")).as_deref(),
             Some("user-thread-1")
         );
+    }
+
+    #[test]
+    fn build_llm_messages_keeps_tool_calls_only_in_trace_messages() {
+        let handler = SupportBotHandler::new(
+            "support",
+            test_config(),
+            Arc::new(StaticLlm),
+            Arc::new(ToolRegistry::new()),
+            "system",
+        );
+        let mut thread = thread("users", "help");
+        thread.messages[0].metadata = json!({
+            STATE_KEY: {
+                TRACE_KEY: [{
+                    "role": "assistant",
+                    "content": null,
+                    "name": null,
+                    "tool_call_id": null,
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "name": "instructions",
+                        "arguments": { "action": "list" }
+                    }]
+                }, {
+                    "role": "tool",
+                    "content": "{\"items\":[]}",
+                    "name": null,
+                    "tool_call_id": "call-1",
+                    "tool_calls": []
+                }]
+            }
+        });
+
+        let messages = build_llm_messages(
+            &handler.system_prompt,
+            &thread,
+            &SupportThreadState::default(),
+            context().bot_user_id.as_deref(),
+        )
+        .unwrap();
+
+        let user_msg = messages
+            .iter()
+            .find(|m| m.role == ChatRole::User)
+            .expect("user message should exist");
+        assert!(user_msg.tool_calls.is_empty());
+
+        let trace_assistant = messages
+            .iter()
+            .find(|m| m.role == ChatRole::Assistant && !m.tool_calls.is_empty())
+            .expect("assistant tool call message should exist");
+        assert_eq!(trace_assistant.tool_calls[0].id, "call-1");
     }
 }

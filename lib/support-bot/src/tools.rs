@@ -44,7 +44,6 @@ pub enum ToolKind {
 pub enum SupportAction {
     SendUserMessage { message: String },
     NotifyEngineer { message: String },
-    WaitForUser { reason: Option<String> },
     FinishRequest { summary: Option<String> },
 }
 
@@ -120,7 +119,6 @@ impl ToolRegistry {
 pub fn register_default_workflow_tools(registry: &mut ToolRegistry) -> Result<()> {
     registry.register(WorkflowTool::send_user_message())?;
     registry.register(WorkflowTool::notify_engineer())?;
-    registry.register(WorkflowTool::wait_for_user())?;
     registry.register(WorkflowTool::finish_request())?;
     Ok(())
 }
@@ -149,14 +147,6 @@ impl WorkflowTool {
         }
     }
 
-    fn wait_for_user() -> Self {
-        Self {
-            name: "wait_for_user",
-            description: "Pause active handling until the user sends more information.",
-            kind: WorkflowToolKind::WaitForUser,
-        }
-    }
-
     fn finish_request() -> Self {
         Self {
             name: "finish_request",
@@ -170,7 +160,6 @@ impl WorkflowTool {
 enum WorkflowToolKind {
     SendUserMessage,
     NotifyEngineer,
-    WaitForUser,
     FinishRequest,
 }
 
@@ -191,13 +180,6 @@ impl SupportTool for WorkflowTool {
                         "additionalProperties": false
                     })
                 }
-                WorkflowToolKind::WaitForUser => serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "reason": { "type": "string" }
-                    },
-                    "additionalProperties": false
-                }),
                 WorkflowToolKind::FinishRequest => serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -217,9 +199,6 @@ impl SupportTool for WorkflowTool {
             },
             WorkflowToolKind::NotifyEngineer => SupportAction::NotifyEngineer {
                 message: required_string(&call.arguments, "message")?,
-            },
-            WorkflowToolKind::WaitForUser => SupportAction::WaitForUser {
-                reason: optional_string(&call.arguments, "reason"),
             },
             WorkflowToolKind::FinishRequest => SupportAction::FinishRequest {
                 summary: optional_string(&call.arguments, "summary"),
@@ -264,12 +243,7 @@ mod tests {
 
         assert_eq!(
             names,
-            vec![
-                "finish_request",
-                "notify_engineer",
-                "send_user_message",
-                "wait_for_user"
-            ]
+            vec!["finish_request", "notify_engineer", "send_user_message"]
         );
     }
 

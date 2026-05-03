@@ -5,7 +5,9 @@
 
 pub mod builder;
 pub mod config;
+mod conversation;
 pub mod debug;
+mod debug_export;
 pub mod error;
 pub mod handler;
 pub mod instructions;
@@ -14,6 +16,8 @@ pub mod notifier;
 mod remote_mcp;
 pub mod state;
 pub mod tools;
+mod user_thread_run;
+mod workflow;
 
 #[cfg(test)]
 mod testutil;
