@@ -123,7 +123,7 @@ async fn close_stale_threads(handle: ThreadBotHandle) {
                 .ok();
 
             mattermost_api::apis::posts_api::create_post(
-                &handle.config(),
+                handle.config(),
                 CreatePostRequest {
                     channel_id: thread.channel_id.clone(),
                     message: "Thread is closed by timeout".to_string(),

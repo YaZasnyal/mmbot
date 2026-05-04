@@ -5,6 +5,7 @@ use crate::state::{EngineerThreadRef, SupportThreadState, SupportThreadStatus};
 use crate::tools::ToolCall;
 use crate::workflow::engineer_notifier;
 use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadMessage};
+use tracing::{info, warn};
 
 pub(crate) struct UserThreadRun {
     state: SupportThreadState,
@@ -27,10 +28,6 @@ impl UserThreadRun {
 
     pub(crate) fn messages(&self) -> &[ChatMessage] {
         &self.messages
-    }
-
-    pub(crate) fn trace_len(&self) -> usize {
-        self.trace.len()
     }
 
     pub(crate) fn trace_summary(&self) -> String {
@@ -141,6 +138,11 @@ impl UserThreadRun {
         trigger_message: &ThreadMessage,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
         self.persist_trace_and_state(thread, trigger_message)?;
+        info!(
+            thread_id = %thread.info.thread_id,
+            post_id = %trigger_message.post_id,
+            "support-bot: emitting MarkResolved after metadata persistence effects"
+        );
         self.effects.push(ThreadEffect::MarkResolved);
         Ok(self.effects)
     }
@@ -151,6 +153,11 @@ impl UserThreadRun {
         trigger_message: &ThreadMessage,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
         self.persist_trace_and_state(thread, trigger_message)?;
+        info!(
+            thread_id = %thread.info.thread_id,
+            post_id = %trigger_message.post_id,
+            "support-bot: emitting MarkStopped after metadata persistence effects"
+        );
         self.effects.push(ThreadEffect::MarkStopped);
         Ok(self.effects)
     }
@@ -161,13 +168,35 @@ impl UserThreadRun {
         trigger_message: &ThreadMessage,
     ) -> Result<(), ThreadBotError> {
         let trace_metadata = with_trace_metadata(&trigger_message.metadata, &self.trace)?;
+        info!(
+            thread_id = %thread.info.thread_id,
+            post_id = %trigger_message.post_id,
+            metadata_key = "support_bot.llm_trace",
+            trace_entries = self.trace.len(),
+            metadata_bytes = trace_metadata.to_string().len(),
+            "support-bot: queuing message metadata persistence"
+        );
         self.effects.push(ThreadEffect::SetMessageMetadata {
             post_id: trigger_message.post_id.clone(),
             metadata: trace_metadata,
         });
+        let thread_metadata = store_state(&thread.info.metadata, &self.state)?;
+        info!(
+            thread_id = %thread.info.thread_id,
+            metadata_key = "support_bot",
+            metadata_bytes = thread_metadata.to_string().len(),
+            "support-bot: queuing thread metadata persistence"
+        );
         self.effects.push(ThreadEffect::SetThreadMetadata {
-            metadata: store_state(&thread.info.metadata, &self.state)?,
+            metadata: thread_metadata,
         });
+        if self.stop_after_tools && self.trace.is_empty() {
+            warn!(
+                thread_id = %thread.info.thread_id,
+                post_id = %trigger_message.post_id,
+                "support-bot: finishing thread with empty trace"
+            );
+        }
         Ok(())
     }
 }

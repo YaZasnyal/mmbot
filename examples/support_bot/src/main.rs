@@ -193,11 +193,11 @@ fn load_remote_mcp_endpoints() -> Result<Vec<support_bot::RemoteMcpEndpoint>> {
 }
 
 fn load_system_prompt() -> Result<String> {
-    if let Ok(path) = std::env::var("SUPPORT_SYSTEM_PROMPT_FILE") {
-        if !path.trim().is_empty() {
-            return std::fs::read_to_string(&path)
-                .with_context(|| format!("failed to read SUPPORT_SYSTEM_PROMPT_FILE: {path}"));
-        }
+    if let Ok(path) = std::env::var("SUPPORT_SYSTEM_PROMPT_FILE")
+        && !path.trim().is_empty()
+    {
+        return std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read SUPPORT_SYSTEM_PROMPT_FILE: {path}"));
     }
 
     Ok(std::env::var("SUPPORT_SYSTEM_PROMPT")

@@ -16,17 +16,12 @@ pub struct EngineerThreadRef {
     pub root_post_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SupportThreadStatus {
+    #[default]
     Active,
     Finished,
-}
-
-impl Default for SupportThreadStatus {
-    fn default() -> Self {
-        Self::Active
-    }
 }
 
 impl Default for SupportThreadState {

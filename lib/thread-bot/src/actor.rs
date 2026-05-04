@@ -558,6 +558,7 @@ pub(crate) async fn handle_reconcile<H: ThreadHandler>(a: &ActorCtx<H>) -> Recon
 /// Execute a list of effects returned by the handler or a control reaction.
 ///
 /// Returns `(should_exit, should_reschedule)`.
+#[tracing::instrument(level = "debug", skip_all, fields(thread_id = %a.thread_id))]
 async fn execute_effects<H: ThreadHandler>(
     effects: Vec<ThreadEffect>,
     thread: &Thread,
@@ -566,15 +567,30 @@ async fn execute_effects<H: ThreadHandler>(
 ) -> (bool, bool) {
     let mut should_exit = false;
     let mut should_reschedule = false;
+    let total_effects = effects.len();
 
-    for effect in effects {
+    for (effect_idx, effect) in effects.into_iter().enumerate() {
         let effect_label = thread_effect_label(&effect);
+        tracing::info!(
+            thread_id = %a.thread_id,
+            root_post_id = %thread.info.root_post_id,
+            effect = effect_label,
+            effect_idx,
+            total_effects,
+            "Executing thread effect"
+        );
         match effect {
             ThreadEffect::Noop => {
                 a.metrics.effect(effect_label, "success");
             }
 
             ThreadEffect::Reply { message, metadata } => {
+                let message_bytes = message.len();
+                let metadata_bytes = if metadata != serde_json::Value::Null {
+                    metadata.to_string().len()
+                } else {
+                    0
+                };
                 let mut req =
                     models::CreatePostRequest::new(thread.info.channel_id.clone(), message);
                 req.root_id = Some(thread.info.root_post_id.clone());
@@ -588,6 +604,8 @@ async fn execute_effects<H: ThreadHandler>(
                         tracing::debug!(
                             thread_id = %a.thread_id,
                             post_id = %created.id,
+                            message_bytes,
+                            metadata_bytes,
                             "Posted reply"
                         );
                         // Bot reply is saved to DB when the WebSocket Posted
@@ -629,6 +647,12 @@ async fn execute_effects<H: ThreadHandler>(
             }
 
             ThreadEffect::SetThreadMetadata { metadata } => {
+                tracing::info!(
+                    thread_id = %a.thread_id,
+                    metadata_key = "thread",
+                    metadata_bytes = metadata.to_string().len(),
+                    "Persisting thread metadata"
+                );
                 if let Err(e) = a.store.set_thread_metadata(&a.thread_id, metadata).await {
                     a.metrics.effect(effect_label, "error");
                     tracing::error!(
@@ -646,6 +670,13 @@ async fn execute_effects<H: ThreadHandler>(
             }
 
             ThreadEffect::SetMessageMetadata { post_id, metadata } => {
+                tracing::info!(
+                    thread_id = %a.thread_id,
+                    post_id = %post_id,
+                    metadata_key = "message",
+                    metadata_bytes = metadata.to_string().len(),
+                    "Persisting message metadata"
+                );
                 if let Err(e) = a.store.set_message_metadata(&post_id, metadata).await {
                     a.metrics.effect(effect_label, "error");
                     tracing::error!(
@@ -669,6 +700,14 @@ async fn execute_effects<H: ThreadHandler>(
             }
 
             ThreadEffect::MarkResolved => {
+                if effect_idx < total_effects.saturating_sub(1) {
+                    tracing::warn!(
+                        thread_id = %a.thread_id,
+                        effect_idx,
+                        total_effects,
+                        "MarkResolved executed before final effect in batch"
+                    );
+                }
                 let reason = match close_source {
                     CloseSource::Reaction => ThreadCloseReason::ResolvedByReaction,
                     CloseSource::Handler => ThreadCloseReason::ResolvedByHandler,
@@ -703,6 +742,14 @@ async fn execute_effects<H: ThreadHandler>(
             }
 
             ThreadEffect::MarkStopped => {
+                if effect_idx < total_effects.saturating_sub(1) {
+                    tracing::warn!(
+                        thread_id = %a.thread_id,
+                        effect_idx,
+                        total_effects,
+                        "MarkStopped executed before final effect in batch"
+                    );
+                }
                 let reason = match close_source {
                     CloseSource::Reaction => ThreadCloseReason::StoppedByReaction,
                     CloseSource::Handler => ThreadCloseReason::StoppedByHandler,
@@ -881,6 +928,11 @@ pub async fn build_thread_snapshot(
 /// Save an incoming message to DB and update the thread seen position.
 ///
 /// Returns `true` if the message should trigger a handler run (non-bot message).
+#[tracing::instrument(
+    level = "debug",
+    skip_all,
+    fields(thread_id = %a.thread_id, post_id = %post.id)
+)]
 async fn save_incoming_message(a: &ActorCtx<impl ThreadHandler>, post: &models::Post) -> bool {
     let bot_id = a.bot_user_id.read().await;
     let is_bot = bot_id.as_deref() == post.user_id.as_deref();
@@ -913,6 +965,14 @@ async fn save_incoming_message(a: &ActorCtx<impl ThreadHandler>, post: &models::
             "Failed to save message to DB"
         );
     }
+    tracing::info!(
+        thread_id = %a.thread_id,
+        post_id = %post.id,
+        user_id = %post.user_id.clone().unwrap_or_default(),
+        is_bot,
+        message_bytes = post.message.as_ref().map_or(0, |m| m.len()),
+        "Incoming thread message persisted"
+    );
 
     let seen_at = post.create_at.map(ms_to_datetime).unwrap_or_else(Utc::now);
     if let Err(e) = a

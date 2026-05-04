@@ -20,7 +20,7 @@ use thread_bot::{
     Thread, ThreadBotError, ThreadCloseReason, ThreadContext, ThreadEffect, ThreadHandler,
     ThreadMessage,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn, Instrument, Span};
 
 pub struct SupportBotHandler {
     id: &'static str,
@@ -86,45 +86,33 @@ impl SupportBotHandler {
         SupportRoute::Ignored
     }
 
+    #[tracing::instrument(
+        level = "info",
+        skip_all,
+        fields(thread_id = %thread.info.thread_id, post_id = tracing::field::Empty)
+    )]
     async fn handle_engineer_thread(
         &self,
         thread: &Thread,
         ctx: &ThreadContext,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
         let Some(message) = last_new_external_message(thread, ctx) else {
-            info!(
-                thread_id = %thread.info.thread_id,
-                channel_id = %thread.info.channel_id,
-                "support-bot: engineer thread has no new external message"
-            );
+            info!("support-bot: engineer thread has no new external message");
             return Ok(vec![ThreadEffect::Noop]);
         };
-        info!(
-            thread_id = %thread.info.thread_id,
-            channel_id = %thread.info.channel_id,
-            post_id = %message.post_id,
-            "support-bot: received engineer thread message"
-        );
+        Span::current().record("post_id", tracing::field::display(&message.post_id));
+        info!("support-bot: received engineer thread message");
 
         let Some(command) =
             DebugCommand::parse(&message.message, &self.config.routes.debug_commands)
                 .map(|matched| matched.command)
         else {
-            info!(
-                thread_id = %thread.info.thread_id,
-                post_id = %message.post_id,
-                message = %truncate_utf8(message.message.clone(), 200),
-                "support-bot: engineer message is not a debug command"
-            );
+            info!("support-bot: engineer message is not a debug command");
             return Ok(vec![ThreadEffect::Noop]);
         };
 
         if command.name == "debug-report" {
-            info!(
-                thread_id = %thread.info.thread_id,
-                channel_id = %thread.info.channel_id,
-                "support-bot: received debug-report command"
-            );
+            info!("support-bot: received debug-report command");
             let effects =
                 handle_debug_export_html(&self.config.engineer_notifications.target, thread, ctx)
                     .await;
@@ -154,6 +142,11 @@ impl SupportBotHandler {
         }])
     }
 
+    #[tracing::instrument(
+        level = "info",
+        skip_all,
+        fields(thread_id = %thread.info.thread_id, post_id = tracing::field::Empty)
+    )]
     async fn handle_user_thread(
         &self,
         thread: &Thread,
@@ -162,12 +155,8 @@ impl SupportBotHandler {
         let Some(trigger_message) = last_new_external_message(thread, ctx) else {
             return Ok(vec![ThreadEffect::Noop]);
         };
-        info!(
-            thread_id = %thread.info.thread_id,
-            channel_id = %thread.info.channel_id,
-            post_id = %trigger_message.post_id,
-            "support-bot: handling user thread message"
-        );
+        Span::current().record("post_id", tracing::field::display(&trigger_message.post_id));
+        info!("support-bot: handling user thread message");
 
         let mut state = load_state(&thread.info.metadata)?;
         if let Some(engineer_thread) = self
@@ -193,7 +182,9 @@ impl SupportBotHandler {
         )
         .await?;
 
-        for _round in 0..self.config.limits.max_tool_rounds {
+        for round in 0..self.config.limits.max_tool_rounds {
+            let round_started = Instant::now();
+            info!(round, "support-bot: llm round started");
             let llm_started = Instant::now();
             let response_result = self
                 .llm
@@ -215,12 +206,28 @@ impl SupportBotHandler {
                     return Err(error.into());
                 }
             };
+            let requested_tool_calls = response.tool_calls.len();
+            info!(
+                round,
+                requested_tool_calls, "support-bot: llm response received"
+            );
 
             if response.tool_calls.is_empty() {
+                if response
+                    .message
+                    .content
+                    .as_ref()
+                    .map(|content| content.trim().is_empty())
+                    .unwrap_or(true)
+                {
+                    warn!(
+                        round,
+                        "support-bot: empty assistant response with no tool calls"
+                    );
+                }
                 info!(
-                    thread_id = %thread.info.thread_id,
-                    post_id = %trigger_message.post_id,
-                    trace_len = run.trace_len(),
+                    round,
+                    elapsed_ms = round_started.elapsed().as_millis() as u64,
                     "support-bot: llm completed without further tools"
                 );
                 if let Some(content) = response
@@ -250,23 +257,39 @@ impl SupportBotHandler {
                 .into_iter()
                 .take(self.config.limits.max_tool_calls_per_round)
                 .collect::<Vec<_>>();
+            let truncated_tool_calls = requested_tool_calls.saturating_sub(tool_calls.len());
+            if truncated_tool_calls > 0 {
+                warn!(
+                    round,
+                    requested_tool_calls,
+                    truncated_tool_calls,
+                    "support-bot: tool calls truncated by per-round limit"
+                );
+            }
             info!(
-                thread_id = %thread.info.thread_id,
-                post_id = %trigger_message.post_id,
-                tool_calls = tool_calls.len(),
+                round,
+                requested_tool_calls,
+                truncated_tool_calls,
                 "support-bot: executing tool calls from llm response"
             );
 
-            self.process_tool_calls(ctx, thread, &mut run, response.message.content, tool_calls)
-                .await?;
+            self.process_tool_calls(
+                ctx,
+                thread,
+                &mut run,
+                response.message.content,
+                tool_calls,
+                &trigger_message.post_id,
+            )
+            .await?;
+            info!(
+                round,
+                elapsed_ms = round_started.elapsed().as_millis() as u64,
+                "support-bot: llm round finished"
+            );
 
             if run.should_stop_after_tools() {
-                info!(
-                    thread_id = %thread.info.thread_id,
-                    post_id = %trigger_message.post_id,
-                    trace_len = run.trace_len(),
-                    "support-bot: finishing request after finish_request action"
-                );
+                info!("support-bot: finishing request after finish_request action");
                 return run.into_resolved_effects(thread, trigger_message);
             }
         }
@@ -309,6 +332,11 @@ impl SupportBotHandler {
         run.into_stopped_effects(thread, trigger_message)
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(thread_id = %thread.info.thread_id, post_id = tracing::field::Empty)
+    )]
     async fn process_tool_calls(
         &self,
         ctx: &ThreadContext,
@@ -316,7 +344,10 @@ impl SupportBotHandler {
         run: &mut UserThreadRun,
         assistant_content: Option<String>,
         tool_calls: Vec<ToolCall>,
+        trigger_post_id: &str,
     ) -> Result<(), ThreadBotError> {
+        Span::current().record("post_id", tracing::field::display(trigger_post_id));
+        debug!("support-bot: processing tool call batch");
         run.push_tool_round(assistant_content, tool_calls.clone());
         let tool_context = ToolContext::new(Arc::new(thread.clone()));
 
@@ -337,6 +368,7 @@ impl SupportBotHandler {
                     result_to_message(result, self.config.limits.max_tool_result_bytes)
                 }
                 Ok(ToolExecutionOutcome::Action(action)) => {
+                    info!("support-bot: applying workflow action from tool call");
                     let action_result = apply_action(
                         &self.config.engineer_notifications.target,
                         ctx,
@@ -383,6 +415,7 @@ impl SupportBotHandler {
                         }
                         _ => {}
                     }
+                    info!("support-bot: tool call completed with workflow action");
                     result_to_message(result, self.config.limits.max_tool_result_bytes)
                 }
                 Err(error) => {
@@ -441,29 +474,16 @@ impl ThreadHandler for SupportBotHandler {
         let started = Instant::now();
         let result = match route {
             SupportRoute::User => {
-                info!(
-                    thread_id = %thread.info.thread_id,
-                    channel_id = %thread.info.channel_id,
-                    "support-bot: route=user"
-                );
-                self.handle_user_thread(thread, ctx).await
+                self.handle_user_thread(thread, ctx)
+                    .instrument(tracing::info_span!("handle", route = "user"))
+                    .await
             }
             SupportRoute::Engineer => {
-                info!(
-                    thread_id = %thread.info.thread_id,
-                    channel_id = %thread.info.channel_id,
-                    "support-bot: route=engineer"
-                );
-                self.handle_engineer_thread(thread, ctx).await
+                self.handle_engineer_thread(thread, ctx)
+                    .instrument(tracing::info_span!("handle", route = "engineer"))
+                    .await
             }
-            SupportRoute::Ignored => {
-                info!(
-                    thread_id = %thread.info.thread_id,
-                    channel_id = %thread.info.channel_id,
-                    "support-bot: route=ignored"
-                );
-                Ok(vec![ThreadEffect::Noop])
-            }
+            SupportRoute::Ignored => Ok(vec![ThreadEffect::Noop]),
         };
         let outcome = if result.is_ok() { "success" } else { "error" };
         self.metrics

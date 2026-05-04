@@ -138,8 +138,8 @@ impl ThreadStore for MockStore {
             .threads
             .values()
             .filter(|t| statuses.contains(&t.status))
-            .filter(|t| updated_after.map_or(true, |after| t.updated_at > after))
-            .filter(|t| updated_before.map_or(true, |before| t.updated_at < before))
+            .filter(|t| updated_after.is_none_or(|after| t.updated_at > after))
+            .filter(|t| updated_before.is_none_or(|before| t.updated_at < before))
             .cloned()
             .collect())
     }
@@ -452,6 +452,7 @@ impl MockHandler {
     }
 
     /// Set whether `should_track()` returns true.
+    #[allow(dead_code)]
     pub fn with_should_track(mut self, value: bool) -> Self {
         self.should_track_result = value;
         self
@@ -495,8 +496,7 @@ impl ThreadHandler for MockHandler {
         }
 
         if self.should_error.load(Ordering::SeqCst) {
-            return Err(ThreadBotError::Internal(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(ThreadBotError::Internal(Box::new(std::io::Error::other(
                 "mock handler error",
             ))));
         }
@@ -577,8 +577,10 @@ pub async fn setup_mm_mock(posts: Vec<models::Post>) -> (MockServer, Arc<Configu
     // When unmocked, get_reactions() returns Err — the actor's
     // `if let Ok(reactions)` silently skips the check.
 
-    let mut config = Configuration::default();
-    config.base_path = server.uri();
+    let config = Configuration {
+        base_path: server.uri(),
+        ..Default::default()
+    };
 
     (server, Arc::new(config))
 }

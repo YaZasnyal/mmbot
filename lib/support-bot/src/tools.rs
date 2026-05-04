@@ -210,9 +210,7 @@ impl SupportTool for WorkflowTool {
             WorkflowToolKind::FinishRequest => {
                 let args: FinishRequestArgs = parse_workflow_args(call.arguments)?;
                 SupportAction::FinishRequest {
-                    summary: args
-                        .summary
-                        .and_then(|summary| non_empty_optional_string(summary)),
+                    summary: args.summary.and_then(non_empty_optional_string),
                 }
             }
         };

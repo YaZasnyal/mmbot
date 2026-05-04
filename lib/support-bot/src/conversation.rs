@@ -3,6 +3,7 @@ use crate::state::SupportThreadState;
 use crate::tools::ToolResult;
 use serde_json::json;
 use thread_bot::{Thread, ThreadBotError, ThreadMessage};
+use tracing::warn;
 
 pub(crate) const STATE_KEY: &str = "support_bot";
 pub(crate) const TRACE_KEY: &str = "llm_trace";
@@ -72,10 +73,19 @@ pub(crate) fn result_to_message(result: ToolResult, max_bytes: usize) -> ChatMes
         result.content
     };
 
-    ChatMessage::tool(
-        result.call_id,
-        truncate_utf8(content.to_string(), max_bytes),
-    )
+    let serialized = content.to_string();
+    let truncated = truncate_utf8(serialized.clone(), max_bytes);
+    if truncated.len() < serialized.len() {
+        warn!(
+            tool_call_id = %result.call_id,
+            original_bytes = serialized.len(),
+            result_bytes = truncated.len(),
+            max_tool_result_bytes = max_bytes,
+            "support-bot: tool result truncation applied"
+        );
+    }
+
+    ChatMessage::tool(result.call_id, truncated)
 }
 
 pub(crate) fn load_trace(metadata: &serde_json::Value) -> Result<Vec<ChatMessage>, ThreadBotError> {

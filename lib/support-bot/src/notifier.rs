@@ -19,6 +19,11 @@ impl MattermostSupportNotifier {
         Self { config, target }
     }
 
+    #[tracing::instrument(
+        level = "info",
+        skip_all,
+        fields(thread_id = %thread.info.thread_id, source_root_post_id = %thread.info.root_post_id)
+    )]
     pub async fn ensure_engineer_thread(
         &self,
         thread: &Thread,
@@ -28,6 +33,14 @@ impl MattermostSupportNotifier {
             EngineerNotificationTarget::SameThread => Ok(None),
             EngineerNotificationTarget::MattermostChannel { channel_id } => {
                 if let Some(current_thread) = current_thread {
+                    info!(
+                        source_thread_id = %thread.info.thread_id,
+                        source_root_post_id = %thread.info.root_post_id,
+                        engineer_channel_id = %channel_id,
+                        engineer_root_post_id = %current_thread.root_post_id,
+                        created_or_reused = "reused",
+                        "support-bot: engineer thread reused"
+                    );
                     return Ok(Some(current_thread.clone()));
                 }
 
@@ -39,6 +52,14 @@ impl MattermostSupportNotifier {
                 let created = posts_api::create_post(&self.config, request, None)
                     .await
                     .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
+                info!(
+                    source_thread_id = %thread.info.thread_id,
+                    source_root_post_id = %thread.info.root_post_id,
+                    engineer_channel_id = %channel_id,
+                    engineer_root_post_id = %created.id,
+                    created_or_reused = "created",
+                    "support-bot: engineer thread created"
+                );
 
                 Ok(Some(EngineerThreadRef {
                     channel_id: channel_id.clone(),
@@ -48,6 +69,11 @@ impl MattermostSupportNotifier {
         }
     }
 
+    #[tracing::instrument(
+        level = "info",
+        skip_all,
+        fields(thread_id = %thread.info.thread_id, source_root_post_id = %thread.info.root_post_id)
+    )]
     pub async fn notify_engineer(
         &self,
         thread: &Thread,
@@ -63,6 +89,7 @@ impl MattermostSupportNotifier {
                     .ok_or_else(|| {
                         SupportBotError::Internal("engineer thread was not created".into())
                     })?;
+                let message_bytes = message.len();
                 let request = engineer_thread_reply_request(
                     channel_id,
                     &thread_ref.root_post_id,
@@ -73,12 +100,23 @@ impl MattermostSupportNotifier {
                 posts_api::create_post(&self.config, request, None)
                     .await
                     .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
+                info!(
+                    source_thread_id = %thread.info.thread_id,
+                    engineer_root_post_id = %thread_ref.root_post_id,
+                    message_bytes,
+                    "support-bot: engineer notification posted"
+                );
 
                 Ok(Some(thread_ref))
             }
         }
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(thread_id = %thread.info.thread_id, source_post_id = %message.post_id)
+    )]
     pub async fn mirror_user_message(
         &self,
         thread: &Thread,
@@ -98,6 +136,11 @@ impl MattermostSupportNotifier {
         .await
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(thread_id = %thread.info.thread_id)
+    )]
     pub async fn mirror_bot_message(
         &self,
         thread: &Thread,
@@ -113,6 +156,11 @@ impl MattermostSupportNotifier {
         .await
     }
 
+    #[tracing::instrument(
+        level = "info",
+        skip_all,
+        fields(channel_id = %channel_id, root_post_id = %root_post_id)
+    )]
     pub async fn post_html_attachment_to_thread(
         &self,
         channel_id: &str,
@@ -155,6 +203,11 @@ impl MattermostSupportNotifier {
         Ok(())
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(thread_id = %thread.info.thread_id, kind = %kind)
+    )]
     async fn post_engineer_thread_message(
         &self,
         thread: &Thread,
@@ -171,6 +224,7 @@ impl MattermostSupportNotifier {
                     .ok_or_else(|| {
                         SupportBotError::Internal("engineer thread was not created".into())
                     })?;
+                let message_bytes = message.len();
                 let mut request = engineer_thread_reply_request(
                     channel_id,
                     &thread_ref.root_post_id,
@@ -182,6 +236,13 @@ impl MattermostSupportNotifier {
                 posts_api::create_post(&self.config, request, None)
                     .await
                     .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
+                info!(
+                    source_thread_id = %thread.info.thread_id,
+                    engineer_root_post_id = %thread_ref.root_post_id,
+                    kind = %kind,
+                    message_bytes,
+                    "support-bot: mirrored message posted to engineer thread"
+                );
 
                 Ok(Some(thread_ref))
             }

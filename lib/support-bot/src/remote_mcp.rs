@@ -7,19 +7,44 @@ use crate::tools::{
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
+use tracing::{debug, warn};
 
 pub async fn register_remote_mcp_tools(
     registry: &mut ToolRegistry,
     config: &ToolConfig,
 ) -> Result<()> {
     for endpoint in &config.remote_mcp_endpoints {
-        let client = RemoteMcpClient::new(endpoint.url.clone(), endpoint.auth_header.clone())?;
-        let tools = client.list_tools().await.map_err(|error| {
-            SupportBotError::Config(format!(
-                "failed to load MCP tools from endpoint '{}' ({}): {}",
-                endpoint.name, endpoint.url, error
-            ))
-        })?;
+        let client = match RemoteMcpClient::new(endpoint.url.clone(), endpoint.auth_header.clone())
+        {
+            Ok(client) => client,
+            Err(error) => {
+                warn!(
+                    endpoint = %endpoint.name,
+                    url = %endpoint.url,
+                    error = %error,
+                    "support-bot: optional MCP endpoint registration failed at client init"
+                );
+                continue;
+            }
+        };
+        let tools = match client.list_tools().await {
+            Ok(tools) => tools,
+            Err(error) => {
+                warn!(
+                    endpoint = %endpoint.name,
+                    url = %endpoint.url,
+                    error = %error,
+                    "support-bot: optional MCP endpoint registration failed at tools/list"
+                );
+                continue;
+            }
+        };
+        debug!(
+            endpoint = %endpoint.name,
+            url = %endpoint.url,
+            tool_count = tools.len(),
+            "support-bot: MCP endpoint registered"
+        );
 
         for remote_tool in tools {
             registry.register(RemoteMcpTool::new(
@@ -69,6 +94,7 @@ impl RemoteMcpClient {
         Ok(Self { base_url, http })
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(endpoint_url = %self.base_url))]
     async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>> {
         let request = serde_json::json!({
             "jsonrpc": "2.0",
@@ -86,6 +112,11 @@ impl RemoteMcpClient {
         serde_json::from_value(tools_value).map_err(SupportBotError::Serialization)
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(endpoint_url = %self.base_url, remote_tool_name = %name)
+    )]
     async fn call_tool(
         &self,
         name: &str,
@@ -167,11 +198,18 @@ impl SupportTool for RemoteMcpTool {
         }
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(tool_name = %self.exposed_name, tool_call_id = %call.id)
+    )]
     async fn call(&self, _ctx: ToolContext, call: ToolCall) -> Result<ToolExecutionOutcome> {
+        debug!("support-bot: remote MCP tool call started");
         let result = self
             .client
             .call_tool(&self.remote_name, call.arguments)
             .await?;
+        debug!("support-bot: remote MCP tool call finished");
 
         Ok(ToolExecutionOutcome::ToolResult(ToolResult {
             call_id: call.id,

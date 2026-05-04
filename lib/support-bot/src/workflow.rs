@@ -6,7 +6,13 @@ use crate::tools::{SupportAction, ToolResult};
 use crate::user_thread_run::UserThreadRun;
 use serde_json::json;
 use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect};
+use tracing::info;
 
+#[tracing::instrument(
+    level = "info",
+    skip_all,
+    fields(thread_id = %thread.info.thread_id, tool_call_id = %call_id, action = tracing::field::Empty)
+)]
 pub(crate) async fn apply_action(
     target: &EngineerNotificationTarget,
     ctx: &ThreadContext,
@@ -17,6 +23,7 @@ pub(crate) async fn apply_action(
 ) -> Result<ToolResult, ThreadBotError> {
     let result = match action {
         SupportAction::SendUserMessage { message } => {
+            tracing::Span::current().record("action", tracing::field::display("send_user_message"));
             let Some(message) = sanitize_user_visible_message(message) else {
                 return Ok(ToolResult {
                     call_id: call_id.to_string(),
@@ -48,6 +55,7 @@ pub(crate) async fn apply_action(
             }
         }
         SupportAction::NotifyEngineer { message } => {
+            tracing::Span::current().record("action", tracing::field::display("notify_engineer"));
             match target {
                 EngineerNotificationTarget::SameThread => {
                     run.push_effect(ThreadEffect::Reply {
@@ -102,6 +110,7 @@ pub(crate) async fn apply_action(
             }
         }
         SupportAction::FinishRequest { summary } => {
+            tracing::Span::current().record("action", tracing::field::display("finish_request"));
             run.finish_request(summary.clone());
             ToolResult {
                 call_id: call_id.to_string(),
@@ -113,6 +122,7 @@ pub(crate) async fn apply_action(
             }
         }
     };
+    info!("support-bot: workflow action applied");
     Ok(result)
 }
 
