@@ -31,6 +31,9 @@ export SUPPORT_LLM_BASE_URL=http://localhost:11434
 export SUPPORT_LLM_MODEL=gpt-4o-mini
 export SUPPORT_LLM_API_KEY=
 export SUPPORT_LLM_TIMEOUT_SECS=45
+# Optional: inline prompt or a file path. File wins when both are set.
+# export SUPPORT_SYSTEM_PROMPT="You are a support assistant..."
+# export SUPPORT_SYSTEM_PROMPT_FILE=examples/support_bot/system-prompt.md
 
 export SUPPORT_USER_CHANNEL_IDS=YOUR_SUPPORT_CHANNEL_ID
 export SUPPORT_ENGINEER_CHANNEL_ID=YOUR_ENGINEER_CHANNEL_ID
@@ -59,6 +62,7 @@ cargo run -p support-bot-example
   - channel routing (`SUPPORT_USER_CHANNEL_IDS`, optional `SUPPORT_ENGINEER_CHANNEL_ID`).
 - `THREAD_BOT_DATABASE_URL` defaults to `postgres://test:test@localhost:5433/thread_bot_test`.
 - `MM_BASE_PATH` defaults to `http://localhost:8065`.
+- `SUPPORT_SYSTEM_PROMPT_FILE` or `SUPPORT_SYSTEM_PROMPT` overrides the default support-bot system prompt.
 - If `SUPPORT_ENGINEER_CHANNEL_ID` is unset, engineer notifications stay in the same thread.
 - `SUPPORT_REMOTE_MCP_NAMES` is a comma-separated list. For each name `x`, provide `SUPPORT_REMOTE_MCP_X_URL` and optionally `SUPPORT_REMOTE_MCP_X_AUTH_HEADER` (name is uppercased, `-` becomes `_`).
 - The included instruction files are placeholders; replace them with your runbooks.

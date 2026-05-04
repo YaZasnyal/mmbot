@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use support_bot::{
-    EngineerNotificationConfig, EngineerNotificationTarget, InstructionConfig, InstructionManifest,
-    InstructionRepository, LlmConfig, OpenAiChatCompletionsClient, SupportBotBuilder,
-    SupportBotConfig, SupportBotLimits, SupportRouteConfig, ToolConfig,
+    DEFAULT_SUPPORT_SYSTEM_PROMPT, EngineerNotificationConfig, EngineerNotificationTarget,
+    InstructionConfig, InstructionManifest, InstructionRepository, LlmConfig,
+    OpenAiChatCompletionsClient, SupportBotBuilder, SupportBotConfig, SupportBotLimits,
+    SupportRouteConfig, ToolConfig,
 };
 use thread_bot::{PgThreadStore, ThreadBotPlugin, ThreadStore};
 
@@ -93,6 +94,7 @@ fn load_support_config() -> Result<SupportBotConfig> {
     let remote_mcp_endpoints = load_remote_mcp_endpoints()?;
 
     Ok(SupportBotConfig {
+        system_prompt: load_system_prompt()?,
         llm: LlmConfig {
             base_url: read_env("SUPPORT_LLM_BASE_URL", "http://localhost:11434")?,
             api_key: std::env::var("SUPPORT_LLM_API_KEY").ok(),
@@ -178,6 +180,18 @@ fn load_remote_mcp_endpoints() -> Result<Vec<support_bot::RemoteMcpEndpoint>> {
     }
 
     Ok(endpoints)
+}
+
+fn load_system_prompt() -> Result<String> {
+    if let Ok(path) = std::env::var("SUPPORT_SYSTEM_PROMPT_FILE") {
+        if !path.trim().is_empty() {
+            return std::fs::read_to_string(&path)
+                .with_context(|| format!("failed to read SUPPORT_SYSTEM_PROMPT_FILE: {path}"));
+        }
+    }
+
+    Ok(std::env::var("SUPPORT_SYSTEM_PROMPT")
+        .unwrap_or_else(|_| DEFAULT_SUPPORT_SYSTEM_PROMPT.to_string()))
 }
 
 fn read_required_env(name: &str) -> Result<String> {

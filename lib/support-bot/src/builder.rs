@@ -32,13 +32,14 @@ pub struct SupportBotBuilder {
 
 impl SupportBotBuilder {
     pub fn new(id: &'static str, config: SupportBotConfig, llm: Arc<dyn LlmClient>) -> Self {
+        let system_prompt = config.system_prompt.clone();
         Self {
             id,
             config,
             llm,
             tools: ToolRegistry::new(),
             debug_handler: None,
-            system_prompt: DEFAULT_SUPPORT_SYSTEM_PROMPT.to_string(),
+            system_prompt,
             include_default_workflow_tools: true,
             include_remote_mcp_tools: true,
         }
@@ -132,6 +133,7 @@ mod tests {
 
     fn test_config() -> SupportBotConfig {
         SupportBotConfig {
+            system_prompt: DEFAULT_SUPPORT_SYSTEM_PROMPT.to_string(),
             llm: LlmConfig {
                 base_url: "http://localhost:11434".to_string(),
                 api_key: None,

@@ -548,6 +548,7 @@ mod tests {
 
     fn test_config() -> SupportBotConfig {
         SupportBotConfig {
+            system_prompt: "system".to_string(),
             llm: LlmConfig {
                 base_url: "http://localhost".to_string(),
                 api_key: None,

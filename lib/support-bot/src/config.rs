@@ -2,6 +2,7 @@ use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct SupportBotConfig {
+    pub system_prompt: String,
     pub llm: LlmConfig,
     pub instructions: InstructionConfig,
     pub tools: ToolConfig,
