@@ -12,6 +12,7 @@ pub mod error;
 pub mod handler;
 pub mod instructions;
 pub mod llm;
+pub mod metrics;
 pub mod notifier;
 mod output;
 mod remote_mcp;
@@ -39,7 +40,9 @@ pub use instructions::{
 pub use llm::{
     ChatMessage, ChatRole, LlmClient, LlmRequest, LlmResponse, OpenAiChatCompletionsClient,
 };
+pub use metrics::{SupportBotMetrics, SupportBotMetricsHandle};
 pub use notifier::MattermostSupportNotifier;
+pub use prometheus_client;
 pub use state::{EngineerThreadRef, SupportThreadState, SupportThreadStatus};
 pub use tools::{
     register_default_workflow_tools, register_remote_mcp_tools, SupportAction, SupportTool,

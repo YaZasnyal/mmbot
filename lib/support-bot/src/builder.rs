@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::handler::SupportBotHandler;
 use crate::instructions::InstructionRepository;
 use crate::llm::LlmClient;
+use crate::metrics::SupportBotMetricsHandle;
 use crate::tools::{
     register_default_workflow_tools, register_remote_mcp_tools, SupportTool, ToolRegistry,
 };
@@ -28,6 +29,7 @@ pub struct SupportBotBuilder {
     system_prompt: String,
     include_default_workflow_tools: bool,
     include_remote_mcp_tools: bool,
+    metrics: Option<SupportBotMetricsHandle>,
 }
 
 impl SupportBotBuilder {
@@ -42,6 +44,7 @@ impl SupportBotBuilder {
             system_prompt,
             include_default_workflow_tools: true,
             include_remote_mcp_tools: true,
+            metrics: None,
         }
     }
 
@@ -62,6 +65,11 @@ impl SupportBotBuilder {
 
     pub fn with_remote_mcp_tools(mut self, enabled: bool) -> Self {
         self.include_remote_mcp_tools = enabled;
+        self
+    }
+
+    pub fn with_metrics(mut self, metrics: SupportBotMetricsHandle) -> Self {
+        self.metrics = Some(metrics);
         self
     }
 
@@ -100,6 +108,10 @@ impl SupportBotBuilder {
 
         if let Some(debug_handler) = self.debug_handler {
             handler = handler.with_debug_handler(debug_handler);
+        }
+
+        if let Some(metrics) = self.metrics {
+            handler = handler.with_metrics(metrics);
         }
 
         Ok(handler)

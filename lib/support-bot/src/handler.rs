@@ -5,6 +5,7 @@ use crate::conversation::{
 use crate::debug::{DebugCommand, DebugCommandHandler};
 use crate::debug_export::handle_debug_export_html;
 use crate::llm::{LlmClient, LlmRequest};
+use crate::metrics::SupportBotMetricsHandle;
 use crate::notifier::MattermostSupportNotifier;
 use crate::output::sanitize_user_visible_message;
 use crate::tools::ToolCall;
@@ -14,6 +15,7 @@ use crate::workflow::apply_action;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
+use std::time::Instant;
 use thread_bot::{
     Thread, ThreadBotError, ThreadCloseReason, ThreadContext, ThreadEffect, ThreadHandler,
     ThreadMessage,
@@ -27,6 +29,7 @@ pub struct SupportBotHandler {
     tools: Arc<ToolRegistry>,
     debug_handler: Option<Arc<dyn DebugCommandHandler>>,
     system_prompt: String,
+    metrics: SupportBotMetricsHandle,
 }
 
 impl SupportBotHandler {
@@ -44,11 +47,17 @@ impl SupportBotHandler {
             tools,
             debug_handler: None,
             system_prompt: system_prompt.into(),
+            metrics: SupportBotMetricsHandle::noop(),
         }
     }
 
     pub fn with_debug_handler(mut self, handler: Arc<dyn DebugCommandHandler>) -> Self {
         self.debug_handler = Some(handler);
+        self
+    }
+
+    pub fn with_metrics(mut self, metrics: SupportBotMetricsHandle) -> Self {
+        self.metrics = metrics;
         self
     }
 
@@ -116,12 +125,15 @@ impl SupportBotHandler {
                 channel_id = %thread.info.channel_id,
                 "support-bot: received debug-report command"
             );
-            return handle_debug_export_html(
-                &self.config.engineer_notifications.target,
-                thread,
-                ctx,
-            )
-            .await;
+            let effects =
+                handle_debug_export_html(&self.config.engineer_notifications.target, thread, ctx)
+                    .await;
+            if effects.is_ok() {
+                self.metrics.record_reply("engineer", "success");
+            } else {
+                self.metrics.record_reply("engineer", "error");
+            }
+            return effects;
         }
 
         let response = match &self.debug_handler {
@@ -131,6 +143,7 @@ impl SupportBotHandler {
             },
         };
 
+        self.metrics.record_reply("engineer", "success");
         Ok(vec![ThreadEffect::Reply {
             message: response.message,
             metadata: json!({
@@ -181,14 +194,27 @@ impl SupportBotHandler {
         .await?;
 
         for _round in 0..self.config.limits.max_tool_rounds {
-            let response = self
+            let llm_started = Instant::now();
+            let response_result = self
                 .llm
                 .complete(LlmRequest {
                     model: self.config.llm.model.clone(),
                     messages: run.messages().to_vec(),
                     tools: self.tools.specs(),
                 })
-                .await?;
+                .await;
+            let response = match response_result {
+                Ok(response) => {
+                    self.metrics
+                        .record_llm_request("success", llm_started.elapsed());
+                    response
+                }
+                Err(error) => {
+                    self.metrics
+                        .record_llm_request("error", llm_started.elapsed());
+                    return Err(error.into());
+                }
+            };
 
             if response.tool_calls.is_empty() {
                 info!(
@@ -214,6 +240,7 @@ impl SupportBotHandler {
                         }),
                     )
                     .await?;
+                    self.metrics.record_reply("user", "success");
                 }
                 return run.into_effects(thread, trigger_message);
             }
@@ -278,6 +305,7 @@ impl SupportBotHandler {
             }),
         )
         .await?;
+        self.metrics.record_reply("user", "success");
         run.into_stopped_effects(thread, trigger_message)
     }
 
@@ -293,12 +321,23 @@ impl SupportBotHandler {
         let tool_context = ToolContext::new(Arc::new(thread.clone()));
 
         for call in tool_calls {
-            let tool_message = match self.tools.call(tool_context.clone(), call.clone()).await {
+            let tool_started = Instant::now();
+            let tool_outcome = self.tools.call(tool_context.clone(), call.clone()).await;
+            let tool_message = match tool_outcome {
                 Ok(ToolExecutionOutcome::ToolResult(result)) => {
+                    self.metrics.record_tool_call(
+                        &call.name,
+                        if result.is_error {
+                            "tool_error"
+                        } else {
+                            "success"
+                        },
+                        tool_started.elapsed(),
+                    );
                     result_to_message(result, self.config.limits.max_tool_result_bytes)
                 }
                 Ok(ToolExecutionOutcome::Action(action)) => {
-                    let result = apply_action(
+                    let action_result = apply_action(
                         &self.config.engineer_notifications.target,
                         ctx,
                         thread,
@@ -306,19 +345,60 @@ impl SupportBotHandler {
                         &call.id,
                         action,
                     )
-                    .await?;
+                    .await;
+                    let result = match action_result {
+                        Ok(result) => {
+                            self.metrics.record_tool_call(
+                                &call.name,
+                                if result.is_error {
+                                    "action_error"
+                                } else {
+                                    "action"
+                                },
+                                tool_started.elapsed(),
+                            );
+                            result
+                        }
+                        Err(error) => {
+                            self.metrics.record_tool_call(
+                                &call.name,
+                                "error",
+                                tool_started.elapsed(),
+                            );
+                            return Err(error);
+                        }
+                    };
+                    match &result.content {
+                        serde_json::Value::Object(map)
+                            if map.get("status").and_then(|value| value.as_str())
+                                == Some("sent") =>
+                        {
+                            match call.name.as_str() {
+                                "send_user_message" => self.metrics.record_reply("user", "success"),
+                                "notify_engineer" => {
+                                    self.metrics.record_reply("engineer", "success")
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
                     result_to_message(result, self.config.limits.max_tool_result_bytes)
                 }
-                Err(error) => result_to_message(
-                    ToolResult {
-                        call_id: call.id,
-                        content: json!({
-                            "error": error.to_string()
-                        }),
-                        is_error: true,
-                    },
-                    self.config.limits.max_tool_result_bytes,
-                ),
+                Err(error) => {
+                    self.metrics
+                        .record_tool_call(&call.name, "error", tool_started.elapsed());
+                    result_to_message(
+                        ToolResult {
+                            call_id: call.id,
+                            content: json!({
+                                "error": error.to_string()
+                            }),
+                            is_error: true,
+                        },
+                        self.config.limits.max_tool_result_bytes,
+                    )
+                }
             };
             run.push_tool_message(tool_message);
         }
@@ -356,7 +436,10 @@ impl ThreadHandler for SupportBotHandler {
         thread: &Thread,
         ctx: &ThreadContext,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
-        match self.route(&thread.info.channel_id) {
+        let route = self.route(&thread.info.channel_id);
+        let route_label = route.label();
+        let started = Instant::now();
+        let result = match route {
             SupportRoute::User => {
                 info!(
                     thread_id = %thread.info.thread_id,
@@ -381,7 +464,13 @@ impl ThreadHandler for SupportBotHandler {
                 );
                 Ok(vec![ThreadEffect::Noop])
             }
-        }
+        };
+        let outcome = if result.is_ok() { "success" } else { "error" };
+        self.metrics
+            .record_thread_event(route_label, "handle", outcome);
+        self.metrics
+            .observe_handle_duration(route_label, outcome, started.elapsed());
+        result
     }
 
     async fn on_thread_closed(
@@ -410,7 +499,8 @@ impl ThreadHandler for SupportBotHandler {
                 None
             });
 
-        self.engineer_notifier(ctx)
+        let result = self
+            .engineer_notifier(ctx)
             .notify_engineer(
                 thread,
                 current_thread.as_ref(),
@@ -421,7 +511,12 @@ impl ThreadHandler for SupportBotHandler {
             )
             .await
             .map(|_| ())
-            .map_err(ThreadBotError::from)
+            .map_err(ThreadBotError::from);
+        self.metrics.record_thread_close(
+            thread_close_reason_label(reason),
+            if result.is_ok() { "success" } else { "error" },
+        );
+        result
     }
 }
 
@@ -430,6 +525,27 @@ enum SupportRoute {
     User,
     Engineer,
     Ignored,
+}
+
+impl SupportRoute {
+    fn label(self) -> &'static str {
+        match self {
+            SupportRoute::User => "user",
+            SupportRoute::Engineer => "engineer",
+            SupportRoute::Ignored => "ignored",
+        }
+    }
+}
+
+fn thread_close_reason_label(reason: ThreadCloseReason) -> &'static str {
+    match reason {
+        ThreadCloseReason::ResolvedByReaction => "resolved_by_reaction",
+        ThreadCloseReason::StoppedByReaction => "stopped_by_reaction",
+        ThreadCloseReason::ResolvedByHandler => "resolved_by_handler",
+        ThreadCloseReason::StoppedByHandler => "stopped_by_handler",
+        ThreadCloseReason::ResolvedExternally => "resolved_externally",
+        ThreadCloseReason::StoppedExternally => "stopped_externally",
+    }
 }
 
 fn last_new_external_message<'a>(

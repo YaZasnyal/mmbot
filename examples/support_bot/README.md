@@ -7,6 +7,8 @@ Runnable `support-bot` example on top of `thread-bot`.
 - `SupportBotBuilder` with default workflow tools.
 - `InstructionRepository` loaded from `instructions/manifest.yaml`.
 - Optional remote MCP tool registration from env-driven `ToolConfig`.
+- Optional Prometheus/OpenMetrics metric families for Mattermost WS,
+  thread actors, and support workflow counters/durations.
 - Mattermost runtime via `mattermost-bot` + `ThreadBotPlugin`.
 - PostgreSQL persistence via `PgThreadStore`.
 
@@ -69,5 +71,10 @@ cargo run -p support-bot-example
 - Engineer thread commands:
   - `!support debug-report` to export full source support thread as a self-contained HTML attachment (includes tool-trace section).
 - On tool-loop fatal stop, the bot also uploads an HTML thread snapshot to the engineer thread automatically.
+- Metrics are registered into an in-process `prometheus_client::Registry`.
+  Use the crate re-export (`support_bot::prometheus_client`) so applications do
+  not need to match the exact dependency version. This example wires the
+  registry and labels every series with `bot="support_bot"`; add your own HTTP
+  `/metrics` endpoint around that registry if you want scraping.
 - [`TOOL_AUTHORING_GUIDE.md`](TOOL_AUTHORING_GUIDE.md) is a copy-paste handoff
   for coding agents that need to add new support tools.

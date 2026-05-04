@@ -1,11 +1,14 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures_util::{SinkExt, TryStreamExt};
 pub use mattermost_api::apis::configuration::Configuration;
 use reqwest_websocket::{Message, RequestBuilderExt};
 
 pub use mattermost_api;
+pub use prometheus_client;
 pub mod error;
+pub mod metrics;
 pub mod middlewares;
 pub mod nested_decoder;
 pub mod plugin;
@@ -14,6 +17,7 @@ pub use chrono;
 pub use cron_tab;
 
 pub use error::{BotError, Result};
+pub use metrics::{MattermostBotMetrics, MattermostBotMetricsHandle};
 pub use plugin::{Event, Plugin};
 pub use tokio_graceful;
 
@@ -24,6 +28,7 @@ pub struct Bot {
     config: Arc<Configuration>,
 
     plugins: Vec<Arc<dyn Plugin>>,
+    metrics: MattermostBotMetricsHandle,
 }
 
 impl Bot {
@@ -65,6 +70,7 @@ impl Bot {
         Ok(Self {
             config: Arc::new(config),
             plugins: Default::default(),
+            metrics: MattermostBotMetricsHandle::noop(),
         })
     }
 
@@ -101,6 +107,11 @@ impl Bot {
     /// ```
     pub fn with_plugin(mut self, plugin: impl Plugin) -> Self {
         self.plugins.push(Arc::new(plugin));
+        self
+    }
+
+    pub fn with_metrics(mut self, metrics: MattermostBotMetricsHandle) -> Self {
+        self.metrics = metrics;
         self
     }
 
@@ -151,9 +162,13 @@ impl Bot {
         for plugin in &self.plugins {
             match plugin.on_start(&self.config).await {
                 Ok(_) => {
+                    self.metrics
+                        .plugin_lifecycle(plugin.id(), "on_start", "success");
                     tracing::debug!(plugin_id = plugin.id(), "Plugin initialized successfully");
                 }
                 Err(e) => {
+                    self.metrics
+                        .plugin_lifecycle(plugin.id(), "on_start", "error");
                     tracing::error!(
                         plugin_id = plugin.id(),
                         error = %e,
@@ -195,9 +210,13 @@ impl Bot {
         for plugin in &self.plugins {
             match plugin.on_shutdown(&self.config).await {
                 Ok(_) => {
+                    self.metrics
+                        .plugin_lifecycle(plugin.id(), "on_shutdown", "success");
                     tracing::debug!(plugin_id = plugin.id(), "Plugin shut down successfully");
                 }
                 Err(e) => {
+                    self.metrics
+                        .plugin_lifecycle(plugin.id(), "on_shutdown", "error");
                     tracing::error!(
                         plugin_id = plugin.id(),
                         error = %e,
@@ -224,6 +243,7 @@ impl Bot {
     }
 
     async fn run_ws(&self) -> Result<()> {
+        let ws_started = Instant::now();
         let url = if let Some(rest) = self.config.base_path.strip_prefix("https://") {
             format!("wss://{}", rest)
         } else if let Some(rest) = self.config.base_path.strip_prefix("http://") {
@@ -259,10 +279,12 @@ impl Bot {
                 // Try to parse as event
                 let event = match serde_json::from_str::<Event>(&text) {
                     Ok(e) => {
+                        self.metrics.ws_message("text", "event");
                         tracing::debug!(event=?e, "parsed event");
                         e
                     }
                     Err(e) => {
+                        self.metrics.ws_message("text", "parse_error");
                         // Not an event, might be a response message (like {"status":"OK","seq_reply":1})
                         // Just log at debug level and skip
                         tracing::debug!("skipping non-event message: {:?}", e);
@@ -272,10 +294,13 @@ impl Bot {
 
                 // Skip Unknown events (like hello, status_change, etc.)
                 if matches!(event.data, crate::types::EventType::Unknown) {
+                    self.metrics.ws_message("text", "unknown_event");
                     tracing::debug!("skipping unknown event type");
                     continue;
                 }
 
+                let event_type = event_type_label(&event.data);
+                self.metrics.event(event_type);
                 let event = Arc::new(event);
 
                 // Process events in parallel across all interested plugins
@@ -287,8 +312,16 @@ impl Bot {
                         let plugin = Arc::clone(plugin);
                         let event = Arc::clone(&event);
                         let config = Arc::clone(&self.config);
+                        let metrics = self.metrics.clone();
                         async move {
+                            let started = Instant::now();
                             plugin.process_event(&event, &config).await;
+                            metrics.plugin_event(
+                                plugin.id(),
+                                event_type_label(&event.data),
+                                "success",
+                                started.elapsed(),
+                            );
                         }
                     })
                     .collect();
@@ -297,12 +330,25 @@ impl Bot {
                 // Errors in individual plugins won't affect others
                 futures_util::future::join_all(futures).await;
             } else if let Message::Ping(p) = message {
+                self.metrics.ws_message("ping", "success");
                 websocket.send(Message::Pong(p)).await?;
             } else {
+                self.metrics.ws_message("other", "skipped");
                 tracing::warn!(?message, "Received unknown WebSocket message type");
             }
         }
 
+        self.metrics.ws_connection("closed", ws_started.elapsed());
         Ok(())
+    }
+}
+
+fn event_type_label(event: &types::EventType) -> &'static str {
+    match event {
+        types::EventType::Hello(_) => "hello",
+        types::EventType::Posted(_) => "posted",
+        types::EventType::ReactionAdded(_) => "reaction_added",
+        types::EventType::ReactionRemoved(_) => "reaction_removed",
+        types::EventType::Unknown => "unknown",
     }
 }

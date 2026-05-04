@@ -646,6 +646,7 @@ pub async fn spawn_test_actor(
         debounce,
         thread_id: thread_id.to_string(),
         bot_user_id: Arc::new(RwLock::new(Some("bot_user".to_string()))),
+        metrics: crate::metrics::ThreadBotMetricsHandle::noop(),
     };
 
     tokio::spawn(crate::actor::thread_actor(rx, actor_ctx));

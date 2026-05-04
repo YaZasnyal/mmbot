@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use mattermost_api::apis::configuration::Configuration;
-use mattermost_bot::{Bot, tokio_graceful};
+use mattermost_bot::{Bot, MattermostBotMetrics, tokio_graceful};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,9 +9,9 @@ use support_bot::{
     DEFAULT_SUPPORT_SYSTEM_PROMPT, EngineerNotificationConfig, EngineerNotificationTarget,
     InstructionConfig, InstructionManifest, InstructionRepository, LlmConfig,
     OpenAiChatCompletionsClient, SupportBotBuilder, SupportBotConfig, SupportBotLimits,
-    SupportRouteConfig, ToolConfig,
+    SupportBotMetrics, SupportRouteConfig, ToolConfig,
 };
-use thread_bot::{PgThreadStore, ThreadBotPlugin, ThreadStore};
+use thread_bot::{PgThreadStore, ThreadBotMetrics, ThreadBotPlugin, ThreadStore};
 
 #[derive(Debug, Deserialize)]
 struct ManifestFile {
@@ -29,8 +29,15 @@ async fn main() -> Result<()> {
 
     let llm = Arc::new(OpenAiChatCompletionsClient::new(config.llm.clone())?);
 
-    let handler = SupportBotBuilder::new("support_bot", config.clone(), llm)
+    let bot_name = "support_bot";
+    let mut _metrics_registry = support_bot::prometheus_client::registry::Registry::default();
+    let mattermost_metrics = MattermostBotMetrics::register(&mut _metrics_registry);
+    let thread_metrics = ThreadBotMetrics::register(&mut _metrics_registry);
+    let support_metrics = SupportBotMetrics::register(&mut _metrics_registry);
+
+    let handler = SupportBotBuilder::new(bot_name, config.clone(), llm)
         .with_instruction_repository(instruction_repo)?
+        .with_metrics(support_metrics.for_bot(bot_name))
         .build()
         .await?;
 
@@ -47,7 +54,8 @@ async fn main() -> Result<()> {
         .await?,
     );
 
-    let plugin = ThreadBotPlugin::new(handler, store);
+    let plugin = ThreadBotPlugin::new(handler, store)
+        .with_metrics(thread_metrics.for_bot(bot_name, bot_name));
 
     let mm_config = Configuration {
         base_path: read_env("MM_BASE_PATH", "http://localhost:8065")?,
@@ -55,7 +63,9 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
 
-    let mut bot = Bot::with_config(mm_config)?.with_plugin(plugin);
+    let mut bot = Bot::with_config(mm_config)?
+        .with_metrics(mattermost_metrics.for_bot(bot_name))
+        .with_plugin(plugin);
 
     tracing::info!("Starting support-bot example...");
 

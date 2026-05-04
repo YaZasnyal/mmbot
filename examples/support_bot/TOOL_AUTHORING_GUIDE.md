@@ -16,12 +16,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use mattermost_bot::MattermostBotMetrics;
 use support_bot::{
     DEFAULT_SUPPORT_SYSTEM_PROMPT, EngineerNotificationConfig, EngineerNotificationTarget,
     InstructionConfig, InstructionManifest, InstructionRepository, LlmConfig,
     OpenAiChatCompletionsClient, SupportBotBuilder, SupportBotConfig, SupportBotLimits,
-    SupportRouteConfig, ToolConfig,
+    SupportBotMetrics, SupportRouteConfig, ToolConfig,
 };
+use thread_bot::ThreadBotMetrics;
 
 async fn build_support_handler() -> anyhow::Result<support_bot::SupportBotHandler> {
     let config = SupportBotConfig {
@@ -59,8 +61,15 @@ async fn build_support_handler() -> anyhow::Result<support_bot::SupportBotHandle
 
     let llm = Arc::new(OpenAiChatCompletionsClient::new(config.llm.clone())?);
 
-    let handler = SupportBotBuilder::new("support_bot", config, llm)
+    let bot_name = "support_bot";
+    let mut metrics_registry = support_bot::prometheus_client::registry::Registry::default();
+    let _mattermost_metrics = MattermostBotMetrics::register(&mut metrics_registry);
+    let _thread_metrics = ThreadBotMetrics::register(&mut metrics_registry);
+    let support_metrics = SupportBotMetrics::register(&mut metrics_registry);
+
+    let handler = SupportBotBuilder::new(bot_name, config, llm)
         .with_instruction_repository(instruction_repo)?
+        .with_metrics(support_metrics.for_bot(bot_name))
         .with_tool(MyTool::new())?
         .build()
         .await?;
@@ -89,6 +98,9 @@ Parts and responsibilities:
   thread or go to a separate Mattermost channel.
 - `SupportBotBuilder`: registers instruction, workflow, local, and remote MCP
   tools, then returns a `SupportBotHandler`.
+- `SupportBotMetrics`: optional Prometheus/OpenMetrics families for support
+  routes, LLM calls, tool calls, replies, and close notifications. Create the
+  registry outside the bot and pass a per-bot handle with `.with_metrics(...)`.
 
 The default builder registers workflow tools such as sending a user message,
 notifying an engineer, and finishing a request. Add domain tools with
@@ -97,6 +109,36 @@ notifying an engineer, and finishing a request. Add domain tools with
 The bot uses OpenAI-compatible chat completions. Tool calls are persisted in
 thread/message metadata for debug reports. Tool results are truncated by
 `SupportBotLimits.max_tool_result_bytes`, so tools must return compact JSON.
+
+## Metrics Wiring
+
+Use the re-exported `prometheus-client` crate instead of adding your own direct
+dependency:
+
+```rust
+let mut registry = support_bot::prometheus_client::registry::Registry::default();
+let support_metrics = support_bot::SupportBotMetrics::register(&mut registry);
+
+let handler = SupportBotBuilder::new("support_bot", config, llm)
+    .with_metrics(support_metrics.for_bot("support_bot"))
+    .build()
+    .await?;
+```
+
+For the runnable example, all three layers can share one registry:
+
+```rust
+let mut registry = support_bot::prometheus_client::registry::Registry::default();
+let mattermost_metrics = mattermost_bot::MattermostBotMetrics::register(&mut registry);
+let thread_metrics = thread_bot::ThreadBotMetrics::register(&mut registry);
+let support_metrics = support_bot::SupportBotMetrics::register(&mut registry);
+```
+
+Keep `bot` labels stable and low-cardinality, for example `support_bot`,
+`support_bot_eu`, or `support_bot_staging`. Do not use channel IDs, thread IDs,
+post IDs, usernames, free-form errors, URLs, or tool arguments as metric labels.
+Expose the registry through whatever HTTP stack the application already uses;
+the library crates intentionally do not start a `/metrics` server.
 
 ## Integration Choices
 

@@ -11,6 +11,7 @@ serde_json = "^1.0"
 futures-util = "0.3.31"
 reqwest-websocket = "0.4.3"
 mattermost_api = { workspace = true }
+prometheus-client = { workspace = true }
 tracing = "0.1.41"
 thiserror = "2.0"
 tokio-graceful = "0.2.2"
