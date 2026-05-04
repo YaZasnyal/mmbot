@@ -35,15 +35,28 @@ This crate now includes the first concrete `SupportBotHandler` skeleton:
 - persists `SupportThreadState` under the `support_bot` thread metadata key;
 - executes local tools through `ToolRegistry` with bounded tool rounds.
 - provides default workflow tools for user replies, engineer notifications,
-  waiting for user input, and finishing a request.
+  and finishing a request.
 - mirrors user and bot messages into a dedicated engineer channel thread when
   configured.
-- supports a per-thread debug flag for streaming tool calls and tool results to
-  the engineer thread.
+- supports on-demand engineer diagnostics with `!support debug-report`, which
+  uploads an HTML report containing support state, source posts, and captured
+  tool traces.
 - can register remote MCP tools from `ToolConfig.remote_mcp_endpoints` via
   `register_remote_mcp_tools`.
 - includes `SupportBotBuilder` with a default system prompt that enforces using
   the `instructions` tool before inventing diagnostics.
+
+## Engineer Debug Commands
+
+Engineer-channel commands are parsed before the engineer thread enters the
+regular LLM flow. The default prefixes are `/support` and `!support`.
+
+- `!support debug-report`: export the source support thread diagnostics as an
+  HTML attachment in the engineer thread.
+- `!support state <thread-id>`: pending command shape for state inspection.
+- `!support trace <thread-id>`: pending command shape for trace inspection.
+- `!support retry <thread-id>`: pending command shape for retrying a support
+  run after manual review.
 
 ## Instruction Format
 

@@ -1,5 +1,6 @@
 use crate::error::{Result, SupportBotError};
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -194,36 +195,68 @@ impl SupportTool for WorkflowTool {
 
     async fn call(&self, _ctx: ToolContext, call: ToolCall) -> Result<ToolExecutionOutcome> {
         let action = match self.kind {
-            WorkflowToolKind::SendUserMessage => SupportAction::SendUserMessage {
-                message: required_string(&call.arguments, "message")?,
-            },
-            WorkflowToolKind::NotifyEngineer => SupportAction::NotifyEngineer {
-                message: required_string(&call.arguments, "message")?,
-            },
-            WorkflowToolKind::FinishRequest => SupportAction::FinishRequest {
-                summary: optional_string(&call.arguments, "summary"),
-            },
+            WorkflowToolKind::SendUserMessage => {
+                let args: WorkflowMessageArgs = parse_workflow_args(call.arguments)?;
+                SupportAction::SendUserMessage {
+                    message: non_empty_string(args.message, "message")?,
+                }
+            }
+            WorkflowToolKind::NotifyEngineer => {
+                let args: WorkflowMessageArgs = parse_workflow_args(call.arguments)?;
+                SupportAction::NotifyEngineer {
+                    message: non_empty_string(args.message, "message")?,
+                }
+            }
+            WorkflowToolKind::FinishRequest => {
+                let args: FinishRequestArgs = parse_workflow_args(call.arguments)?;
+                SupportAction::FinishRequest {
+                    summary: args
+                        .summary
+                        .and_then(|summary| non_empty_optional_string(summary)),
+                }
+            }
         };
 
         Ok(ToolExecutionOutcome::Action(action))
     }
 }
 
-fn required_string(arguments: &serde_json::Value, key: &str) -> Result<String> {
-    arguments
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(ToString::to_string)
-        .ok_or_else(|| SupportBotError::Tool(format!("missing required string argument: {key}")))
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowMessageArgs {
+    message: String,
 }
 
-fn optional_string(arguments: &serde_json::Value, key: &str) -> Option<String> {
-    arguments
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(ToString::to_string)
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FinishRequestArgs {
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+fn parse_workflow_args<T>(arguments: serde_json::Value) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_value(arguments)
+        .map_err(|error| SupportBotError::Tool(format!("invalid workflow tool arguments: {error}")))
+}
+
+fn non_empty_string(value: String, key: &str) -> Result<String> {
+    if value.trim().is_empty() {
+        return Err(SupportBotError::Tool(format!(
+            "missing required string argument: {key}"
+        )));
+    }
+    Ok(value)
+}
+
+fn non_empty_optional_string(value: String) -> Option<String> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 #[cfg(test)]
@@ -268,5 +301,66 @@ mod tests {
                 message: "hello".to_string()
             })
         );
+    }
+
+    #[tokio::test]
+    async fn workflow_tool_rejects_empty_required_string() {
+        let tool = WorkflowTool::send_user_message();
+        let error = tool
+            .call(
+                ToolContext::without_thread(),
+                ToolCall {
+                    id: "call-1".to_string(),
+                    name: "send_user_message".to_string(),
+                    arguments: serde_json::json!({ "message": "   " }),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("missing required string argument: message"));
+    }
+
+    #[tokio::test]
+    async fn workflow_tool_rejects_wrong_argument_type() {
+        let tool = WorkflowTool::notify_engineer();
+        let error = tool
+            .call(
+                ToolContext::without_thread(),
+                ToolCall {
+                    id: "call-1".to_string(),
+                    name: "notify_engineer".to_string(),
+                    arguments: serde_json::json!({ "message": 42 }),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("invalid workflow tool arguments"));
+    }
+
+    #[tokio::test]
+    async fn workflow_tool_rejects_extra_fields() {
+        let tool = WorkflowTool::finish_request();
+        let error = tool
+            .call(
+                ToolContext::without_thread(),
+                ToolCall {
+                    id: "call-1".to_string(),
+                    name: "finish_request".to_string(),
+                    arguments: serde_json::json!({
+                        "summary": "done",
+                        "unexpected": "value"
+                    }),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("unknown field"));
     }
 }

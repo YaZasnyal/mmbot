@@ -586,9 +586,13 @@ async fn execute_effects<H: ThreadHandler>(
                 if let Err(e) = a.store.set_thread_metadata(&a.thread_id, metadata).await {
                     tracing::error!(
                         thread_id = %a.thread_id,
+                        effect_type = "set_thread_metadata",
                         error = %e,
-                        "Failed to set thread metadata"
+                        "Critical thread effect failed"
                     );
+                    stop_after_critical_effect_failure(thread, a, "set_thread_metadata").await;
+                    should_exit = true;
+                    break;
                 }
             }
 
@@ -597,9 +601,13 @@ async fn execute_effects<H: ThreadHandler>(
                     tracing::error!(
                         thread_id = %a.thread_id,
                         post_id = %post_id,
+                        effect_type = "set_message_metadata",
                         error = %e,
-                        "Failed to set message metadata"
+                        "Critical thread effect failed"
                     );
+                    stop_after_critical_effect_failure(thread, a, "set_message_metadata").await;
+                    should_exit = true;
+                    break;
                 }
             }
 
@@ -672,6 +680,47 @@ async fn execute_effects<H: ThreadHandler>(
     }
 
     (should_exit, should_reschedule)
+}
+
+async fn stop_after_critical_effect_failure<H: ThreadHandler>(
+    thread: &Thread,
+    a: &ActorCtx<H>,
+    effect_type: &'static str,
+) {
+    if let Err(e) = a
+        .store
+        .update_thread_status(&a.thread_id, ThreadStatus::Stopped)
+        .await
+    {
+        tracing::error!(
+            thread_id = %a.thread_id,
+            effect_type,
+            error = %e,
+            "Failed to stop thread after critical effect failure"
+        );
+        return;
+    }
+
+    if let Err(e) = a
+        .handler
+        .on_thread_closed(thread, ThreadCloseReason::StoppedByHandler, &a.ctx)
+        .await
+    {
+        tracing::error!(
+            thread_id = %a.thread_id,
+            effect_type,
+            reason = ?ThreadCloseReason::StoppedByHandler,
+            error = %e,
+            "on_thread_closed failed after critical effect failure"
+        );
+    }
+
+    tracing::info!(
+        thread_id = %a.thread_id,
+        effect_type,
+        reason = ?ThreadCloseReason::StoppedByHandler,
+        "Thread stopped after critical effect failure"
+    );
 }
 
 // ─── Thread snapshot builder ─────────────────────────────────────────────────

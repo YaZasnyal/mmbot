@@ -15,9 +15,10 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use thread_bot::{
-    Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadHandler, ThreadMessage,
+    Thread, ThreadBotError, ThreadCloseReason, ThreadContext, ThreadEffect, ThreadHandler,
+    ThreadMessage,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 pub struct SupportBotHandler {
     id: &'static str,
@@ -381,6 +382,46 @@ impl ThreadHandler for SupportBotHandler {
                 Ok(vec![ThreadEffect::Noop])
             }
         }
+    }
+
+    async fn on_thread_closed(
+        &self,
+        thread: &Thread,
+        reason: ThreadCloseReason,
+        ctx: &ThreadContext,
+    ) -> Result<(), ThreadBotError> {
+        if !matches!(self.route(&thread.info.channel_id), SupportRoute::User) {
+            return Ok(());
+        }
+
+        let metadata = match ctx.store.get_thread(&thread.info.thread_id).await? {
+            Some(record) => record.metadata,
+            None => thread.info.metadata.clone(),
+        };
+
+        let current_thread = load_state(&metadata)
+            .map(|state| state.engineer_thread)
+            .unwrap_or_else(|error| {
+                warn!(
+                    thread_id = %thread.info.thread_id,
+                    error = %error,
+                    "support-bot: failed to load state while closing thread"
+                );
+                None
+            });
+
+        self.engineer_notifier(ctx)
+            .notify_engineer(
+                thread,
+                current_thread.as_ref(),
+                format!(
+                    "**Support thread closed**\n\nreason: `{reason:?}`\nsource: {}",
+                    thread.info.thread_id
+                ),
+            )
+            .await
+            .map(|_| ())
+            .map_err(ThreadBotError::from)
     }
 }
 

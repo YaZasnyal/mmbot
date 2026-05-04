@@ -442,6 +442,34 @@ async fn actor_set_thread_metadata_effect() {
 }
 
 #[tokio::test]
+async fn actor_stops_thread_when_critical_metadata_effect_fails() {
+    let handler = MockHandler::new().with_default_effects(vec![
+        ThreadEffect::SetMessageMetadata {
+            post_id: "missing-post".to_string(),
+            metadata: serde_json::json!({"trace": []}),
+        },
+        ThreadEffect::SetThreadMetadata {
+            metadata: serde_json::json!({"should_not": "run"}),
+        },
+    ]);
+
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+    let (tx, store, handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    settle().await;
+
+    let thread = store.thread_snapshot("thread1").await.unwrap();
+    assert!(matches!(thread.status, ThreadStatus::Stopped));
+    assert_eq!(thread.metadata, serde_json::Value::Null);
+
+    let reasons = handler.closed_reasons.lock().await;
+    assert_eq!(reasons.as_slice(), [ThreadCloseReason::StoppedByHandler]);
+    assert!(tx.is_closed());
+}
+
+#[tokio::test]
 async fn actor_control_reaction_interrupts_handler() {
     let handler = MockHandler::new().with_handle_delay(Duration::from_secs(5));
 

@@ -7,6 +7,8 @@ use std::sync::Arc;
 use thread_bot::Thread;
 use tracing::info;
 
+const MIRRORED_MESSAGE_MAX_CHARS: usize = 4000;
+
 pub struct MattermostSupportNotifier {
     config: Arc<Configuration>,
     target: EngineerNotificationTarget,
@@ -416,11 +418,38 @@ fn source_post_link(config: &Configuration, post_id: &str) -> String {
 }
 
 fn quote_for_mattermost(message: &str) -> String {
-    message
-        .lines()
-        .map(|line| format!("> {line}"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let (message, truncated) = truncate_chars(message, MIRRORED_MESSAGE_MAX_CHARS);
+    let fence = markdown_fence_for(&message);
+    let truncation_marker = if truncated {
+        "\n\n[message truncated]"
+    } else {
+        ""
+    };
+
+    format!("{fence}\n{message}{truncation_marker}\n{fence}")
+}
+
+fn truncate_chars(message: &str, max_chars: usize) -> (String, bool) {
+    let mut chars = message.chars();
+    let truncated = message.chars().count() > max_chars;
+    let value = chars.by_ref().take(max_chars).collect();
+    (value, truncated)
+}
+
+fn markdown_fence_for(message: &str) -> String {
+    let mut longest_run = 0;
+    let mut current_run = 0;
+
+    for ch in message.chars() {
+        if ch == '`' {
+            current_run += 1;
+            longest_run = longest_run.max(current_run);
+        } else {
+            current_run = 0;
+        }
+    }
+
+    "`".repeat((longest_run + 1).max(3))
 }
 
 fn support_post_props(kind: &str, thread: &Thread) -> serde_json::Value {
@@ -486,7 +515,7 @@ mod tests {
         assert!(request
             .message
             .contains("Source: http://localhost:8065/_redirect/pl/root-1"));
-        assert!(request.message.contains("> service is down"));
+        assert!(request.message.contains("```\nservice is down\n```"));
         assert_eq!(
             request.props.unwrap()["support_bot"]["kind"],
             "engineer_thread_root"
@@ -518,6 +547,23 @@ mod tests {
             source_post_link(&config, "post-1"),
             "http://localhost:8065/_redirect/pl/post-1"
         );
+    }
+
+    #[test]
+    fn mattermost_quote_uses_fence_that_survives_backticks() {
+        let quoted = quote_for_mattermost("before\n```json\n{}\n```\nafter");
+
+        assert!(quoted.starts_with("````\n"));
+        assert!(quoted.ends_with("\n````"));
+        assert!(quoted.contains("```json"));
+    }
+
+    #[test]
+    fn mattermost_quote_truncates_large_messages() {
+        let quoted = quote_for_mattermost(&"x".repeat(MIRRORED_MESSAGE_MAX_CHARS + 1));
+
+        assert!(quoted.contains("[message truncated]"));
+        assert!(quoted.len() < MIRRORED_MESSAGE_MAX_CHARS + 100);
     }
 
     #[test]
