@@ -233,9 +233,30 @@ pub fn render_thread_html_report(
     thread_id: &str,
     channel_id: &str,
     root_post_id: &str,
+    summary: &SupportReportSummary,
     posts: &[SupportReportPost],
     traces: &[SupportReportTrace],
 ) -> String {
+    let tool_rows = if summary.tool_calls.is_empty() {
+        "<tr><td colspan=\"6\">No tool calls captured</td></tr>".to_string()
+    } else {
+        summary
+            .tool_calls
+            .iter()
+            .map(|call| {
+                format!(
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    call.round,
+                    escape_html(&call.post_id),
+                    escape_html(&call.name),
+                    escape_html(&call.call_id),
+                    escape_html(&call.status),
+                    if call.truncated { "yes" } else { "no" }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     let traces_by_post = traces
         .iter()
         .map(|trace| (trace.post_id.as_str(), trace.entries.as_slice()))
@@ -279,10 +300,18 @@ pub fn render_thread_html_report(
          .trace{{background:#fff;border:1px solid #d8dee8;border-radius:10px;padding:8px 12px;margin:0 0 10px}}\
          .tool-trace{{margin-top:12px;background:#fff8e8;border:1px solid #f1d08b;border-radius:10px;padding:10px}}\
          .tool-trace h3{{margin:0 0 8px;font-size:13px;color:#7c4f00}}\
+         .summary-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}}\
+         .summary-item{{background:#f8fafc;border:1px solid #d8dee8;border-radius:8px;padding:10px}}\
+         .summary-item b{{display:block;font-size:11px;color:#64748b;text-transform:uppercase;margin-bottom:4px}}\
+         table{{width:100%;border-collapse:collapse;background:#fff;margin:10px 0 16px}}th,td{{border:1px solid #d8dee8;padding:6px 8px;text-align:left;font-size:12px}}th{{background:#f8fafc;color:#475569}}\
          pre{{white-space:pre-wrap;word-wrap:break-word;margin:0;font-family:inherit}}</style></head><body><div class=\"wrap\">\
          <h1>Support Thread Report</h1><div class=\"meta\"><div><b>thread_id:</b> <code>{thread_id}</code></div>\
          <div><b>channel_id:</b> <code>{channel_id}</code></div><div><b>root_post_id:</b> <code>{root_post_id}</code></div>\
          <div><b>messages:</b> <code>{count}</code></div><div><b>trace_posts:</b> <code>{trace_posts}</code></div>\
+         <h2>Summary</h2><div class=\"summary-grid\"><div class=\"summary-item\"><b>Status</b><code>{status}</code></div>\
+         <div class=\"summary-item\"><b>Tool errors</b><code>{tool_errors}</code></div>\
+         <div class=\"summary-item\"><b>Truncated results</b><code>{truncated_results}</code></div></div>\
+         <h3>State</h3><pre>{state_json}</pre><h3>Tool Calls</h3><table><thead><tr><th>Round</th><th>Post</th><th>Tool</th><th>Call</th><th>Status</th><th>Truncated</th></tr></thead><tbody>{tool_rows}</tbody></table>\
          <h2>Messages</h2>{items}\
          <script>document.querySelectorAll('pre').forEach((p)=>{{if(p.textContent.length>3000){{p.dataset.full=p.textContent;p.textContent=p.textContent.slice(0,3000)+'\\n...[trimmed in view]';}}}});</script>\
          </div></body></html>",
@@ -292,6 +321,11 @@ pub fn render_thread_html_report(
         count = posts.len(),
         items = items,
         trace_posts = traces.len(),
+        status = escape_html(&summary.status),
+        tool_errors = summary.tool_errors,
+        truncated_results = summary.truncated_results,
+        state_json = escape_html(&summary.state_json),
+        tool_rows = tool_rows,
     )
 }
 
@@ -307,6 +341,25 @@ pub struct SupportReportPost {
 pub struct SupportReportTrace {
     pub post_id: String,
     pub entries: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SupportReportSummary {
+    pub status: String,
+    pub state_json: String,
+    pub tool_errors: usize,
+    pub truncated_results: usize,
+    pub tool_calls: Vec<SupportReportToolCall>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SupportReportToolCall {
+    pub post_id: String,
+    pub round: usize,
+    pub call_id: String,
+    pub name: String,
+    pub status: String,
+    pub truncated: bool,
 }
 
 fn escape_html(value: &str) -> String {
@@ -465,5 +518,42 @@ mod tests {
             source_post_link(&config, "post-1"),
             "http://localhost:8065/_redirect/pl/post-1"
         );
+    }
+
+    #[test]
+    fn html_report_includes_summary_and_tool_table() {
+        let summary = SupportReportSummary {
+            status: "finished".to_string(),
+            state_json: "{\"status\":\"finished\"}".to_string(),
+            tool_errors: 1,
+            truncated_results: 1,
+            tool_calls: vec![SupportReportToolCall {
+                post_id: "post-1".to_string(),
+                round: 1,
+                call_id: "call-1".to_string(),
+                name: "instructions".to_string(),
+                status: "error".to_string(),
+                truncated: true,
+            }],
+        };
+        let html = render_thread_html_report(
+            "thread-1",
+            "users",
+            "root-1",
+            &summary,
+            &[SupportReportPost {
+                post_id: "post-1".to_string(),
+                user_id: "user-1".to_string(),
+                message: "help".to_string(),
+                created_at: "now".to_string(),
+            }],
+            &[],
+        );
+
+        assert!(html.contains("<h2>Summary</h2>"));
+        assert!(html.contains("<code>finished</code>"));
+        assert!(html.contains("instructions"));
+        assert!(html.contains("call-1"));
+        assert!(html.contains("Tool errors"));
     }
 }

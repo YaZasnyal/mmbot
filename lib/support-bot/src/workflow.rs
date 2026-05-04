@@ -1,6 +1,7 @@
 use crate::config::EngineerNotificationTarget;
 use crate::conversation::STATE_KEY;
 use crate::notifier::MattermostSupportNotifier;
+use crate::output::sanitize_user_visible_message;
 use crate::tools::{SupportAction, ToolResult};
 use crate::user_thread_run::UserThreadRun;
 use serde_json::json;
@@ -16,6 +17,16 @@ pub(crate) async fn apply_action(
 ) -> Result<ToolResult, ThreadBotError> {
     let result = match action {
         SupportAction::SendUserMessage { message } => {
+            let Some(message) = sanitize_user_visible_message(message) else {
+                return Ok(ToolResult {
+                    call_id: call_id.to_string(),
+                    content: json!({
+                        "status": "failed",
+                        "error": "message contained only hidden reasoning"
+                    }),
+                    is_error: true,
+                });
+            };
             run.reply(
                 target,
                 ctx,

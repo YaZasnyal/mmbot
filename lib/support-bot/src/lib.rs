@@ -13,6 +13,7 @@ pub mod handler;
 pub mod instructions;
 pub mod llm;
 pub mod notifier;
+mod output;
 mod remote_mcp;
 pub mod state;
 pub mod tools;
@@ -39,7 +40,7 @@ pub use llm::{
     ChatMessage, ChatRole, LlmClient, LlmRequest, LlmResponse, OpenAiChatCompletionsClient,
 };
 pub use notifier::MattermostSupportNotifier;
-pub use state::{EngineerThreadRef, SupportHistoryItem, SupportThreadState};
+pub use state::{EngineerThreadRef, SupportThreadState, SupportThreadStatus};
 pub use tools::{
     register_default_workflow_tools, register_remote_mcp_tools, SupportAction, SupportTool,
     ToolCall, ToolContext, ToolExecutionOutcome, ToolKind, ToolRegistry, ToolResult, ToolSpec,

@@ -6,6 +6,7 @@ use crate::debug::{DebugCommand, DebugCommandHandler};
 use crate::debug_export::handle_debug_export_html;
 use crate::llm::{LlmClient, LlmRequest};
 use crate::notifier::MattermostSupportNotifier;
+use crate::output::sanitize_user_visible_message;
 use crate::tools::ToolCall;
 use crate::tools::{ToolContext, ToolExecutionOutcome, ToolRegistry, ToolResult};
 use crate::user_thread_run::UserThreadRun;
@@ -198,7 +199,7 @@ impl SupportBotHandler {
                 if let Some(content) = response
                     .message
                     .content
-                    .filter(|content| !content.is_empty())
+                    .and_then(sanitize_user_visible_message)
                 {
                     run.reply(
                         &self.config.engineer_notifications.target,
@@ -394,12 +395,9 @@ fn last_new_external_message<'a>(
     thread: &'a Thread,
     ctx: &ThreadContext,
 ) -> Option<&'a ThreadMessage> {
-    let message = thread.messages.last()?;
-    if !message.is_new || ctx.bot_user_id.as_deref() == Some(message.user_id.as_str()) {
-        return None;
-    }
-
-    Some(message)
+    thread.messages.iter().rev().find(|message| {
+        message.is_new && ctx.bot_user_id.as_deref() != Some(message.user_id.as_str())
+    })
 }
 
 fn tool_loop_limit_engineer_message(
@@ -638,6 +636,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn engineer_thread_ignores_new_bot_messages_after_command() {
+        let handler = SupportBotHandler::new(
+            "support",
+            test_config(),
+            Arc::new(StaticLlm),
+            Arc::new(ToolRegistry::new()),
+            "system",
+        )
+        .with_debug_handler(Arc::new(StaticDebug));
+        let mut thread = thread("engineers", "!support state");
+        thread.messages.push(ThreadMessage {
+            post_id: "post-2".to_string(),
+            thread_id: "thread-1".to_string(),
+            user_id: "bot".to_string(),
+            message: "bot echo".to_string(),
+            root_id: Some("post-1".to_string()),
+            parent_post_id: Some("post-1".to_string()),
+            props: json!({}),
+            metadata: json!({}),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            is_new: true,
+        });
+
+        let effects = handler.handle(&thread, &context()).await.unwrap();
+
+        assert!(matches!(
+            &effects[0],
+            ThreadEffect::Reply { message, .. } if message == "debug: state"
+        ));
+    }
+
+    #[tokio::test]
     async fn user_message_gets_llm_reply_and_state_update() {
         let handler = SupportBotHandler::new(
             "support",
@@ -658,6 +689,43 @@ mod tests {
         assert!(effects
             .iter()
             .any(|effect| matches!(effect, ThreadEffect::SetThreadMetadata { .. })));
+    }
+
+    #[tokio::test]
+    async fn assistant_thinking_is_not_sent_to_user() {
+        let llm = Arc::new(SequenceLlm::new(vec![LlmResponse {
+            message: ChatMessage::assistant(
+                "<think>private reasoning</think>\nPlease share the request id.",
+            ),
+            tool_calls: Vec::new(),
+        }]));
+        let handler = SupportBotHandler::new(
+            "support",
+            test_config(),
+            llm,
+            Arc::new(ToolRegistry::new()),
+            "system",
+        );
+
+        let effects = handler
+            .handle(&thread("users", "help"), &context())
+            .await
+            .unwrap();
+
+        assert!(effects.iter().any(|effect| {
+            matches!(
+                effect,
+                ThreadEffect::Reply { message, .. }
+                    if message == "Please share the request id."
+            )
+        }));
+        assert!(!effects.iter().any(|effect| {
+            matches!(
+                effect,
+                ThreadEffect::Reply { message, .. }
+                    if message.contains("private reasoning") || message.contains("<think>")
+            )
+        }));
     }
 
     #[tokio::test]
@@ -701,6 +769,56 @@ mod tests {
             .iter()
             .any(|effect| matches!(effect, ThreadEffect::UpdateMessage { .. })));
         assert_eq!(llm.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn send_user_message_tool_strips_hidden_reasoning() {
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "send_user_message".to_string(),
+            arguments: json!({
+                "message": "<thinking>private reasoning</thinking>\nPlease send request id"
+            }),
+        };
+        let llm = Arc::new(SequenceLlm::new(vec![
+            LlmResponse {
+                message: ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: None,
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: vec![call.clone()],
+                },
+                tool_calls: vec![call],
+            },
+            LlmResponse {
+                message: ChatMessage::assistant("done"),
+                tool_calls: Vec::new(),
+            },
+        ]));
+        let mut registry = ToolRegistry::new();
+        register_default_workflow_tools(&mut registry).unwrap();
+        let handler =
+            SupportBotHandler::new("support", test_config(), llm, Arc::new(registry), "system");
+
+        let effects = handler
+            .handle(&thread("users", "help"), &context())
+            .await
+            .unwrap();
+
+        assert!(effects.iter().any(|effect| {
+            matches!(
+                effect,
+                ThreadEffect::Reply { message, .. } if message == "Please send request id"
+            )
+        }));
+        assert!(!effects.iter().any(|effect| {
+            matches!(
+                effect,
+                ThreadEffect::Reply { message, .. }
+                    if message.contains("private reasoning") || message.contains("<thinking>")
+            )
+        }));
     }
 
     #[tokio::test]

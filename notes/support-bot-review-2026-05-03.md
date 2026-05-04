@@ -165,7 +165,7 @@ Recommendation:
 
 ## P2 - Medium Priority
 
-### 9) `SupportThreadState` has unused fields and no explicit lifecycle
+### 9) `SupportThreadState` has unused fields and no explicit lifecycle (done)
 
 Location:
 
@@ -182,7 +182,7 @@ Recommendation:
 - Add explicit lifecycle enum and update it from workflow actions.
 - Remove or postpone fields until they are populated.
 
-### 10) Handler is doing too many jobs
+### 10) Handler is doing too many jobs (done)
 
 Location:
 
@@ -232,7 +232,7 @@ Recommendation:
 - Consider bounded retry only for idempotent `tools/list`; be careful retrying `tools/call`.
 - Log elapsed time for `tools/list` and `tools/call`.
 
-### 13) HTML report is useful but lacks high-level trace summary
+### 13) HTML report is useful but lacks high-level trace summary (done)
 
 Location:
 

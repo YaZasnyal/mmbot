@@ -1,12 +1,14 @@
 use crate::config::EngineerNotificationTarget;
-use crate::conversation::{load_trace, STATE_KEY};
+use crate::conversation::{load_state, load_trace, STATE_KEY};
 use crate::error::SupportBotError;
+use crate::llm::{ChatMessage, ChatRole};
 use crate::notifier::{
-    render_thread_html_report, MattermostSupportNotifier, SupportReportPost, SupportReportTrace,
+    render_thread_html_report, MattermostSupportNotifier, SupportReportPost, SupportReportSummary,
+    SupportReportToolCall, SupportReportTrace,
 };
 use mattermost_api::apis::posts_api;
 use serde_json::json;
-use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect};
+use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadStatus};
 use tracing::{info, warn};
 
 pub(crate) async fn handle_debug_export_html(
@@ -89,11 +91,13 @@ pub(crate) async fn handle_debug_export_html(
             })
         })
         .collect::<Vec<_>>();
+    let summary = build_report_summary(record.status, &record.metadata, &traces_by_post);
 
     let html = render_thread_html_report(
         &record.thread_id,
         &record.channel_id,
         &record.root_post_id,
+        &summary,
         &posts,
         &traces_by_post,
     );
@@ -171,5 +175,87 @@ fn report_post_from_mm_post(post: &mattermost_api::models::Post) -> SupportRepor
             .create_at
             .map(timestamp_ms_to_rfc3339)
             .unwrap_or_else(|| "unknown".to_string()),
+    }
+}
+
+fn build_report_summary(
+    thread_status: ThreadStatus,
+    thread_metadata: &serde_json::Value,
+    traces: &[SupportReportTrace],
+) -> SupportReportSummary {
+    let state_json = match load_state(thread_metadata) {
+        Ok(state) => serde_json::to_string_pretty(&state).unwrap_or_else(|_| "{}".to_string()),
+        Err(error) => format!("failed to decode support state: {error}"),
+    };
+    let status = serde_json::to_value(thread_status)
+        .ok()
+        .and_then(|value| value.as_str().map(ToString::to_string))
+        .unwrap_or_else(|| format!("{thread_status:?}"));
+
+    let mut tool_calls = Vec::new();
+    let mut tool_errors = 0;
+    let mut truncated_results = 0;
+
+    for trace in traces {
+        let parsed_entries = trace
+            .entries
+            .iter()
+            .filter_map(|entry| serde_json::from_str::<ChatMessage>(entry).ok())
+            .collect::<Vec<_>>();
+        let mut round = 0;
+        for entry in &parsed_entries {
+            if entry.role != ChatRole::Assistant || entry.tool_calls.is_empty() {
+                continue;
+            }
+
+            round += 1;
+            for call in &entry.tool_calls {
+                let tool_result = parsed_entries.iter().find(|candidate| {
+                    candidate.role == ChatRole::Tool
+                        && candidate.tool_call_id.as_deref() == Some(call.id.as_str())
+                });
+                let status = tool_result_status(tool_result);
+                let truncated = tool_result
+                    .and_then(|message| message.content.as_deref())
+                    .is_some_and(|content| content.contains("[truncated]"));
+                if status == "error" {
+                    tool_errors += 1;
+                }
+                if truncated {
+                    truncated_results += 1;
+                }
+                tool_calls.push(SupportReportToolCall {
+                    post_id: trace.post_id.clone(),
+                    round,
+                    call_id: call.id.clone(),
+                    name: call.name.clone(),
+                    status: status.to_string(),
+                    truncated,
+                });
+            }
+        }
+    }
+
+    SupportReportSummary {
+        status,
+        state_json,
+        tool_errors,
+        truncated_results,
+        tool_calls,
+    }
+}
+
+fn tool_result_status(result: Option<&ChatMessage>) -> &'static str {
+    let Some(result) = result else {
+        return "missing";
+    };
+    let Some(content) = result.content.as_deref() else {
+        return "ok";
+    };
+    match serde_json::from_str::<serde_json::Value>(content) {
+        Ok(value) if value.get("is_error").and_then(serde_json::Value::as_bool) == Some(true) => {
+            "error"
+        }
+        _ => "ok",
     }
 }
