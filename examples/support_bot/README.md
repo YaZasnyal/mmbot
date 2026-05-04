@@ -69,3 +69,5 @@ cargo run -p support-bot-example
 - Engineer thread commands:
   - `!support debug-report` to export full source support thread as a self-contained HTML attachment (includes tool-trace section).
 - On tool-loop fatal stop, the bot also uploads an HTML thread snapshot to the engineer thread automatically.
+- [`TOOL_AUTHORING_GUIDE.md`](TOOL_AUTHORING_GUIDE.md) is a copy-paste handoff
+  for coding agents that need to add new support tools.
