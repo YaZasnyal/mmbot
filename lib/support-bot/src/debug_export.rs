@@ -1,12 +1,10 @@
 use crate::config::EngineerNotificationTarget;
 use crate::conversation::{load_state, load_trace, STATE_KEY};
-use crate::error::SupportBotError;
 use crate::llm::{ChatMessage, ChatRole};
 use crate::notifier::{
     render_thread_html_report, MattermostSupportNotifier, SupportReportPost, SupportReportSummary,
     SupportReportToolCall, SupportReportTrace,
 };
-use mattermost_api::apis::posts_api;
 use serde_json::json;
 use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadStatus};
 use tracing::{info, warn};
@@ -42,28 +40,12 @@ pub(crate) async fn handle_debug_export_html(
         }]);
     };
 
-    let post_list = posts_api::get_post_thread(
-        &ctx.config,
-        &record.root_post_id,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await
-    .map_err(|error| ThreadBotError::internal(SupportBotError::Mattermost(error.to_string())))?;
-
-    let mut posts = Vec::new();
-    if let (Some(order), Some(map)) = (post_list.order, post_list.posts) {
-        for post_id in order {
-            if let Some(post) = map.get(&post_id) {
-                posts.push(report_post_from_mm_post(post));
-            }
-        }
-    }
+    let source_thread = ctx.build_thread_snapshot(&record.thread_id).await?;
+    let posts = source_thread
+        .messages
+        .iter()
+        .map(report_post_from_thread_message)
+        .collect::<Vec<_>>();
     info!(
         source_thread_id = %record.thread_id,
         messages = posts.len(),
@@ -157,24 +139,12 @@ pub(crate) fn debug_response_metadata() -> serde_json::Value {
     })
 }
 
-fn timestamp_ms_to_rfc3339(timestamp_ms: i64) -> String {
-    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp_ms)
-        .map(|ts| ts.to_rfc3339())
-        .unwrap_or_else(|| timestamp_ms.to_string())
-}
-
-fn report_post_from_mm_post(post: &mattermost_api::models::Post) -> SupportReportPost {
+fn report_post_from_thread_message(message: &thread_bot::ThreadMessage) -> SupportReportPost {
     SupportReportPost {
-        post_id: post.id.clone(),
-        user_id: post
-            .user_id
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string()),
-        message: post.message.clone().unwrap_or_default(),
-        created_at: post
-            .create_at
-            .map(timestamp_ms_to_rfc3339)
-            .unwrap_or_else(|| "unknown".to_string()),
+        post_id: message.post_id.clone(),
+        user_id: message.user_id.clone(),
+        message: message.message.clone(),
+        created_at: message.created_at.to_rfc3339(),
     }
 }
 

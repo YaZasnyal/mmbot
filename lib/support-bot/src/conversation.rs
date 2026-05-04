@@ -21,11 +21,18 @@ pub(crate) fn build_llm_messages(
         )),
     ];
 
-    for message in &thread.messages {
-        if message.message.trim().is_empty() {
-            continue;
-        }
+    let mut thread_messages = thread
+        .messages
+        .iter()
+        .filter(|message| !message.message.trim().is_empty())
+        .collect::<Vec<_>>();
+    thread_messages.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.post_id.cmp(&right.post_id))
+    });
 
+    for message in thread_messages {
         messages.push(thread_message_to_chat_message(message, bot_user_id));
         messages.extend(load_trace(&message.metadata)?);
     }

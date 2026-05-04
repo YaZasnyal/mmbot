@@ -263,7 +263,14 @@ pub fn render_thread_html_report(
         .iter()
         .map(|trace| (trace.post_id.as_str(), trace.entries.as_slice()))
         .collect::<std::collections::HashMap<_, _>>();
-    let items = posts
+    let mut sorted_posts = posts.iter().collect::<Vec<_>>();
+    sorted_posts.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.post_id.cmp(&right.post_id))
+    });
+
+    let items = sorted_posts
         .iter()
         .map(|post| {
             let trace_block = if let Some(entries) = traces_by_post.get(post.post_id.as_str()) {
@@ -601,5 +608,39 @@ mod tests {
         assert!(html.contains("instructions"));
         assert!(html.contains("call-1"));
         assert!(html.contains("Tool errors"));
+    }
+
+    #[test]
+    fn html_report_orders_messages_by_created_at() {
+        let summary = SupportReportSummary {
+            status: "active".to_string(),
+            state_json: "{}".to_string(),
+            tool_errors: 0,
+            truncated_results: 0,
+            tool_calls: Vec::new(),
+        };
+        let html = render_thread_html_report(
+            "thread-1",
+            "users",
+            "root-1",
+            &summary,
+            &[
+                SupportReportPost {
+                    post_id: "post-2".to_string(),
+                    user_id: "user-1".to_string(),
+                    message: "second".to_string(),
+                    created_at: "2026-05-04T20:00:02+00:00".to_string(),
+                },
+                SupportReportPost {
+                    post_id: "post-1".to_string(),
+                    user_id: "user-1".to_string(),
+                    message: "first".to_string(),
+                    created_at: "2026-05-04T20:00:01+00:00".to_string(),
+                },
+            ],
+            &[],
+        );
+
+        assert!(html.find("first").unwrap() < html.find("second").unwrap());
     }
 }

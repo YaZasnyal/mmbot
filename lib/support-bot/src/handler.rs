@@ -437,7 +437,9 @@ fn last_new_external_message<'a>(
     ctx: &ThreadContext,
 ) -> Option<&'a ThreadMessage> {
     thread.messages.iter().rev().find(|message| {
-        message.is_new && ctx.bot_user_id.as_deref() != Some(message.user_id.as_str())
+        message.is_new
+            && ctx.bot_user_id.as_deref() != Some(message.user_id.as_str())
+            && !message.message.trim().is_empty()
     })
 }
 
@@ -731,6 +733,29 @@ mod tests {
         assert!(effects
             .iter()
             .any(|effect| matches!(effect, ThreadEffect::SetThreadMetadata { .. })));
+    }
+
+    #[tokio::test]
+    async fn empty_user_message_does_not_call_llm() {
+        let llm = Arc::new(SequenceLlm::new(vec![LlmResponse {
+            message: ChatMessage::assistant("should not be used"),
+            tool_calls: Vec::new(),
+        }]));
+        let handler = SupportBotHandler::new(
+            "support",
+            test_config(),
+            llm.clone(),
+            Arc::new(ToolRegistry::new()),
+            "system",
+        );
+
+        let effects = handler
+            .handle(&thread("users", ""), &context())
+            .await
+            .unwrap();
+
+        assert!(matches!(effects.as_slice(), [ThreadEffect::Noop]));
+        assert!(llm.requests().is_empty());
     }
 
     #[tokio::test]
@@ -1092,5 +1117,42 @@ mod tests {
             .find(|m| m.role == ChatRole::Assistant && !m.tool_calls.is_empty())
             .expect("assistant tool call message should exist");
         assert_eq!(trace_assistant.tool_calls[0].id, "call-1");
+    }
+
+    #[test]
+    fn build_llm_messages_orders_thread_messages_by_created_at() {
+        let mut thread = thread("users", "second");
+        let first_created_at = Utc::now();
+        thread.messages[0].post_id = "post-2".to_string();
+        thread.messages[0].created_at = first_created_at + chrono::Duration::seconds(1);
+        thread.messages.push(ThreadMessage {
+            post_id: "post-1".to_string(),
+            thread_id: "thread-1".to_string(),
+            user_id: "user-1".to_string(),
+            message: "first".to_string(),
+            root_id: Some("post-1".to_string()),
+            parent_post_id: Some("post-1".to_string()),
+            props: json!({}),
+            metadata: json!({}),
+            created_at: first_created_at,
+            updated_at: first_created_at,
+            is_new: true,
+        });
+
+        let messages = build_llm_messages(
+            "system",
+            &thread,
+            &SupportThreadState::default(),
+            context().bot_user_id.as_deref(),
+        )
+        .unwrap();
+        let user_contents = messages
+            .iter()
+            .filter(|message| message.role == ChatRole::User)
+            .filter_map(|message| message.content.as_deref())
+            .collect::<Vec<_>>();
+
+        assert!(user_contents[0].contains("first"));
+        assert!(user_contents[1].contains("second"));
     }
 }

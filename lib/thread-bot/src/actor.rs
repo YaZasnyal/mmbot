@@ -5,6 +5,7 @@
 //! if a new message or control reaction arrives — the handler future is simply
 //! dropped and replaced with a pending placeholder.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -747,6 +748,12 @@ pub async fn build_thread_snapshot(
     .map_err(ThreadBotError::mattermost_api)?;
 
     let processed_at = record.last_processed_post_at;
+    let message_records = store
+        .list_thread_messages(thread_id)
+        .await?
+        .into_iter()
+        .map(|message| (message.post_id.clone(), message))
+        .collect::<HashMap<_, _>>();
 
     // Convert posts to ThreadMessages, mark is_new
     let mut messages = Vec::new();
@@ -754,6 +761,9 @@ pub async fn build_thread_snapshot(
         for post_id in order {
             if let Some(post) = posts.get(post_id) {
                 let mut msg = post_to_thread_message(post, thread_id);
+                if let Some(record) = message_records.get(&msg.post_id) {
+                    msg.metadata = record.metadata.clone();
+                }
                 msg.is_new = match &processed_at {
                     Some(ts) => msg.created_at > *ts,
                     None => true, // First run — everything is new
@@ -762,6 +772,11 @@ pub async fn build_thread_snapshot(
             }
         }
     }
+    messages.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.post_id.cmp(&right.post_id))
+    });
 
     // Get reactions from DB, mark is_new
     let mut reactions = store.list_thread_reactions(thread_id).await?;
