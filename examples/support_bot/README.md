@@ -50,6 +50,7 @@ export SUPPORT_INSTRUCTIONS_MANIFEST=examples/support_bot/instructions/manifest.
 # export SUPPORT_REMOTE_MCP_NAMES=logs,metrics
 # export SUPPORT_REMOTE_MCP_LOGS_URL=http://localhost:9001/mcp
 # export SUPPORT_REMOTE_MCP_LOGS_AUTH_HEADER="Bearer dev-token"
+# export SUPPORT_REMOTE_MCP_LOGS_TIMEOUT_SECS=30
 # export SUPPORT_REMOTE_MCP_METRICS_URL=http://localhost:9002/mcp
 ```
 
@@ -71,7 +72,7 @@ cargo run -p support-bot-example
 - If `SUPPORT_ENGINEER_CHANNEL_ID` is unset, explicit `notify_engineer` tool
   calls stay in the user thread. Message mirroring, finish status updates, close
   notifications, and debug report exports require a separate engineer channel.
-- `SUPPORT_REMOTE_MCP_NAMES` is a comma-separated list. For each name `x`, provide `SUPPORT_REMOTE_MCP_X_URL` and optionally `SUPPORT_REMOTE_MCP_X_AUTH_HEADER` (name is uppercased, `-` becomes `_`).
+- `SUPPORT_REMOTE_MCP_NAMES` is a comma-separated list. For each name `x`, provide `SUPPORT_REMOTE_MCP_X_URL` and optionally `SUPPORT_REMOTE_MCP_X_AUTH_HEADER` / `SUPPORT_REMOTE_MCP_X_TIMEOUT_SECS` (name is uppercased, `-` becomes `_`).
 - The included instruction files are placeholders; replace them with your runbooks.
 - Support thread state is stored in thread metadata under `support_bot`. The
   current request status is `active` until the model calls `finish_request`,

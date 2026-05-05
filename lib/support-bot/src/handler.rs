@@ -32,6 +32,12 @@ pub struct SupportBotHandler {
     metrics: SupportBotMetricsHandle,
 }
 
+struct ToolCallBatch {
+    assistant_content: Option<String>,
+    tool_calls: Vec<ToolCall>,
+    overflow_tool_calls: Vec<ToolCall>,
+}
+
 impl SupportBotHandler {
     pub fn new(
         id: &'static str,
@@ -252,12 +258,14 @@ impl SupportBotHandler {
                 return run.into_effects(thread, trigger_message);
             }
 
-            let tool_calls = response
-                .tool_calls
-                .into_iter()
-                .take(self.config.limits.max_tool_calls_per_round)
-                .collect::<Vec<_>>();
-            let truncated_tool_calls = requested_tool_calls.saturating_sub(tool_calls.len());
+            let mut tool_calls = response.tool_calls;
+            let overflow_tool_calls = tool_calls.split_off(
+                self.config
+                    .limits
+                    .max_tool_calls_per_round
+                    .min(tool_calls.len()),
+            );
+            let truncated_tool_calls = overflow_tool_calls.len();
             if truncated_tool_calls > 0 {
                 warn!(
                     round,
@@ -277,8 +285,11 @@ impl SupportBotHandler {
                 ctx,
                 thread,
                 &mut run,
-                response.message.content,
-                tool_calls,
+                ToolCallBatch {
+                    assistant_content: response.message.content,
+                    tool_calls,
+                    overflow_tool_calls,
+                },
                 &trigger_message.post_id,
             )
             .await?;
@@ -342,13 +353,39 @@ impl SupportBotHandler {
         ctx: &ThreadContext,
         thread: &Thread,
         run: &mut UserThreadRun,
-        assistant_content: Option<String>,
-        tool_calls: Vec<ToolCall>,
+        batch: ToolCallBatch,
         trigger_post_id: &str,
     ) -> Result<(), ThreadBotError> {
         Span::current().record("post_id", tracing::field::display(trigger_post_id));
         debug!("support-bot: processing tool call batch");
-        run.push_tool_round(assistant_content, tool_calls.clone());
+        let ToolCallBatch {
+            assistant_content,
+            tool_calls,
+            overflow_tool_calls,
+        } = batch;
+        let executed_tool_calls = tool_calls.len();
+        let truncated_tool_calls = overflow_tool_calls.len();
+        let all_tool_calls = tool_calls
+            .iter()
+            .cloned()
+            .chain(overflow_tool_calls.iter().cloned())
+            .collect::<Vec<_>>();
+        run.push_tool_round(assistant_content, all_tool_calls);
+        for call in overflow_tool_calls {
+            run.push_tool_message(result_to_message(
+                ToolResult {
+                    call_id: call.id,
+                    content: json!({
+                        "error": "tool call skipped because max_tool_calls_per_round was exceeded",
+                        "max_tool_calls_per_round": self.config.limits.max_tool_calls_per_round,
+                        "executed_tool_calls": executed_tool_calls,
+                        "truncated_tool_calls": truncated_tool_calls
+                    }),
+                    is_error: true,
+                },
+                self.config.limits.max_tool_result_bytes,
+            ));
+        }
         let tool_context = ToolContext::new(Arc::new(thread.clone()));
 
         for call in tool_calls {
@@ -972,6 +1009,66 @@ mod tests {
             .iter()
             .any(|effect| matches!(effect, ThreadEffect::UpdateMessage { .. })));
         assert_eq!(llm.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn tool_call_overflow_is_visible_to_next_llm_round() {
+        let calls = vec![
+            ToolCall {
+                id: "call-1".to_string(),
+                name: "send_user_message".to_string(),
+                arguments: json!({ "message": "first" }),
+            },
+            ToolCall {
+                id: "call-2".to_string(),
+                name: "send_user_message".to_string(),
+                arguments: json!({ "message": "second" }),
+            },
+        ];
+        let llm = Arc::new(SequenceLlm::new(vec![
+            LlmResponse {
+                message: ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: None,
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: calls.clone(),
+                },
+                tool_calls: calls,
+            },
+            LlmResponse {
+                message: ChatMessage::assistant("done"),
+                tool_calls: Vec::new(),
+            },
+        ]));
+        let mut registry = ToolRegistry::new();
+        register_default_workflow_tools(&mut registry).unwrap();
+        let mut config = test_config();
+        config.limits.max_tool_calls_per_round = 1;
+        let handler =
+            SupportBotHandler::new("support", config, llm.clone(), Arc::new(registry), "system");
+
+        handler
+            .handle(&thread("users", "help"), &context())
+            .await
+            .unwrap();
+
+        let requests = llm.requests();
+        assert_eq!(requests.len(), 2);
+        let second_round_messages = &requests[1].messages;
+        let assistant = second_round_messages
+            .iter()
+            .find(|message| message.role == ChatRole::Assistant && !message.tool_calls.is_empty())
+            .expect("assistant tool-call message should be preserved");
+        assert_eq!(assistant.tool_calls.len(), 2);
+
+        let overflow_result = second_round_messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("call-2"))
+            .and_then(|message| message.content.as_deref())
+            .expect("overflow tool result should be sent back to the model");
+        assert!(overflow_result.contains("max_tool_calls_per_round"));
+        assert!(overflow_result.contains("\"is_error\":true"));
     }
 
     #[tokio::test]

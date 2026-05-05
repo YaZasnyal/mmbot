@@ -181,11 +181,14 @@ fn load_remote_mcp_endpoints() -> Result<Vec<support_bot::RemoteMcpEndpoint>> {
         })?;
 
         let auth_header = std::env::var(format!("SUPPORT_REMOTE_MCP_{}_AUTH_HEADER", key)).ok();
+        let timeout_secs: u64 =
+            read_env(&format!("SUPPORT_REMOTE_MCP_{}_TIMEOUT_SECS", key), "30")?.parse()?;
 
         endpoints.push(support_bot::RemoteMcpEndpoint {
             name,
             url,
             auth_header,
+            timeout: Duration::from_secs(timeout_secs),
         });
     }
 

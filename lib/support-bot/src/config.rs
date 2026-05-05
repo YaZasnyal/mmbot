@@ -36,6 +36,7 @@ pub struct RemoteMcpEndpoint {
     pub name: String,
     pub url: String,
     pub auth_header: Option<String>,
+    pub timeout: Duration,
 }
 
 #[derive(Debug, Clone)]

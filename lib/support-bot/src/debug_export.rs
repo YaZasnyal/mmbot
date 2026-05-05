@@ -5,6 +5,7 @@ use crate::notifier::{
     render_thread_html_report, MattermostSupportNotifier, SupportReportPost, SupportReportSummary,
     SupportReportToolCall, SupportReportTrace,
 };
+use crate::state::SupportThreadStatus;
 use serde_json::json;
 use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadStatus};
 use tracing::{info, warn};
@@ -153,11 +154,16 @@ fn build_report_summary(
     thread_metadata: &serde_json::Value,
     traces: &[SupportReportTrace],
 ) -> SupportReportSummary {
-    let state_json = match load_state(thread_metadata) {
+    let decoded_state = load_state(thread_metadata);
+    let support_status = decoded_state
+        .as_ref()
+        .map(|state| support_status_label(&state.status).to_string())
+        .unwrap_or_else(|error| format!("unknown: {error}"));
+    let state_json = match decoded_state {
         Ok(state) => serde_json::to_string_pretty(&state).unwrap_or_else(|_| "{}".to_string()),
         Err(error) => format!("failed to decode support state: {error}"),
     };
-    let status = serde_json::to_value(thread_status)
+    let thread_status = serde_json::to_value(thread_status)
         .ok()
         .and_then(|value| value.as_str().map(ToString::to_string))
         .unwrap_or_else(|| format!("{thread_status:?}"));
@@ -207,11 +213,19 @@ fn build_report_summary(
     }
 
     SupportReportSummary {
-        status,
+        thread_status,
+        support_status,
         state_json,
         tool_errors,
         truncated_results,
         tool_calls,
+    }
+}
+
+fn support_status_label(status: &SupportThreadStatus) -> &'static str {
+    match status {
+        SupportThreadStatus::Active => "active",
+        SupportThreadStatus::Finished => "finished",
     }
 }
 

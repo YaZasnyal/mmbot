@@ -7,6 +7,7 @@ use crate::tools::{
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
+use std::time::Duration;
 use tracing::{debug, warn};
 
 pub async fn register_remote_mcp_tools(
@@ -14,8 +15,11 @@ pub async fn register_remote_mcp_tools(
     config: &ToolConfig,
 ) -> Result<()> {
     for endpoint in &config.remote_mcp_endpoints {
-        let client = match RemoteMcpClient::new(endpoint.url.clone(), endpoint.auth_header.clone())
-        {
+        let client = match RemoteMcpClient::new(
+            endpoint.url.clone(),
+            endpoint.auth_header.clone(),
+            endpoint.timeout,
+        ) {
             Ok(client) => client,
             Err(error) => {
                 warn!(
@@ -75,7 +79,7 @@ struct RemoteMcpClient {
 }
 
 impl RemoteMcpClient {
-    fn new(base_url: String, auth_header: Option<String>) -> Result<Self> {
+    fn new(base_url: String, auth_header: Option<String>, timeout: Duration) -> Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
@@ -88,6 +92,7 @@ impl RemoteMcpClient {
 
         let http = reqwest::Client::builder()
             .default_headers(headers)
+            .timeout(timeout)
             .build()
             .map_err(SupportBotError::Http)?;
 
@@ -233,7 +238,12 @@ mod tests {
             description: "Search logs".to_string(),
             input_schema: serde_json::json!({"type":"object"}),
         };
-        let client = RemoteMcpClient::new("http://localhost:5555/mcp".to_string(), None).unwrap();
+        let client = RemoteMcpClient::new(
+            "http://localhost:5555/mcp".to_string(),
+            None,
+            Duration::from_secs(1),
+        )
+        .unwrap();
         let tool = RemoteMcpTool::new("logs".to_string(), descriptor, client);
 
         assert_eq!(tool.spec().name, "logs.search_logs");
@@ -271,6 +281,7 @@ mod tests {
                 name: "logs".to_string(),
                 url: format!("{}/mcp", server.uri()),
                 auth_header: None,
+                timeout: Duration::from_secs(1),
             }],
         };
 
@@ -282,6 +293,36 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name, "logs.search_logs");
         assert_eq!(specs[0].kind, ToolKind::ReadOnly);
+    }
+
+    #[tokio::test]
+    async fn remote_mcp_client_applies_timeout() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .and(body_partial_json(serde_json::json!({
+                "method": "tools/list"
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": "list-tools",
+                        "result": { "tools": [] }
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = RemoteMcpClient::new(
+            format!("{}/mcp", server.uri()),
+            None,
+            Duration::from_millis(1),
+        )
+        .unwrap();
+
+        assert!(client.list_tools().await.is_err());
     }
 
     #[tokio::test]
@@ -333,6 +374,7 @@ mod tests {
                 name: "logs".to_string(),
                 url: format!("{}/mcp", server.uri()),
                 auth_header: Some("Bearer test-token".to_string()),
+                timeout: Duration::from_secs(1),
             }],
         };
         register_remote_mcp_tools(&mut registry, &config)

@@ -425,7 +425,8 @@ pub fn render_thread_html_report(
          <h1>Support Thread Report</h1><div class=\"meta\"><div><b>thread_id:</b> <code>{thread_id}</code></div>\
          <div><b>channel_id:</b> <code>{channel_id}</code></div><div><b>root_post_id:</b> <code>{root_post_id}</code></div>\
          <div><b>messages:</b> <code>{count}</code></div><div><b>trace_posts:</b> <code>{trace_posts}</code></div>\
-         <h2>Summary</h2><div class=\"summary-grid\"><div class=\"summary-item\"><b>Status</b><code>{status}</code></div>\
+         <h2>Summary</h2><div class=\"summary-grid\"><div class=\"summary-item\"><b>Thread status</b><code>{thread_status}</code></div>\
+         <div class=\"summary-item\"><b>Support status</b><code>{support_status}</code></div>\
          <div class=\"summary-item\"><b>Tool errors</b><code>{tool_errors}</code></div>\
          <div class=\"summary-item\"><b>Truncated results</b><code>{truncated_results}</code></div></div>\
          <h3>State</h3><pre>{state_json}</pre><h3>Tool Calls</h3><table><thead><tr><th>Round</th><th>Post</th><th>Tool</th><th>Call</th><th>Status</th><th>Truncated</th></tr></thead><tbody>{tool_rows}</tbody></table>\
@@ -438,7 +439,8 @@ pub fn render_thread_html_report(
         count = posts.len(),
         items = items,
         trace_posts = traces.len(),
-        status = escape_html(&summary.status),
+        thread_status = escape_html(&summary.thread_status),
+        support_status = escape_html(&summary.support_status),
         tool_errors = summary.tool_errors,
         truncated_results = summary.truncated_results,
         state_json = escape_html(&summary.state_json),
@@ -462,7 +464,8 @@ pub struct SupportReportTrace {
 
 #[derive(Debug, Clone)]
 pub struct SupportReportSummary {
-    pub status: String,
+    pub thread_status: String,
+    pub support_status: String,
     pub state_json: String,
     pub tool_errors: usize,
     pub truncated_results: usize,
@@ -730,7 +733,8 @@ mod tests {
     #[test]
     fn html_report_includes_summary_and_tool_table() {
         let summary = SupportReportSummary {
-            status: "finished".to_string(),
+            thread_status: "resolved".to_string(),
+            support_status: "finished".to_string(),
             state_json: "{\"status\":\"finished\"}".to_string(),
             tool_errors: 1,
             truncated_results: 1,
@@ -758,6 +762,9 @@ mod tests {
         );
 
         assert!(html.contains("<h2>Summary</h2>"));
+        assert!(html.contains("Thread status"));
+        assert!(html.contains("<code>resolved</code>"));
+        assert!(html.contains("Support status"));
         assert!(html.contains("<code>finished</code>"));
         assert!(html.contains("instructions"));
         assert!(html.contains("call-1"));
@@ -767,7 +774,8 @@ mod tests {
     #[test]
     fn html_report_orders_messages_by_created_at() {
         let summary = SupportReportSummary {
-            status: "active".to_string(),
+            thread_status: "active".to_string(),
+            support_status: "active".to_string(),
             state_json: "{}".to_string(),
             tool_errors: 0,
             truncated_results: 0,
