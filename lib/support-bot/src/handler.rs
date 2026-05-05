@@ -653,7 +653,7 @@ mod tests {
     use crate::debug::DebugResponse;
     use crate::debug_export::source_user_thread_id;
     use crate::llm::{ChatMessage, ChatRole, LlmResponse};
-    use crate::state::SupportThreadState;
+    use crate::state::{EngineerThreadRef, SupportThreadState};
     use crate::testutil::PanicStore;
     use crate::tools::{register_default_workflow_tools, ToolCall, ToolSpec};
     use async_trait::async_trait;
@@ -1272,6 +1272,78 @@ mod tests {
             state_meta[STATE_KEY]["finished_summary"],
             "resolved by cache flush"
         );
+    }
+
+    #[tokio::test]
+    async fn finish_request_persists_finished_state_when_status_notification_fails() {
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "finish_request".to_string(),
+            arguments: json!({ "summary": "resolved by cache flush" }),
+        };
+        let llm = Arc::new(SequenceLlm::new(vec![LlmResponse {
+            message: ChatMessage {
+                role: ChatRole::Assistant,
+                content: None,
+                name: None,
+                tool_call_id: None,
+                tool_calls: vec![call.clone()],
+            },
+            tool_calls: vec![call],
+        }]));
+        let mut registry = ToolRegistry::new();
+        register_default_workflow_tools(&mut registry).unwrap();
+        let mut config = test_config();
+        config.engineer_notifications.target = EngineerNotificationTarget::MattermostChannel {
+            channel_id: "engineers".to_string(),
+        };
+        let handler = SupportBotHandler::new("support", config, llm, Arc::new(registry), "system");
+
+        let mut thread = thread("users", "help");
+        thread.info.metadata = store_state(
+            &json!({}),
+            &SupportThreadState {
+                engineer_thread: Some(EngineerThreadRef {
+                    channel_id: "engineers".to_string(),
+                    root_post_id: "engineer-root".to_string(),
+                }),
+                ..SupportThreadState::default()
+            },
+        )
+        .unwrap();
+        let mut ctx = context();
+        ctx.config = Arc::new(mattermost_api::apis::configuration::Configuration {
+            base_path: "://invalid-mattermost-url".to_string(),
+            ..Default::default()
+        });
+
+        let effects = handler.handle(&thread, &ctx).await.unwrap();
+
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, ThreadEffect::MarkResolved)));
+        let state_meta = effects
+            .iter()
+            .find_map(|effect| match effect {
+                ThreadEffect::SetThreadMetadata { metadata } => Some(metadata),
+                _ => None,
+            })
+            .expect("state metadata must exist");
+        assert_eq!(state_meta[STATE_KEY]["status"], "finished");
+
+        let trace_meta = effects
+            .iter()
+            .find_map(|effect| match effect {
+                ThreadEffect::SetMessageMetadata { metadata, .. } => Some(metadata),
+                _ => None,
+            })
+            .expect("trace metadata must exist");
+        assert!(trace_meta[STATE_KEY][TRACE_KEY]
+            .to_string()
+            .contains("notification_status"));
+        assert!(trace_meta[STATE_KEY][TRACE_KEY]
+            .to_string()
+            .contains("failed"));
     }
 
     #[test]
