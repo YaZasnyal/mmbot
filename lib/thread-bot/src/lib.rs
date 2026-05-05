@@ -3,6 +3,7 @@ mod actor;
 pub mod error;
 pub mod handle;
 pub mod handler;
+pub mod metrics;
 pub mod pg_store;
 pub mod runtime;
 pub mod store;
@@ -19,6 +20,7 @@ pub use handle::ThreadBotHandle;
 pub use handler::{
     default_control_reactions, ThreadCloseReason, ThreadContext, ThreadEffect, ThreadHandler,
 };
+pub use metrics::{ThreadBotMetrics, ThreadBotMetricsHandle};
 pub use pg_store::PgThreadStore;
 pub use runtime::{ThreadBotConfig, ThreadBotPlugin};
 pub use store::ThreadStore;
@@ -32,4 +34,5 @@ pub use types::{
 pub use async_trait::async_trait;
 
 pub use mattermost_bot::cron_tab;
+pub use prometheus_client;
 pub use sqlx;

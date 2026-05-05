@@ -1,0 +1,90 @@
+use std::time::Duration;
+
+#[derive(Debug, Clone)]
+pub struct SupportBotConfig {
+    pub system_prompt: String,
+    pub llm: LlmConfig,
+    pub instructions: InstructionConfig,
+    pub tools: ToolConfig,
+    pub limits: SupportBotLimits,
+    pub routes: SupportRouteConfig,
+    pub engineer_notifications: EngineerNotificationConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct LlmConfig {
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub model: String,
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct InstructionConfig {
+    pub root_path: std::path::PathBuf,
+    pub max_context_instructions: usize,
+    pub max_instruction_bytes: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ToolConfig {
+    pub remote_mcp_endpoints: Vec<RemoteMcpEndpoint>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteMcpEndpoint {
+    pub name: String,
+    pub url: String,
+    pub auth_header: Option<String>,
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct SupportBotLimits {
+    pub max_tool_rounds: usize,
+    pub max_tool_calls_per_round: usize,
+    pub max_tool_result_bytes: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct EngineerNotificationConfig {
+    pub target: EngineerNotificationTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineerNotificationTarget {
+    SameThread,
+    MattermostChannel { channel_id: String },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SupportRouteConfig {
+    pub user_channel_ids: Vec<String>,
+    pub engineer_channel_id: Option<String>,
+    pub debug_commands: DebugCommandConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugCommandConfig {
+    pub enabled: bool,
+    pub prefixes: Vec<String>,
+}
+
+impl Default for DebugCommandConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            prefixes: vec!["/support".to_string(), "!support".to_string()],
+        }
+    }
+}
+
+impl Default for SupportBotLimits {
+    fn default() -> Self {
+        Self {
+            max_tool_rounds: 4,
+            max_tool_calls_per_round: 8,
+            max_tool_result_bytes: 16 * 1024,
+        }
+    }
+}

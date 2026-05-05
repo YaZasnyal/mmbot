@@ -6,12 +6,14 @@ use chrono::Utc;
 use mattermost_api::models;
 
 use crate::actor::{
-    get_root_post_id, is_root_post, ms_to_datetime, post_to_thread_message, ThreadCommand,
+    build_thread_snapshot, get_root_post_id, is_root_post, ms_to_datetime, post_to_thread_message,
+    ThreadCommand,
 };
 use crate::handler::{ThreadCloseReason, ThreadEffect};
 use crate::store::ThreadStore;
 use crate::testutil::{
-    make_mm_post, make_mm_reaction, mount_reactions, spawn_test_actor, MockHandler,
+    make_mm_post, make_mm_reaction, mount_reactions, setup_mm_mock, spawn_test_actor, MockHandler,
+    MockStore,
 };
 use crate::types::*;
 
@@ -114,6 +116,54 @@ fn post_to_thread_message_defaults_for_missing() {
     assert_eq!(msg.user_id, "");
     assert_eq!(msg.message, "");
     assert_eq!(msg.props, serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn build_thread_snapshot_orders_messages_and_merges_metadata() {
+    let mut second = make_mm_post("post-2", "user_1", "second", Some("thread1"));
+    second.create_at = Some(2_000);
+    let mut first = make_mm_post("post-1", "user_1", "first", Some("thread1"));
+    first.create_at = Some(1_000);
+    let (_server, mm_config) = setup_mm_mock(vec![second, first]).await;
+    let store = MockStore::new();
+
+    store
+        .upsert_thread(UpsertThread {
+            thread_id: "thread1".to_string(),
+            root_post_id: "thread1".to_string(),
+            channel_id: "test_channel".to_string(),
+            creator_user_id: "user_1".to_string(),
+            status: ThreadStatus::Active,
+            metadata: serde_json::Value::Null,
+        })
+        .await
+        .unwrap();
+    store
+        .upsert_message(UpsertThreadMessage {
+            post_id: "post-1".to_string(),
+            thread_id: "thread1".to_string(),
+            user_id: "user_1".to_string(),
+            is_bot_message: false,
+            root_id: Some("thread1".to_string()),
+            parent_post_id: Some("thread1".to_string()),
+            metadata: serde_json::json!({ "trace": "kept" }),
+            post_created_at: ms_to_datetime(1_000),
+            post_updated_at: None,
+            post_deleted_at: None,
+        })
+        .await
+        .unwrap();
+
+    let thread = build_thread_snapshot("thread1", &store, &mm_config)
+        .await
+        .unwrap();
+
+    assert_eq!(thread.messages[0].post_id, "post-1");
+    assert_eq!(thread.messages[1].post_id, "post-2");
+    assert_eq!(
+        thread.messages[0].metadata,
+        serde_json::json!({ "trace": "kept" })
+    );
 }
 
 // ── Actor behavior tests ─────────────────────────────────────────────────────
@@ -439,6 +489,34 @@ async fn actor_set_thread_metadata_effect() {
     assert_eq!(thread.metadata, serde_json::json!({"llm_model": "gpt-4"}));
 
     drop(tx);
+}
+
+#[tokio::test]
+async fn actor_stops_thread_when_critical_metadata_effect_fails() {
+    let handler = MockHandler::new().with_default_effects(vec![
+        ThreadEffect::SetMessageMetadata {
+            post_id: "missing-post".to_string(),
+            metadata: serde_json::json!({"trace": []}),
+        },
+        ThreadEffect::SetThreadMetadata {
+            metadata: serde_json::json!({"should_not": "run"}),
+        },
+    ]);
+
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+    let (tx, store, handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    settle().await;
+
+    let thread = store.thread_snapshot("thread1").await.unwrap();
+    assert!(matches!(thread.status, ThreadStatus::Stopped));
+    assert_eq!(thread.metadata, serde_json::Value::Null);
+
+    let reasons = handler.closed_reasons.lock().await;
+    assert_eq!(reasons.as_slice(), [ThreadCloseReason::StoppedByHandler]);
+    assert!(tx.is_closed());
 }
 
 #[tokio::test]

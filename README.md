@@ -6,6 +6,11 @@ A Rust framework for building Mattermost bots. Layered architecture — from a l
 
 ```
 ┌──────────────────────────────────────────┐
+│  Layer 4: support-bot                    │  LLM support workflows, tools,
+│  SupportBotHandler                       │  runbooks and engineer handoff
+└────────────────┬─────────────────────────┘
+                 │
+┌────────────────┴─────────────────────────┐
 │  Layer 3: thread-bot                     │  Thread-aware bots with debounce,
 │  ThreadHandler, per-thread actors        │  persistence and reconciliation
 └────────────────┬─────────────────────────┘
@@ -26,6 +31,8 @@ A Rust framework for building Mattermost bots. Layered architecture — from a l
 **Layer 2 — `mattermost-bot`** — plugin-based framework. Connects to Mattermost over WebSocket, auto-reconnects, dispatches events to plugins in parallel. Supports middleware (e.g. `IgnoreSelf`), cron jobs, and lifecycle hooks (`on_start`/`on_shutdown`).
 
 **Layer 3 — `thread-bot`** — higher-level runtime for thread-based bots. Each thread gets its own actor (tokio task) with guaranteed sequential message processing. Built-in debounce, PostgreSQL persistence, post-reconnect reconciliation, and control via reactions.
+
+**Layer 4 — `support-bot`** — experimental support workflow layer on top of `thread-bot`. Provides an OpenAI-compatible LLM loop, local and remote MCP tools, instruction/runbook loading, compact support state in thread metadata, engineer-channel mirroring, status updates, and debug HTML export.
 
 ## Quick start
 
@@ -101,7 +108,9 @@ impl ThreadHandler for MyHandler {
 }
 ```
 
-Full working example: [`examples/hello_thread_bot`](examples/hello_thread_bot/src/main.rs).
+Full working examples:
+- [`examples/hello_thread_bot`](examples/hello_thread_bot/src/main.rs)
+- [`examples/support_bot`](examples/support_bot/README.md), a runnable LLM support bot with PostgreSQL persistence, runbooks, engineer handoff, and metrics wiring.
 
 ## Middleware
 
@@ -149,10 +158,12 @@ mmbot/
 │   ├── mattermost-api/         # Layer 1: API client (auto-generated)
 │   ├── mattermost-bot/         # Layer 2: framework (Bot, Plugin, middleware)
 │   ├── thread-bot/             # Layer 3: thread-based bots
+│   ├── support-bot/            # Layer 4: LLM support workflow layer
 │   ├── bool_parser/            # Utility for Mattermost API quirks
 │   └── mattermost-test-helpers/# Integration test helpers
 └── examples/
-    └── hello_thread_bot/       # Thread bot example
+    ├── hello_thread_bot/       # Thread bot example
+    └── support_bot/            # Support-bot runnable example
 ```
 
 ## Tech stack

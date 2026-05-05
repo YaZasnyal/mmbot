@@ -69,6 +69,7 @@ use crate::actor::{
     ThreadCommand,
 };
 use crate::handler::{ThreadContext, ThreadHandler};
+use crate::metrics::ThreadBotMetricsHandle;
 use crate::store::ThreadStore;
 use crate::types::*;
 
@@ -126,6 +127,8 @@ pub struct ThreadBotPlugin<H: ThreadHandler> {
 
     /// Bot's own user ID, fetched in [`Plugin::on_start`].
     bot_user_id: Arc<RwLock<Option<String>>>,
+
+    metrics: ThreadBotMetricsHandle,
 }
 
 // Manual Clone — H doesn't need Clone because it's behind Arc.
@@ -137,6 +140,7 @@ impl<H: ThreadHandler> Clone for ThreadBotPlugin<H> {
             config: self.config.clone(),
             actors: Arc::clone(&self.actors),
             bot_user_id: Arc::clone(&self.bot_user_id),
+            metrics: self.metrics.clone(),
         }
     }
 }
@@ -150,6 +154,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             config: ThreadBotConfig::default(),
             actors: Arc::new(Mutex::new(HashMap::new())),
             bot_user_id: Arc::new(RwLock::new(None)),
+            metrics: ThreadBotMetricsHandle::noop(),
         }
     }
 
@@ -171,6 +176,11 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
     /// force-closed instead of reconciled.
     pub fn with_max_reconcile_window(mut self, window: Duration) -> Self {
         self.config.max_reconcile_window = Some(window);
+        self
+    }
+
+    pub fn with_metrics(mut self, metrics: ThreadBotMetricsHandle) -> Self {
+        self.metrics = metrics;
         self
     }
 
@@ -745,6 +755,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             debounce: self.config.debounce,
             thread_id: thread_id.clone(),
             bot_user_id: Arc::clone(&self.bot_user_id),
+            metrics: self.metrics.clone(),
         };
 
         tokio::spawn(async move {

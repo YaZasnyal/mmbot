@@ -44,6 +44,10 @@ pub enum Type {
     Opengraph,
     #[serde(rename = "link")]
     Link,
+    #[serde(rename = "permalink")]
+    Permalink,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for Type {

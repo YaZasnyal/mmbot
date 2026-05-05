@@ -5,6 +5,7 @@
 //! if a new message or control reaction arrives — the handler future is simply
 //! dropped and replaced with a pending placeholder.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -20,6 +21,7 @@ use mattermost_api::models;
 
 use crate::error::ThreadBotError;
 use crate::handler::{ThreadCloseReason, ThreadContext, ThreadEffect, ThreadHandler};
+use crate::metrics::ThreadBotMetricsHandle;
 use crate::store::ThreadStore;
 use crate::types::*;
 
@@ -63,6 +65,7 @@ pub(crate) struct ActorCtx<H: ThreadHandler> {
     pub debounce: Duration,
     pub thread_id: String,
     pub bot_user_id: Arc<RwLock<Option<String>>>,
+    pub metrics: ThreadBotMetricsHandle,
 }
 
 // ─── Private types ───────────────────────────────────────────────────────────
@@ -75,8 +78,8 @@ enum CloseSource {
 }
 
 /// Output of the boxed handler future: snapshot is returned alongside the
-/// result so it can be used for effect execution and post-processing.
-type HandlerResult = (Thread, Result<Vec<ThreadEffect>, ThreadBotError>);
+/// measured handler duration and result so it can be used for post-processing.
+type HandlerResult = (Thread, Duration, Result<Vec<ThreadEffect>, ThreadBotError>);
 
 /// A boxed, Send future that yields [`HandlerResult`].
 type HandlerFuture = Pin<Box<dyn Future<Output = HandlerResult> + Send>>;
@@ -120,6 +123,8 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
     let mut handler_running = false;
 
     tracing::debug!(thread_id = %a.thread_id, "Thread actor started");
+    a.metrics.actor_started("success");
+    let mut stop_reason = "channel_closed";
 
     loop {
         tokio::select! {
@@ -128,6 +133,7 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
             cmd = rx.recv() => {
                 match cmd {
                     Some(ThreadCommand::NewMessage { post }) => {
+                        a.metrics.actor_command("new_message", "received");
                         let should_trigger = save_incoming_message(&a, &post).await;
                         if should_trigger {
                             has_pending = true;
@@ -141,43 +147,57 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                     }
 
                     Some(ThreadCommand::ControlReaction { effect, change }) => {
+                        a.metrics.actor_command("control_reaction", "received");
                         // Cancel running handler
                         if handler_running {
                             handler_fut = pending_handler();
                             handler_running = false;
                         }
                         if handle_control_reaction(&effect, &change, &a).await {
+                            stop_reason = "control_reaction";
                             break;
                         }
                     }
 
                     Some(ThreadCommand::Reconcile) => {
+                        a.metrics.actor_command("reconcile", "received");
                         if handler_running {
                             handler_fut = pending_handler();
                             handler_running = false;
                         }
+                        let reconcile_started = std::time::Instant::now();
                         match handle_reconcile(&a).await {
-                            ReconcileOutcome::ThreadClosed => break,
+                            ReconcileOutcome::ThreadClosed => {
+                                a.metrics.reconcile("thread_closed", reconcile_started.elapsed());
+                                stop_reason = "reconcile_closed";
+                                break;
+                            }
                             ReconcileOutcome::RunHandler(snapshot) => {
+                                a.metrics.reconcile("run_handler", reconcile_started.elapsed());
                                 let handler = Arc::clone(&a.handler);
                                 let ctx = a.ctx.clone();
                                 handler_fut = Box::pin(async move {
-                                    let result =
-                                        handler.handle(&snapshot, &ctx).await;
-                                    (*snapshot, result)
+                                    let started = std::time::Instant::now();
+                                    let result = handler.handle(&snapshot, &ctx).await;
+                                    (*snapshot, started.elapsed(), result)
                                 });
                                 handler_running = true;
                             }
-                            ReconcileOutcome::NoAction => {}
+                            ReconcileOutcome::NoAction => {
+                                a.metrics.reconcile("no_action", reconcile_started.elapsed());
+                            }
                         }
                     }
 
                     Some(ThreadCommand::Shutdown) => {
+                        a.metrics.actor_command("shutdown", "received");
                         tracing::info!(thread_id = %a.thread_id, "Thread actor shutting down");
+                        stop_reason = "shutdown";
                         break;
                     }
 
                     Some(ThreadCommand::Wake) => {
+                        a.metrics.actor_command("wake", "received");
                         // Don't cancel running handler — just ensure re-run after it completes
                         has_pending = true;
                         debounce_deadline = Instant::now();
@@ -185,6 +205,7 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                     }
 
                     Some(ThreadCommand::Close { reason }) => {
+                        a.metrics.actor_command("close", "received");
                         tracing::info!(
                             thread_id = %a.thread_id,
                             reason = ?reason,
@@ -232,6 +253,7 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                             }
                         }
 
+                        stop_reason = thread_close_reason_label(reason);
                         break;
                     }
 
@@ -246,6 +268,7 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                 handler_running = false;
                 handler_fut = pending_handler();
                 if handle_handler_result(result, &a, &mut has_pending, &mut debounce_deadline).await {
+                    stop_reason = "handler_closed";
                     break;
                 }
             }
@@ -287,8 +310,9 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                 let handler = Arc::clone(&a.handler);
                 let ctx = a.ctx.clone();
                 handler_fut = Box::pin(async move {
+                    let started = std::time::Instant::now();
                     let result = handler.handle(&snapshot, &ctx).await;
-                    (snapshot, result)
+                    (snapshot, started.elapsed(), result)
                 });
                 handler_running = true;
             }
@@ -296,6 +320,7 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
     }
 
     tracing::debug!(thread_id = %a.thread_id, "Thread actor stopped");
+    a.metrics.actor_stopped(stop_reason);
 }
 
 // ─── Handler result processing ───────────────────────────────────────────────
@@ -304,15 +329,27 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
 ///
 /// Returns `true` if the actor should exit (thread closed).
 async fn handle_handler_result<H: ThreadHandler>(
-    (snapshot, result): HandlerResult,
+    (snapshot, handler_duration, result): HandlerResult,
     a: &ActorCtx<H>,
     has_pending: &mut bool,
     debounce_deadline: &mut Instant,
 ) -> bool {
     match result {
         Ok(effects) => {
+            let effect_count = effects.len();
             let (should_exit, should_reschedule) =
                 execute_effects(effects, &snapshot, a, CloseSource::Handler).await;
+            let outcome = if should_exit {
+                "closed"
+            } else if should_reschedule {
+                "rescheduled"
+            } else {
+                "success"
+            };
+            a.metrics.handler_run(outcome, handler_duration);
+            if effect_count == 0 {
+                a.metrics.effect("none", "success");
+            }
 
             // Update processed position to the last message
             if let Some(last_msg) = snapshot.messages.last() {
@@ -352,6 +389,7 @@ async fn handle_handler_result<H: ThreadHandler>(
             should_exit
         }
         Err(e) => {
+            a.metrics.handler_run("error", handler_duration);
             tracing::error!(
                 thread_id = %a.thread_id,
                 error = %e,
@@ -520,6 +558,7 @@ pub(crate) async fn handle_reconcile<H: ThreadHandler>(a: &ActorCtx<H>) -> Recon
 /// Execute a list of effects returned by the handler or a control reaction.
 ///
 /// Returns `(should_exit, should_reschedule)`.
+#[tracing::instrument(level = "debug", skip_all, fields(thread_id = %a.thread_id))]
 async fn execute_effects<H: ThreadHandler>(
     effects: Vec<ThreadEffect>,
     thread: &Thread,
@@ -528,12 +567,30 @@ async fn execute_effects<H: ThreadHandler>(
 ) -> (bool, bool) {
     let mut should_exit = false;
     let mut should_reschedule = false;
+    let total_effects = effects.len();
 
-    for effect in effects {
+    for (effect_idx, effect) in effects.into_iter().enumerate() {
+        let effect_label = thread_effect_label(&effect);
+        tracing::info!(
+            thread_id = %a.thread_id,
+            root_post_id = %thread.info.root_post_id,
+            effect = effect_label,
+            effect_idx,
+            total_effects,
+            "Executing thread effect"
+        );
         match effect {
-            ThreadEffect::Noop => {}
+            ThreadEffect::Noop => {
+                a.metrics.effect(effect_label, "success");
+            }
 
             ThreadEffect::Reply { message, metadata } => {
+                let message_bytes = message.len();
+                let metadata_bytes = if metadata != serde_json::Value::Null {
+                    metadata.to_string().len()
+                } else {
+                    0
+                };
                 let mut req =
                     models::CreatePostRequest::new(thread.info.channel_id.clone(), message);
                 req.root_id = Some(thread.info.root_post_id.clone());
@@ -543,15 +600,19 @@ async fn execute_effects<H: ThreadHandler>(
 
                 match posts_api::create_post(&a.mm_config, req, None).await {
                     Ok(created) => {
+                        a.metrics.effect(effect_label, "success");
                         tracing::debug!(
                             thread_id = %a.thread_id,
                             post_id = %created.id,
+                            message_bytes,
+                            metadata_bytes,
                             "Posted reply"
                         );
                         // Bot reply is saved to DB when the WebSocket Posted
                         // event arrives back in handle_thread_reply.
                     }
                     Err(e) => {
+                        a.metrics.effect(effect_label, "error");
                         tracing::error!(
                             thread_id = %a.thread_id,
                             error = %e,
@@ -573,30 +634,80 @@ async fn execute_effects<H: ThreadHandler>(
                 }
 
                 if let Err(e) = posts_api::patch_post(&a.mm_config, &post_id, req).await {
+                    a.metrics.effect(effect_label, "error");
                     tracing::error!(
                         thread_id = %a.thread_id,
                         post_id = %post_id,
                         error = %e,
                         "Failed to update message"
                     );
+                } else {
+                    a.metrics.effect(effect_label, "success");
                 }
             }
 
             ThreadEffect::SetThreadMetadata { metadata } => {
+                tracing::info!(
+                    thread_id = %a.thread_id,
+                    metadata_key = "thread",
+                    metadata_bytes = metadata.to_string().len(),
+                    "Persisting thread metadata"
+                );
                 if let Err(e) = a.store.set_thread_metadata(&a.thread_id, metadata).await {
+                    a.metrics.effect(effect_label, "error");
                     tracing::error!(
                         thread_id = %a.thread_id,
+                        effect_type = "set_thread_metadata",
                         error = %e,
-                        "Failed to set thread metadata"
+                        "Critical thread effect failed"
                     );
+                    stop_after_critical_effect_failure(thread, a, "set_thread_metadata").await;
+                    should_exit = true;
+                    break;
+                } else {
+                    a.metrics.effect(effect_label, "success");
+                }
+            }
+
+            ThreadEffect::SetMessageMetadata { post_id, metadata } => {
+                tracing::info!(
+                    thread_id = %a.thread_id,
+                    post_id = %post_id,
+                    metadata_key = "message",
+                    metadata_bytes = metadata.to_string().len(),
+                    "Persisting message metadata"
+                );
+                if let Err(e) = a.store.set_message_metadata(&post_id, metadata).await {
+                    a.metrics.effect(effect_label, "error");
+                    tracing::error!(
+                        thread_id = %a.thread_id,
+                        post_id = %post_id,
+                        effect_type = "set_message_metadata",
+                        error = %e,
+                        "Critical thread effect failed"
+                    );
+                    stop_after_critical_effect_failure(thread, a, "set_message_metadata").await;
+                    should_exit = true;
+                    break;
+                } else {
+                    a.metrics.effect(effect_label, "success");
                 }
             }
 
             ThreadEffect::Reschedule => {
+                a.metrics.effect(effect_label, "success");
                 should_reschedule = true;
             }
 
             ThreadEffect::MarkResolved => {
+                if effect_idx < total_effects.saturating_sub(1) {
+                    tracing::warn!(
+                        thread_id = %a.thread_id,
+                        effect_idx,
+                        total_effects,
+                        "MarkResolved executed before final effect in batch"
+                    );
+                }
                 let reason = match close_source {
                     CloseSource::Reaction => ThreadCloseReason::ResolvedByReaction,
                     CloseSource::Handler => ThreadCloseReason::ResolvedByHandler,
@@ -607,11 +718,14 @@ async fn execute_effects<H: ThreadHandler>(
                     .update_thread_status(&a.thread_id, ThreadStatus::Resolved)
                     .await
                 {
+                    a.metrics.effect(effect_label, "error");
                     tracing::error!(
                         thread_id = %a.thread_id,
                         error = %e,
                         "Failed to update thread status to Resolved"
                     );
+                } else {
+                    a.metrics.effect(effect_label, "success");
                 }
 
                 if let Err(e) = a.handler.on_thread_closed(thread, reason, &a.ctx).await {
@@ -628,6 +742,14 @@ async fn execute_effects<H: ThreadHandler>(
             }
 
             ThreadEffect::MarkStopped => {
+                if effect_idx < total_effects.saturating_sub(1) {
+                    tracing::warn!(
+                        thread_id = %a.thread_id,
+                        effect_idx,
+                        total_effects,
+                        "MarkStopped executed before final effect in batch"
+                    );
+                }
                 let reason = match close_source {
                     CloseSource::Reaction => ThreadCloseReason::StoppedByReaction,
                     CloseSource::Handler => ThreadCloseReason::StoppedByHandler,
@@ -638,11 +760,14 @@ async fn execute_effects<H: ThreadHandler>(
                     .update_thread_status(&a.thread_id, ThreadStatus::Stopped)
                     .await
                 {
+                    a.metrics.effect(effect_label, "error");
                     tracing::error!(
                         thread_id = %a.thread_id,
                         error = %e,
                         "Failed to update thread status to Stopped"
                     );
+                } else {
+                    a.metrics.effect(effect_label, "success");
                 }
 
                 if let Err(e) = a.handler.on_thread_closed(thread, reason, &a.ctx).await {
@@ -661,6 +786,71 @@ async fn execute_effects<H: ThreadHandler>(
     }
 
     (should_exit, should_reschedule)
+}
+
+fn thread_effect_label(effect: &ThreadEffect) -> &'static str {
+    match effect {
+        ThreadEffect::Noop => "noop",
+        ThreadEffect::Reply { .. } => "reply",
+        ThreadEffect::UpdateMessage { .. } => "update_message",
+        ThreadEffect::SetThreadMetadata { .. } => "set_thread_metadata",
+        ThreadEffect::SetMessageMetadata { .. } => "set_message_metadata",
+        ThreadEffect::Reschedule => "reschedule",
+        ThreadEffect::MarkResolved => "mark_resolved",
+        ThreadEffect::MarkStopped => "mark_stopped",
+    }
+}
+
+fn thread_close_reason_label(reason: ThreadCloseReason) -> &'static str {
+    match reason {
+        ThreadCloseReason::ResolvedByReaction => "resolved_by_reaction",
+        ThreadCloseReason::StoppedByReaction => "stopped_by_reaction",
+        ThreadCloseReason::ResolvedByHandler => "resolved_by_handler",
+        ThreadCloseReason::StoppedByHandler => "stopped_by_handler",
+        ThreadCloseReason::ResolvedExternally => "resolved_externally",
+        ThreadCloseReason::StoppedExternally => "stopped_externally",
+    }
+}
+
+async fn stop_after_critical_effect_failure<H: ThreadHandler>(
+    thread: &Thread,
+    a: &ActorCtx<H>,
+    effect_type: &'static str,
+) {
+    if let Err(e) = a
+        .store
+        .update_thread_status(&a.thread_id, ThreadStatus::Stopped)
+        .await
+    {
+        tracing::error!(
+            thread_id = %a.thread_id,
+            effect_type,
+            error = %e,
+            "Failed to stop thread after critical effect failure"
+        );
+        return;
+    }
+
+    if let Err(e) = a
+        .handler
+        .on_thread_closed(thread, ThreadCloseReason::StoppedByHandler, &a.ctx)
+        .await
+    {
+        tracing::error!(
+            thread_id = %a.thread_id,
+            effect_type,
+            reason = ?ThreadCloseReason::StoppedByHandler,
+            error = %e,
+            "on_thread_closed failed after critical effect failure"
+        );
+    }
+
+    tracing::info!(
+        thread_id = %a.thread_id,
+        effect_type,
+        reason = ?ThreadCloseReason::StoppedByHandler,
+        "Thread stopped after critical effect failure"
+    );
 }
 
 // ─── Thread snapshot builder ─────────────────────────────────────────────────
@@ -687,6 +877,12 @@ pub async fn build_thread_snapshot(
     .map_err(ThreadBotError::mattermost_api)?;
 
     let processed_at = record.last_processed_post_at;
+    let message_records = store
+        .list_thread_messages(thread_id)
+        .await?
+        .into_iter()
+        .map(|message| (message.post_id.clone(), message))
+        .collect::<HashMap<_, _>>();
 
     // Convert posts to ThreadMessages, mark is_new
     let mut messages = Vec::new();
@@ -694,6 +890,9 @@ pub async fn build_thread_snapshot(
         for post_id in order {
             if let Some(post) = posts.get(post_id) {
                 let mut msg = post_to_thread_message(post, thread_id);
+                if let Some(record) = message_records.get(&msg.post_id) {
+                    msg.metadata = record.metadata.clone();
+                }
                 msg.is_new = match &processed_at {
                     Some(ts) => msg.created_at > *ts,
                     None => true, // First run — everything is new
@@ -702,6 +901,11 @@ pub async fn build_thread_snapshot(
             }
         }
     }
+    messages.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.post_id.cmp(&right.post_id))
+    });
 
     // Get reactions from DB, mark is_new
     let mut reactions = store.list_thread_reactions(thread_id).await?;
@@ -724,6 +928,11 @@ pub async fn build_thread_snapshot(
 /// Save an incoming message to DB and update the thread seen position.
 ///
 /// Returns `true` if the message should trigger a handler run (non-bot message).
+#[tracing::instrument(
+    level = "debug",
+    skip_all,
+    fields(thread_id = %a.thread_id, post_id = %post.id)
+)]
 async fn save_incoming_message(a: &ActorCtx<impl ThreadHandler>, post: &models::Post) -> bool {
     let bot_id = a.bot_user_id.read().await;
     let is_bot = bot_id.as_deref() == post.user_id.as_deref();
@@ -736,7 +945,7 @@ async fn save_incoming_message(a: &ActorCtx<impl ThreadHandler>, post: &models::
         is_bot_message: is_bot,
         root_id: post.root_id.clone(),
         parent_post_id: post.root_id.clone(),
-        metadata: serde_json::Value::Null,
+        metadata: post.props.clone().unwrap_or(serde_json::Value::Null),
         post_created_at: post.create_at.map(ms_to_datetime).unwrap_or_else(Utc::now),
         post_updated_at: post.update_at.map(ms_to_datetime),
         post_deleted_at: post.delete_at.and_then(|ts| {
@@ -756,6 +965,14 @@ async fn save_incoming_message(a: &ActorCtx<impl ThreadHandler>, post: &models::
             "Failed to save message to DB"
         );
     }
+    tracing::info!(
+        thread_id = %a.thread_id,
+        post_id = %post.id,
+        user_id = %post.user_id.clone().unwrap_or_default(),
+        is_bot,
+        message_bytes = post.message.as_ref().map_or(0, |m| m.len()),
+        "Incoming thread message persisted"
+    );
 
     let seen_at = post.create_at.map(ms_to_datetime).unwrap_or_else(Utc::now);
     if let Err(e) = a

@@ -1,3 +1,4 @@
+use crate::actor::build_thread_snapshot;
 use crate::error::ThreadBotError;
 use crate::handle::ThreadBotHandle;
 use crate::types::{ReactionChange, Thread, ThreadRecord};
@@ -12,6 +13,18 @@ pub struct ThreadContext {
     pub store: Arc<dyn ThreadStore>,
     pub plugin_id: &'static str,
     pub bot_user_id: Option<String>,
+}
+
+impl ThreadContext {
+    /// Build a full normalized thread snapshot with live Mattermost messages
+    /// and DB-backed metadata.
+    ///
+    /// Expensive: makes HTTP calls to Mattermost. Use for report generation
+    /// or workflows that need full message text outside the active handler
+    /// snapshot.
+    pub async fn build_thread_snapshot(&self, thread_id: &str) -> Result<Thread, ThreadBotError> {
+        build_thread_snapshot(thread_id, &*self.store, &self.config).await
+    }
 }
 
 /// Side effect to be applied by Layer 3
@@ -32,6 +45,11 @@ pub enum ThreadEffect {
     },
     /// Set thread-level metadata
     SetThreadMetadata { metadata: serde_json::Value },
+    /// Set message-level metadata in DB (full replacement)
+    SetMessageMetadata {
+        post_id: String,
+        metadata: serde_json::Value,
+    },
     /// Reschedule handler run after applying effects
     ///
     /// Useful for:

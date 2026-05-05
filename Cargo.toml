@@ -2,17 +2,19 @@
 resolver = "2"
 
 members = [
-    "mmbot",
     "lib/mattermost-api",
     "lib/bool_parser",
     "lib/mattermost-bot",
     "lib/mattermost-test-helpers",
+    "lib/support-bot",
     "lib/thread-bot",
-    "examples/hello_thread_bot"
+    "examples/hello_thread_bot",
+    "examples/support_bot"
 ]
 
 [workspace.dependencies]
 thread-bot = { path = "lib/thread-bot" }
+support-bot = { path = "lib/support-bot" }
 mattermost_bot = { path = "lib/mattermost-bot" }
 mattermost_api = { path = "lib/mattermost-api" }
 bool_parser = { path = "lib/bool_parser" }
@@ -25,6 +27,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 anyhow = "1.0"
+prometheus-client = "0.24"
 
 # Test dependencies
 testcontainers = "0.23"

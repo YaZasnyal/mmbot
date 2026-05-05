@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 // Re-export shared test helpers
+#[allow(unused_imports)]
 pub use mattermost_test_helpers::{AuthenticatedClient, MattermostTestEnv};
 
 /// Test plugin that forwards all events to a channel
