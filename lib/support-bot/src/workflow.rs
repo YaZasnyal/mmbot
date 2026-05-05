@@ -112,6 +112,17 @@ pub(crate) async fn apply_action(
         SupportAction::FinishRequest { summary } => {
             tracing::Span::current().record("action", tracing::field::display("finish_request"));
             run.finish_request(summary.clone());
+            if let Some(engineer_thread) = engineer_notifier(ctx, target)
+                .notify_status_update(
+                    thread,
+                    run.engineer_thread(),
+                    run.status(),
+                    run.finished_summary(),
+                )
+                .await?
+            {
+                run.set_engineer_thread(engineer_thread);
+            }
             ToolResult {
                 call_id: call_id.to_string(),
                 content: json!({

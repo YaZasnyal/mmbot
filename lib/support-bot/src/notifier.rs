@@ -1,6 +1,6 @@
 use crate::config::EngineerNotificationTarget;
 use crate::error::{Result, SupportBotError};
-use crate::state::EngineerThreadRef;
+use crate::state::{EngineerThreadRef, SupportThreadStatus};
 use mattermost_api::apis::posts_api;
 use mattermost_api::{apis::configuration::Configuration, models};
 use std::sync::Arc;
@@ -154,6 +154,53 @@ impl MattermostSupportNotifier {
             format!("**Bot message**\n\n{}", quote_for_mattermost(&message)),
         )
         .await
+    }
+
+    #[tracing::instrument(
+        level = "info",
+        skip_all,
+        fields(thread_id = %thread.info.thread_id, status = support_status_label(status))
+    )]
+    pub async fn notify_status_update(
+        &self,
+        thread: &Thread,
+        current_thread: Option<&EngineerThreadRef>,
+        status: &SupportThreadStatus,
+        summary: Option<&str>,
+    ) -> Result<Option<EngineerThreadRef>> {
+        match &self.target {
+            EngineerNotificationTarget::SameThread => Ok(None),
+            EngineerNotificationTarget::MattermostChannel { channel_id } => {
+                let thread_ref = self
+                    .ensure_engineer_thread(thread, current_thread)
+                    .await?
+                    .ok_or_else(|| {
+                        SupportBotError::Internal("engineer thread was not created".into())
+                    })?;
+                let message = status_update_message(thread, status, summary);
+                let message_bytes = message.len();
+                let mut request = engineer_thread_reply_request(
+                    channel_id,
+                    &thread_ref.root_post_id,
+                    thread,
+                    message,
+                );
+                request.props = Some(support_post_props("status_update", thread));
+
+                posts_api::create_post(&self.config, request, None)
+                    .await
+                    .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
+                info!(
+                    source_thread_id = %thread.info.thread_id,
+                    engineer_root_post_id = %thread_ref.root_post_id,
+                    status = support_status_label(status),
+                    message_bytes,
+                    "support-bot: status update posted to engineer thread"
+                );
+
+                Ok(Some(thread_ref))
+            }
+        }
     }
 
     #[tracing::instrument(
@@ -477,6 +524,39 @@ fn engineer_thread_reply_request(
     request
 }
 
+fn status_update_message(
+    thread: &Thread,
+    status: &SupportThreadStatus,
+    summary: Option<&str>,
+) -> String {
+    let mut message = format!(
+        "**Support thread status**\n\nstatus: `{}`\nsource: {}",
+        support_status_label(status),
+        thread.info.thread_id
+    );
+    if let Some(summary) = summary.and_then(non_empty_trimmed) {
+        message.push_str("\nsummary:\n");
+        message.push_str(&quote_for_mattermost(summary));
+    }
+    message
+}
+
+fn support_status_label(status: &SupportThreadStatus) -> &'static str {
+    match status {
+        SupportThreadStatus::Active => "active",
+        SupportThreadStatus::Finished => "finished",
+    }
+}
+
+fn non_empty_trimmed(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
 fn source_post_link(config: &Configuration, post_id: &str) -> String {
     format!(
         "{}/_redirect/pl/{}",
@@ -602,6 +682,19 @@ mod tests {
         assert_eq!(request.channel_id, "engineers");
         assert_eq!(request.root_id.as_deref(), Some("eng-root"));
         assert_eq!(request.message, "debug info");
+    }
+
+    #[test]
+    fn status_update_message_includes_status_and_summary() {
+        let message = status_update_message(
+            &thread(),
+            &SupportThreadStatus::Finished,
+            Some("resolved by cache flush"),
+        );
+
+        assert!(message.contains("status: `finished`"));
+        assert!(message.contains("source: thread-1"));
+        assert!(message.contains("resolved by cache flush"));
     }
 
     #[test]

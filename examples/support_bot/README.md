@@ -9,6 +9,9 @@ Runnable `support-bot` example on top of `thread-bot`.
 - Optional remote MCP tool registration from env-driven `ToolConfig`.
 - Optional Prometheus/OpenMetrics metric families for Mattermost WS,
   thread actors, and support workflow counters/durations.
+- User-channel routing and optional engineer-channel routing.
+- Engineer-thread mirroring, explicit engineer notifications, finish status
+  updates, close notifications, and debug report export.
 - Mattermost runtime via `mattermost-bot` + `ThreadBotPlugin`.
 - PostgreSQL persistence via `PgThreadStore`.
 
@@ -65,12 +68,23 @@ cargo run -p support-bot-example
 - `THREAD_BOT_DATABASE_URL` defaults to `postgres://test:test@localhost:5433/thread_bot_test`.
 - `MM_BASE_PATH` defaults to `http://localhost:8065`.
 - `SUPPORT_SYSTEM_PROMPT_FILE` or `SUPPORT_SYSTEM_PROMPT` overrides the default support-bot system prompt.
-- If `SUPPORT_ENGINEER_CHANNEL_ID` is unset, engineer notifications stay in the same thread.
+- If `SUPPORT_ENGINEER_CHANNEL_ID` is unset, explicit `notify_engineer` tool
+  calls stay in the user thread. Message mirroring, finish status updates, close
+  notifications, and debug report exports require a separate engineer channel.
 - `SUPPORT_REMOTE_MCP_NAMES` is a comma-separated list. For each name `x`, provide `SUPPORT_REMOTE_MCP_X_URL` and optionally `SUPPORT_REMOTE_MCP_X_AUTH_HEADER` (name is uppercased, `-` becomes `_`).
 - The included instruction files are placeholders; replace them with your runbooks.
+- Support thread state is stored in thread metadata under `support_bot`. The
+  current request status is `active` until the model calls `finish_request`,
+  then it is persisted as `finished` with the optional finish summary.
+- When `SUPPORT_ENGINEER_CHANNEL_ID` is set, the first handled user thread
+  creates an engineer thread containing a source link and quoted root request.
+  Later user messages, bot replies, `notify_engineer` calls, and
+  `finish_request` status updates are posted as replies in that engineer thread.
 - Engineer thread commands:
   - `!support debug-report` to export full source support thread as a self-contained HTML attachment (includes tool-trace section).
-- On tool-loop fatal stop, the bot also uploads an HTML thread snapshot to the engineer thread automatically.
+- On tool-loop limit failure, the bot tells the user it stopped the thread,
+  notifies the engineer thread with trace summary, and asks engineers to run
+  `!support debug-report` if they want the full HTML snapshot.
 - Metrics are registered into an in-process `prometheus_client::Registry`.
   Use the crate re-export (`support_bot::prometheus_client`) so applications do
   not need to match the exact dependency version. This example wires the

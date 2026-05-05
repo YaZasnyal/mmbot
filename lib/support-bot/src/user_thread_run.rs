@@ -119,6 +119,14 @@ impl UserThreadRun {
         self.stop_after_tools = true;
     }
 
+    pub(crate) fn status(&self) -> &SupportThreadStatus {
+        &self.state.status
+    }
+
+    pub(crate) fn finished_summary(&self) -> Option<&str> {
+        self.state.finished_summary.as_deref()
+    }
+
     pub(crate) fn should_stop_after_tools(&self) -> bool {
         self.stop_after_tools
     }
