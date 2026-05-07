@@ -130,6 +130,22 @@ fn load_support_config() -> Result<SupportBotConfig> {
 }
 
 fn load_instruction_repository(config: &InstructionConfig) -> Result<InstructionRepository> {
+    for issue in InstructionRepository::lint(&config.root_path)? {
+        let path = issue
+            .path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let id = issue.id.as_deref().unwrap_or("-");
+        tracing::error!(
+            issue_kind = ?issue.kind,
+            path = %path,
+            id = %id,
+            message = %issue.message,
+            "support-bot: instruction repository lint issue"
+        );
+    }
+
     Ok(InstructionRepository::new(config.root_path.clone())?
         .with_max_instruction_bytes(config.max_instruction_bytes)
         .with_max_load_documents(config.max_context_instructions))

@@ -71,6 +71,11 @@ Linting is a one-level static pass: it scans all files once, builds the set of
 known ids, and checks the links written in each body. It does not recursively
 follow links, so cycles between runbooks are safe.
 
+The repository constructor is tolerant of lint issues so applications can
+decide their own startup policy. The support-bot example logs lint issues at
+`error` during startup and continues running; documents with invalid
+frontmatter are skipped until fixed.
+
 ## Migrating Existing Skills
 
 Existing qwen-code skills should be converted into Markdown documents with

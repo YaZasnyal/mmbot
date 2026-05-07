@@ -29,22 +29,12 @@ impl InstructionRepository {
     pub fn new(root_path: impl Into<PathBuf>) -> Result<Self> {
         let root_path = root_path.into();
         let documents = scan_documents(&root_path)?;
-        let issues = lint_documents(&documents);
-        if !issues.is_empty() {
-            return Err(SupportBotError::Instruction(format!(
-                "instruction repository has lint errors: {}",
-                issues
-                    .iter()
-                    .map(|issue| issue.message.as_str())
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )));
-        }
 
         Ok(Self {
             root_path,
             documents: documents
                 .into_iter()
+                .filter(|loaded| loaded.parse_error.is_none())
                 .map(|loaded| (loaded.document.id.clone(), loaded.document))
                 .collect(),
             max_instruction_bytes: 16 * 1024,
@@ -298,6 +288,28 @@ mod tests {
         assert_eq!(loaded.document.id, "/index");
         assert_eq!(loaded.document.title, "Index");
         assert_eq!(loaded.content, "\n# Index\n[/diagnostics/index]");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn repository_skips_invalid_documents_without_failing() {
+        let root = temp_dir("invalid-skip");
+        write_doc(&root, "index.md", "Index", "\n# Index");
+        std::fs::create_dir_all(root.join("broken")).unwrap();
+        std::fs::write(
+            root.join("broken/no-title.md"),
+            "---\nsummary: Missing\n---\n# Broken",
+        )
+        .unwrap();
+
+        let repository = InstructionRepository::new(&root).unwrap();
+
+        assert_eq!(repository.documents().count(), 1);
+        assert!(repository
+            .get_document(Some("/broken/no-title"))
+            .unwrap()
+            .is_none());
 
         std::fs::remove_dir_all(root).unwrap();
     }
