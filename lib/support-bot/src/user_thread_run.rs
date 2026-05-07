@@ -12,7 +12,14 @@ pub(crate) struct UserThreadRun {
     messages: Vec<ChatMessage>,
     trace: Vec<ChatMessage>,
     effects: Vec<ThreadEffect>,
-    stop_after_tools: bool,
+    stop_after_tools: StopAfterTools,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StopAfterTools {
+    Continue,
+    AwaitNextUser,
+    FinishRequest,
 }
 
 impl UserThreadRun {
@@ -22,7 +29,7 @@ impl UserThreadRun {
             messages,
             trace: Vec::new(),
             effects: Vec::new(),
-            stop_after_tools: false,
+            stop_after_tools: StopAfterTools::Continue,
         }
     }
 
@@ -116,7 +123,7 @@ impl UserThreadRun {
     pub(crate) fn finish_request(&mut self, summary: Option<String>) {
         self.state.status = SupportThreadStatus::Finished;
         self.state.finished_summary = summary;
-        self.stop_after_tools = true;
+        self.stop_after_tools = StopAfterTools::FinishRequest;
     }
 
     pub(crate) fn status(&self) -> &SupportThreadStatus {
@@ -127,8 +134,14 @@ impl UserThreadRun {
         self.state.finished_summary.as_deref()
     }
 
-    pub(crate) fn should_stop_after_tools(&self) -> bool {
+    pub(crate) fn stop_after_tools(&self) -> StopAfterTools {
         self.stop_after_tools
+    }
+
+    pub(crate) fn await_next_user_message(&mut self) {
+        if self.stop_after_tools == StopAfterTools::Continue {
+            self.stop_after_tools = StopAfterTools::AwaitNextUser;
+        }
     }
 
     pub(crate) fn into_effects(
@@ -198,7 +211,7 @@ impl UserThreadRun {
         self.effects.push(ThreadEffect::SetThreadMetadata {
             metadata: thread_metadata,
         });
-        if self.stop_after_tools && self.trace.is_empty() {
+        if self.stop_after_tools == StopAfterTools::FinishRequest && self.trace.is_empty() {
             warn!(
                 thread_id = %thread.info.thread_id,
                 post_id = %trigger_message.post_id,

@@ -359,7 +359,7 @@ mod tests {
             tool_calls: vec![ToolCall {
                 id: "call_1".to_string(),
                 name: "instructions".to_string(),
-                arguments: serde_json::json!({ "action": "list" }),
+                arguments: serde_json::json!({ "id": null }),
             }],
         };
 
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(value["tool_calls"][0]["function"]["name"], "instructions");
         assert_eq!(
             value["tool_calls"][0]["function"]["arguments"],
-            "{\"action\":\"list\"}"
+            "{\"id\":null}"
         );
     }
 }

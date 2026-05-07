@@ -44,6 +44,7 @@ pub(crate) async fn apply_action(
                 }),
             )
             .await?;
+            run.await_next_user_message();
             sent_result(call_id)
         }
         SupportAction::NotifyEngineer { message } => {

@@ -35,7 +35,8 @@ pub use debug::{DebugCommand, DebugCommandHandler, DebugCommandMatch, DebugRespo
 pub use error::{Result, SupportBotError};
 pub use handler::SupportBotHandler;
 pub use instructions::{
-    InstructionDocument, InstructionManifest, InstructionRepository, LoadedInstruction,
+    InstructionDocument, InstructionLintIssue, InstructionLintIssueKind, InstructionRepository,
+    LoadedInstruction,
 };
 pub use llm::{
     ChatMessage, ChatRole, LlmClient, LlmRequest, LlmResponse, OpenAiChatCompletionsClient,

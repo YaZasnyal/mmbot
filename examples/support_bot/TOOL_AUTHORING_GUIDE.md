@@ -19,9 +19,9 @@ use std::time::Duration;
 use mattermost_bot::MattermostBotMetrics;
 use support_bot::{
     DEFAULT_SUPPORT_SYSTEM_PROMPT, EngineerNotificationConfig, EngineerNotificationTarget,
-    InstructionConfig, InstructionManifest, InstructionRepository, LlmConfig,
-    OpenAiChatCompletionsClient, SupportBotBuilder, SupportBotConfig, SupportBotLimits,
-    SupportBotMetrics, SupportRouteConfig, ToolConfig,
+    InstructionConfig, InstructionRepository, LlmConfig, OpenAiChatCompletionsClient,
+    SupportBotBuilder, SupportBotConfig, SupportBotLimits, SupportBotMetrics, SupportRouteConfig,
+    ToolConfig,
 };
 use thread_bot::ThreadBotMetrics;
 
@@ -51,13 +51,9 @@ async fn build_support_handler() -> anyhow::Result<support_bot::SupportBotHandle
         },
     };
 
-    let manifest = InstructionManifest { documents: vec![] };
-    let instruction_repo = InstructionRepository::new(
-        config.instructions.root_path.clone(),
-        manifest,
-    )
-    .with_max_instruction_bytes(config.instructions.max_instruction_bytes)
-    .with_max_load_documents(config.instructions.max_context_instructions);
+    let instruction_repo = InstructionRepository::new(config.instructions.root_path.clone())?
+        .with_max_instruction_bytes(config.instructions.max_instruction_bytes)
+        .with_max_load_documents(config.instructions.max_context_instructions);
 
     let llm = Arc::new(OpenAiChatCompletionsClient::new(config.llm.clone())?);
 
@@ -298,7 +294,8 @@ If mutating tools are added later:
 The default support bot system prompt requires the model to use the
 `instructions` tool before giving operational guidance. Add runbooks under
 `examples/support_bot/instructions` that teach the model when to call concrete
-tools.
+tools. The model starts by loading `/index`, then follows Markdown links like
+`[/diagnostics/timeout]`.
 
 Recommended instruction documents:
 
@@ -361,7 +358,8 @@ Do not log raw secrets or full backend payloads containing credentials.
 3. Define backend traits so tests can use fake clients.
 4. Implement `SupportTool` for each tool.
 5. Add registration helper and call it from `SupportBotBuilder` or the example.
-6. Add instruction documents and `manifest.yaml` entries.
+6. Add Markdown instruction documents with YAML frontmatter and links from an
+   index document.
 7. Add tests for schemas, validation, errors, redaction, truncation, and happy
    paths.
 8. Run `cargo fmt`, `cargo test -p support-bot`, and any crate-specific tests.

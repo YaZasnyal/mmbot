@@ -5,7 +5,7 @@ Runnable `support-bot` example on top of `thread-bot`.
 ## What this example wires
 
 - `SupportBotBuilder` with default workflow tools.
-- `InstructionRepository` loaded from `instructions/manifest.yaml`.
+- `InstructionRepository` loaded from Markdown files under `instructions/`.
 - Optional remote MCP tool registration from env-driven `ToolConfig`.
 - Optional Prometheus/OpenMetrics metric families for Mattermost WS,
   thread actors, and support workflow counters/durations.
@@ -44,7 +44,6 @@ export SUPPORT_USER_CHANNEL_IDS=YOUR_SUPPORT_CHANNEL_ID
 export SUPPORT_ENGINEER_CHANNEL_ID=YOUR_ENGINEER_CHANNEL_ID
 
 export SUPPORT_INSTRUCTIONS_ROOT=examples/support_bot/instructions
-export SUPPORT_INSTRUCTIONS_MANIFEST=examples/support_bot/instructions/manifest.yaml
 
 # Optional remote MCP tools
 # export SUPPORT_REMOTE_MCP_NAMES=logs,metrics

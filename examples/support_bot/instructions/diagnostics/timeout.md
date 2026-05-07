@@ -1,3 +1,7 @@
+---
+title: Timeout triage
+---
+
 # Timeout Triage
 
 1. Verify incident scope and affected endpoints.

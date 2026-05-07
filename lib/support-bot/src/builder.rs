@@ -14,7 +14,7 @@ pub const DEFAULT_SUPPORT_SYSTEM_PROMPT: &str = concat!(
     "You are a technical support assistant for Mattermost-based services.\n",
     "Use concise, actionable, and safe guidance.\n",
     "Rule: before giving diagnostic procedures or operational guidance, use the ",
-    "`instructions` tool to list and load relevant instructions.\n",
+    "`instructions` tool to load `/index`, then follow Markdown links to relevant instructions.\n",
     "Do not invent runbooks or commands when instructions were not loaded. ",
     "If instructions are missing, say so explicitly and ask for escalation/context.\n",
     "Follow this policy strictly: \"используй инструкции через tool, не выдумывай\"."
@@ -125,7 +125,6 @@ mod tests {
         EngineerNotificationConfig, EngineerNotificationTarget, InstructionConfig, LlmConfig,
         SupportBotLimits, SupportRouteConfig, ToolConfig,
     };
-    use crate::instructions::{InstructionDocument, InstructionManifest};
     use crate::llm::{ChatMessage, LlmRequest, LlmResponse};
     use async_trait::async_trait;
     use std::path::PathBuf;
@@ -168,20 +167,20 @@ mod tests {
 
     #[tokio::test]
     async fn builder_registers_instruction_repository_and_defaults() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "support-bot-builder-instructions-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(
+            temp_dir.join("index.md"),
+            "---\ntitle: Diagnostics\n---\n# Diagnostics",
+        )
+        .unwrap();
+
         let llm = Arc::new(StaticLlm);
-        let repo = InstructionRepository::new(
-            ".",
-            InstructionManifest {
-                documents: vec![InstructionDocument {
-                    id: "diag".to_string(),
-                    path: "diag.md".into(),
-                    title: "Diagnostics".to_string(),
-                    summary: "Summary".to_string(),
-                    parent: None,
-                    tags: Vec::new(),
-                }],
-            },
-        );
+        let repo = InstructionRepository::new(&temp_dir).unwrap();
 
         SupportBotBuilder::new("support", test_config(), llm)
             .with_instruction_repository(repo)
@@ -189,6 +188,8 @@ mod tests {
             .build()
             .await
             .unwrap();
+
+        std::fs::remove_dir_all(temp_dir).unwrap();
     }
 
     #[test]

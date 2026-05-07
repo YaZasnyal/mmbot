@@ -10,6 +10,7 @@ use crate::notifier::MattermostSupportNotifier;
 use crate::output::sanitize_user_visible_message;
 use crate::tools::ToolCall;
 use crate::tools::{ToolContext, ToolExecutionOutcome, ToolRegistry, ToolResult};
+use crate::user_thread_run::StopAfterTools;
 use crate::user_thread_run::UserThreadRun;
 use crate::workflow::apply_action;
 use async_trait::async_trait;
@@ -299,9 +300,16 @@ impl SupportBotHandler {
                 "support-bot: llm round finished"
             );
 
-            if run.should_stop_after_tools() {
-                info!("support-bot: finishing request after finish_request action");
-                return run.into_resolved_effects(thread, trigger_message);
+            match run.stop_after_tools() {
+                StopAfterTools::Continue => {}
+                StopAfterTools::AwaitNextUser => {
+                    info!("support-bot: stopping tool loop after user-facing workflow action");
+                    return run.into_effects(thread, trigger_message);
+                }
+                StopAfterTools::FinishRequest => {
+                    info!("support-bot: finishing request after finish_request action");
+                    return run.into_resolved_effects(thread, trigger_message);
+                }
             }
         }
 
@@ -655,7 +663,10 @@ mod tests {
     use crate::llm::{ChatMessage, ChatRole, LlmResponse};
     use crate::state::{EngineerThreadRef, SupportThreadState};
     use crate::testutil::PanicStore;
-    use crate::tools::{register_default_workflow_tools, ToolCall, ToolSpec};
+    use crate::tools::{
+        register_default_workflow_tools, SupportTool, ToolCall, ToolContext, ToolExecutionOutcome,
+        ToolKind, ToolResult, ToolSpec,
+    };
     use async_trait::async_trait;
     use chrono::Utc;
     use std::collections::VecDeque;
@@ -688,6 +699,35 @@ mod tests {
             Ok(DebugResponse {
                 message: format!("debug: {}", command.name),
             })
+        }
+    }
+
+    struct EchoReadOnlyTool;
+
+    #[async_trait]
+    impl SupportTool for EchoReadOnlyTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "echo_read".to_string(),
+                description: "Echo test tool".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": true
+                }),
+                kind: ToolKind::ReadOnly,
+            }
+        }
+
+        async fn call(
+            &self,
+            _ctx: ToolContext,
+            call: ToolCall,
+        ) -> crate::Result<ToolExecutionOutcome> {
+            Ok(ToolExecutionOutcome::ToolResult(ToolResult {
+                call_id: call.id,
+                content: json!({ "ok": true }),
+                is_error: false,
+            }))
         }
     }
 
@@ -1008,7 +1048,16 @@ mod tests {
         assert!(!effects
             .iter()
             .any(|effect| matches!(effect, ThreadEffect::UpdateMessage { .. })));
-        assert_eq!(llm.requests().len(), 2);
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|effect| {
+                    matches!(effect, ThreadEffect::Reply { message, .. } if message == "please send request id")
+                })
+                .count(),
+            1
+        );
+        assert_eq!(llm.requests().len(), 1);
     }
 
     #[tokio::test]
@@ -1016,12 +1065,12 @@ mod tests {
         let calls = vec![
             ToolCall {
                 id: "call-1".to_string(),
-                name: "send_user_message".to_string(),
+                name: "echo_read".to_string(),
                 arguments: json!({ "message": "first" }),
             },
             ToolCall {
                 id: "call-2".to_string(),
-                name: "send_user_message".to_string(),
+                name: "echo_read".to_string(),
                 arguments: json!({ "message": "second" }),
             },
         ];
@@ -1042,7 +1091,7 @@ mod tests {
             },
         ]));
         let mut registry = ToolRegistry::new();
-        register_default_workflow_tools(&mut registry).unwrap();
+        registry.register(EchoReadOnlyTool).unwrap();
         let mut config = test_config();
         config.limits.max_tool_calls_per_round = 1;
         let handler =
@@ -1391,7 +1440,7 @@ mod tests {
                     "tool_calls": [{
                         "id": "call-1",
                         "name": "instructions",
-                        "arguments": { "action": "list" }
+                        "arguments": { "id": null }
                     }]
                 }, {
                     "role": "tool",

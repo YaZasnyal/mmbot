@@ -8,7 +8,7 @@ The crate owns support-specific concerns:
 - OpenAI-compatible LLM integration through a `LlmClient` abstraction.
 - Local Rust tools and remote MCP tools behind one `ToolRegistry`.
 - Compact per-thread resume state stored in `thread-bot` thread metadata.
-- Instruction/runbook selection from a documented filesystem manifest.
+- Markdown instruction/runbook loading from a documented filesystem tree.
 - Separate user and engineer notification sinks, including engineer-channel
   mirroring, status updates, and debug exports.
 
@@ -91,6 +91,7 @@ regular LLM flow. The default prefixes are `/support` and `!support`.
 ## Instruction Format
 
 Instruction and runbook trees are documented in
-[`docs/instructions.md`](docs/instructions.md). The manifest is the source of
-truth; generated indexes such as embeddings may be added later, but should be
-derived from the manifest rather than maintained by hand.
+[`docs/instructions.md`](docs/instructions.md). Documents are ordinary `.md`
+files with YAML frontmatter. The default entry point is `/index`, and generated
+indexes such as embeddings may be added later as derived artifacts rather than
+maintained by hand.

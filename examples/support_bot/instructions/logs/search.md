@@ -1,3 +1,7 @@
+---
+title: Log search playbook
+---
+
 # Log Search Playbook
 
 - Start with a narrow time range around the incident.
