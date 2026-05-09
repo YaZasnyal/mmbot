@@ -618,6 +618,23 @@ pub async fn spawn_test_actor(
     Arc<MockHandler>,
     MockServer,
 ) {
+    spawn_test_actor_with_idle_timeout(handler, thread_id, posts, debounce, Duration::from_secs(60))
+        .await
+}
+
+/// Spawn a test actor with an explicit idle timeout.
+pub async fn spawn_test_actor_with_idle_timeout(
+    handler: MockHandler,
+    thread_id: &str,
+    posts: Vec<models::Post>,
+    debounce: Duration,
+    actor_idle_timeout: Duration,
+) -> (
+    mpsc::Sender<ThreadCommand>,
+    Arc<MockStore>,
+    Arc<MockHandler>,
+    MockServer,
+) {
     let (server, mm_config) = setup_mm_mock(posts).await;
     let store = Arc::new(MockStore::new());
     let handler = Arc::new(handler);
@@ -650,12 +667,16 @@ pub async fn spawn_test_actor(
         ctx,
         mm_config,
         debounce,
+        actor_idle_timeout,
         thread_id: thread_id.to_string(),
         bot_user_id: Arc::new(RwLock::new(Some("bot_user".to_string()))),
         metrics: crate::metrics::ThreadBotMetricsHandle::noop(),
     };
 
-    tokio::spawn(crate::actor::thread_actor(rx, actor_ctx));
+    tokio::spawn(async move {
+        let mut rx = rx;
+        crate::actor::thread_actor(&mut rx, &actor_ctx).await;
+    });
 
     (tx, store, handler, server)
 }

@@ -59,6 +59,7 @@ pub(crate) struct ActorCtx<H: ThreadHandler> {
     pub ctx: ThreadContext,
     pub mm_config: Arc<Configuration>,
     pub debounce: Duration,
+    pub actor_idle_timeout: Duration,
     pub thread_id: String,
     pub bot_user_id: Arc<RwLock<Option<String>>>,
     pub metrics: ThreadBotMetricsHandle,
@@ -100,13 +101,14 @@ fn pending_handler() -> HandlerFuture {
 /// 3. **Debounce timer**: fires after no new messages for the configured
 ///    duration. Builds a snapshot and starts the handler future.
 pub(crate) async fn thread_actor<H: ThreadHandler>(
-    mut rx: mpsc::Receiver<ThreadCommand>,
-    a: ActorCtx<H>,
+    rx: &mut mpsc::Receiver<ThreadCommand>,
+    a: &ActorCtx<H>,
 ) {
     let mut has_pending = false;
     let mut debounce_deadline = Instant::now() + a.debounce;
     let mut handler_fut: HandlerFuture = pending_handler();
     let mut handler_running = false;
+    let mut idle_deadline = None;
 
     tracing::debug!(thread_id = %a.thread_id, "Thread actor started");
     a.metrics.actor_started("success");
@@ -117,10 +119,11 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
             biased;
 
             cmd = rx.recv() => {
+                idle_deadline = None;
                 match cmd {
                     Some(ThreadCommand::NewMessage { post }) => {
                         a.metrics.actor_command("new_message", "received");
-                        let should_trigger = save_incoming_message(&a, &post).await;
+                        let should_trigger = save_incoming_message(a, &post).await;
                         if should_trigger {
                             has_pending = true;
                             debounce_deadline = Instant::now() + a.debounce;
@@ -129,6 +132,9 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                                 handler_fut = pending_handler();
                                 handler_running = false;
                             }
+                        }
+                        if !has_pending && !handler_running {
+                            idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                         }
                     }
 
@@ -139,9 +145,12 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                             handler_fut = pending_handler();
                             handler_running = false;
                         }
-                        if handle_control_reaction(&effect, &change, &a).await {
+                        if handle_control_reaction(&effect, &change, a).await {
                             stop_reason = "control_reaction";
                             break;
+                        }
+                        if !has_pending && !handler_running {
+                            idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                         }
                     }
 
@@ -223,9 +232,12 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
             result = &mut handler_fut, if handler_running => {
                 handler_running = false;
                 handler_fut = pending_handler();
-                if handle_handler_result(result, &a, &mut has_pending, &mut debounce_deadline).await {
+                if handle_handler_result(result, a, &mut has_pending, &mut debounce_deadline).await {
                     stop_reason = "handler_closed";
                     break;
+                }
+                if !has_pending {
+                    idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                 }
             }
 
@@ -242,6 +254,7 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                             error = %e,
                             "Failed to build thread snapshot"
                         );
+                        idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                         continue;
                     }
                 };
@@ -249,14 +262,14 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                 // Check for control reactions before running handler.
                 // User might have added ✅/🛑 during the debounce window
                 // but the WebSocket event hasn't arrived yet.
-                if let Some(effect) = check_api_control_reactions(&a, &snapshot).await {
+                if let Some(effect) = check_api_control_reactions(a, &snapshot).await {
                     tracing::info!(
                         thread_id = %a.thread_id,
                         effect = ?effect,
                         "Control reaction found before handler run, closing thread"
                     );
                     let (should_exit, _) =
-                        execute_effects(vec![effect], &snapshot, &a, CloseSource::Reaction).await;
+                        execute_effects(vec![effect], &snapshot, a, CloseSource::Reaction).await;
                     if should_exit {
                         break;
                     }
@@ -272,11 +285,28 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                 });
                 handler_running = true;
             }
+
+            _ = idle_sleep_until(idle_deadline), if !has_pending && !handler_running => {
+                tracing::debug!(thread_id = %a.thread_id, "Thread actor idle timeout elapsed");
+                stop_reason = "idle_timeout";
+                break;
+            }
         }
     }
 
     tracing::debug!(thread_id = %a.thread_id, "Thread actor stopped");
     a.metrics.actor_stopped(stop_reason);
+}
+
+fn next_idle_deadline(timeout: Duration) -> Instant {
+    Instant::now() + timeout
+}
+
+async fn idle_sleep_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
 }
 
 // ─── Handler result processing ───────────────────────────────────────────────

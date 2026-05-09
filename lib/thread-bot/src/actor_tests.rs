@@ -11,7 +11,10 @@ use crate::actor::{
 };
 use crate::handler::{ThreadCloseReason, ThreadEffect};
 use crate::store::ThreadStore;
-use crate::testutil::{make_mm_post, setup_mm_mock, spawn_test_actor, MockHandler, MockStore};
+use crate::testutil::{
+    make_mm_post, setup_mm_mock, spawn_test_actor, spawn_test_actor_with_idle_timeout, MockHandler,
+    MockStore,
+};
 use crate::types::*;
 
 // ── Helper function unit tests ───────────────────────────────────────────────
@@ -173,6 +176,16 @@ async fn settle() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 }
 
+async fn wait_actor_closed(tx: &tokio::sync::mpsc::Sender<ThreadCommand>) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !tx.is_closed() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("actor did not close in time");
+}
+
 #[tokio::test]
 async fn actor_basic_handler_flow() {
     let handler = MockHandler::new().with_default_effects(vec![ThreadEffect::Reply {
@@ -289,6 +302,97 @@ async fn actor_channel_closed_exits() {
     drop(tx);
     // Actor exits gracefully — no panic, no hang
     tokio::time::sleep(Duration::from_millis(50)).await;
+}
+
+#[tokio::test]
+async fn actor_idle_timeout_zero_exits_after_handler() {
+    let handler = MockHandler::new();
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+
+    let (tx, _store, handler, _server) = spawn_test_actor_with_idle_timeout(
+        handler,
+        "thread1",
+        vec![post.clone()],
+        TEST_DEBOUNCE,
+        Duration::ZERO,
+    )
+    .await;
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    handler.wait_handle_entered().await;
+    wait_actor_closed(&tx).await;
+
+    assert_eq!(handler.call_count(), 1);
+}
+
+#[tokio::test]
+async fn actor_idle_timeout_waits_for_configured_delay() {
+    let handler = MockHandler::new();
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+
+    let (tx, _store, handler, _server) = spawn_test_actor_with_idle_timeout(
+        handler,
+        "thread1",
+        vec![post.clone()],
+        TEST_DEBOUNCE,
+        Duration::from_millis(200),
+    )
+    .await;
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    handler.wait_handle_entered().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert!(!tx.is_closed());
+
+    wait_actor_closed(&tx).await;
+}
+
+#[tokio::test]
+async fn actor_idle_timeout_does_not_fire_while_pending() {
+    let handler = MockHandler::new();
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+
+    let (tx, _store, handler, _server) = spawn_test_actor_with_idle_timeout(
+        handler,
+        "thread1",
+        vec![post.clone()],
+        Duration::from_millis(200),
+        Duration::from_millis(10),
+    )
+    .await;
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert!(!tx.is_closed());
+    assert_eq!(handler.call_count(), 0);
+
+    handler.wait_handle_entered().await;
+    wait_actor_closed(&tx).await;
+}
+
+#[tokio::test]
+async fn actor_idle_timeout_does_not_fire_while_handler_runs() {
+    let handler = MockHandler::new().with_handle_delay(Duration::from_millis(200));
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+
+    let (tx, _store, handler, _server) = spawn_test_actor_with_idle_timeout(
+        handler,
+        "thread1",
+        vec![post.clone()],
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+    )
+    .await;
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    handler.wait_handle_entered().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert!(!tx.is_closed());
+
+    wait_actor_closed(&tx).await;
 }
 
 #[tokio::test]

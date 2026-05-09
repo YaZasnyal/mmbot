@@ -122,18 +122,49 @@ cargo clippy -p thread-bot -- -D warnings
 
 All passed after slice 2.
 
+### Implementation slice 3: actor idle timeout
+
+Files touched:
+
+- `lib/thread-bot/src/actor.rs`
+- `lib/thread-bot/src/actor_tests.rs`
+- `lib/thread-bot/src/runtime.rs`
+- `lib/thread-bot/src/testutil.rs`
+
+Changes:
+
+- Added `ThreadBotConfig::actor_idle_timeout` with `Duration::ZERO` default.
+- Added `ThreadBotPlugin::with_actor_idle_timeout(...)`.
+- Actors schedule idle teardown only after at least one command/run, avoiding a
+  spawn-before-first-command race.
+- Actor exits after quiescence: no pending debounce, no running handler, no
+  reschedule.
+- Idle retirement is coordinated in `runtime.rs`: the spawned task keeps the
+  receiver alive, locks the actor map, and exits only when the actor is still
+  the registered sender, its receiver queue is empty, and no runtime event is
+  holding an extra sender clone.
+- If that idle retirement check fails, the same spawned task continues the
+  actor loop with the same receiver instead of spawning a replacement actor.
+- Exited actors remove only their own sender from the actor map, so the next
+  event respawns the actor normally.
+- Added actor tests for zero timeout, nonzero timeout, pending debounce, and
+  running handler.
+
+Verification run:
+
+```bash
+cargo fmt -p thread-bot --check
+cargo test -p thread-bot
+cargo clippy -p thread-bot -- -D warnings
+```
+
+All passed after slice 3.
+
 ## Next tasks
 
 Prefer one small reviewable slice at a time.
 
-1. Introduce `actor_idle_timeout`.
-   - Add config field with `Duration::ZERO` default.
-   - Make actor exit after quiescence when timeout expires.
-   - Ensure no exit while pending work, handler running, or reschedule pending.
-   - Remove actor from `actors` map when it exits, or make sender cleanup
-     robust enough that next event respawns.
-
-2. Start removing L3 business lifecycle.
+1. Start removing L3 business lifecycle.
    - Plan before editing because this touches store schema, handle API,
      actor effects, tests, and support-bot.
    - Replace routing checks that filter out `Resolved`/`Stopped`.
@@ -141,19 +172,19 @@ Prefer one small reviewable slice at a time.
    - Eventually remove `ThreadStatus`, `MarkResolved`, `MarkStopped`, and
      `on_thread_closed`.
 
-3. Add `thread_kind`.
+2. Add `thread_kind`.
    - Update existing initial migration, not a forward migration.
    - Add `thread_kind` to record/input types and store queries.
    - Replace RFC-era `kind` wording in implementation with `thread_kind`.
 
-4. Add lazy invocation API.
+3. Add lazy invocation API.
    - Introduce `ThreadInvocation` and `ThreadTrigger`.
    - Handler receives lightweight record plus trigger.
    - Full snapshot is built only via `ctx.build_thread_snapshot(thread_id)`.
    - Update support-bot user flow to explicitly build snapshot only where
      LLM context needs transcript.
 
-5. Add thread links and linked effects.
+4. Add thread links and linked effects.
    - Add `thread_links` table to the initial migration.
    - Add store APIs for forward and reverse lookups.
    - Add `EnsureLinkedThread`.
@@ -162,7 +193,7 @@ Prefer one small reviewable slice at a time.
    - Move support engineer thread creation out of `MattermostSupportNotifier`
      raw API calls and into effects.
 
-6. Keep raw-post path removed.
+5. Keep raw-post path removed.
    - `execute_raw_post_effects` has been removed from runtime.
    - `ThreadHandler::handle_raw_post` has been removed.
    - `build_raw_engineer_thread_snapshot` is not present.

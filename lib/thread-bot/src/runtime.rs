@@ -96,12 +96,19 @@ pub struct ThreadBotConfig {
 
     /// Maximum gap since the last seen message to attempt reconciliation.
     ///
-    /// If the bot was offline longer than this window, active threads are
-    /// force-closed (status → Stopped) instead of reconciled, and the bot
-    /// starts fresh from the current moment.
+    /// If the bot was offline longer than this window, the channel backlog is
+    /// skipped and the checkpoint is advanced to the latest channel post.
     ///
     /// Default: `None` (no limit — always reconcile)
     pub max_reconcile_window: Option<Duration>,
+
+    /// How long an idle per-thread actor stays alive after all work completes.
+    ///
+    /// `Duration::ZERO` means the actor exits as soon as it has no pending
+    /// work, running handler, or reschedule.
+    ///
+    /// Default: 0 seconds
+    pub actor_idle_timeout: Duration,
 }
 
 impl Default for ThreadBotConfig {
@@ -110,6 +117,7 @@ impl Default for ThreadBotConfig {
             debounce: Duration::from_secs(2),
             channel_buffer: 64,
             max_reconcile_window: None,
+            actor_idle_timeout: Duration::ZERO,
         }
     }
 }
@@ -175,10 +183,15 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
 
     /// Set the maximum reconciliation window.
     ///
-    /// If the bot was offline longer than this, active threads are
-    /// force-closed instead of reconciled.
+    /// If the bot was offline longer than this, channel backlog is skipped.
     pub fn with_max_reconcile_window(mut self, window: Duration) -> Self {
         self.config.max_reconcile_window = Some(window);
+        self
+    }
+
+    /// Set how long idle per-thread actors stay alive after work completes.
+    pub fn with_actor_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.config.actor_idle_timeout = timeout;
         self
     }
 
@@ -712,7 +725,6 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
         mm_config: Arc<Configuration>,
     ) -> mpsc::Sender<ThreadCommand> {
         let (tx, rx) = mpsc::channel(self.config.channel_buffer);
-
         let actors = Arc::clone(&self.actors);
 
         let actor_ctx = ActorCtx {
@@ -726,14 +738,43 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             },
             mm_config,
             debounce: self.config.debounce,
+            actor_idle_timeout: self.config.actor_idle_timeout,
             thread_id: thread_id.clone(),
             bot_user_id: Arc::clone(&self.bot_user_id),
             metrics: self.metrics.clone(),
         };
 
         tokio::spawn(async move {
-            thread_actor(rx, actor_ctx).await;
-            actors.lock().await.remove(&thread_id);
+            let mut rx = rx;
+            loop {
+                thread_actor(&mut rx, &actor_ctx).await;
+
+                let mut actors = actors.lock().await;
+                let Some(current) = actors.get(&thread_id) else {
+                    tracing::debug!(
+                        thread_id = %thread_id,
+                        "Actor registry entry is already absent"
+                    );
+                    break;
+                };
+
+                let sender_count = current.strong_count();
+                if sender_count >= 2 || !rx.is_empty() {
+                    tracing::info!(
+                        thread_id = %thread_id,
+                        queued_commands = rx.len(),
+                        sender_count,
+                        "Actor received or may receive commands during teardown, continuing"
+                    );
+                    drop(actors);
+                    continue;
+                }
+
+                actors.remove(&thread_id);
+                break;
+            }
+
+            tracing::info!(thread_id = %thread_id, "finished actor for thread");
         });
 
         tx
