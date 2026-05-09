@@ -160,17 +160,68 @@ cargo clippy -p thread-bot -- -D warnings
 
 All passed after slice 3.
 
+### Implementation slice 4: move lifecycle checks to L4 metadata
+
+Files touched:
+
+- `lib/thread-bot/src/actor.rs`
+- `lib/thread-bot/src/actor_tests.rs`
+- `lib/thread-bot/src/runtime.rs`
+- `lib/support-bot/src/handler.rs`
+- `lib/support-bot/src/state.rs`
+- `lib/support-bot/src/notifier.rs`
+- `lib/support-bot/src/debug_export.rs`
+
+Changes:
+
+- Removed the actor's pre-handler Mattermost API scan for root control
+  reactions. L3 no longer polls reactions during debounce to discover
+  `MarkResolved`/`MarkStopped` before invoking L4.
+- Changed actor control-reaction handling to execute any L4-returned
+  `ThreadEffect`, not only close effects.
+- Removed runtime routing gates that ignored persisted threads with
+  `ThreadStatus::Resolved` or `ThreadStatus::Stopped`.
+- Existing root posts, replies, and reactions now route based on whether the
+  thread is tracked in storage, not whether Layer 3 considers it active.
+- Added L4 metadata lifecycle checks in support-bot: non-`Active`
+  `SupportThreadState.status` now skips the user workflow and returns `Noop`.
+- Added `SupportThreadStatus::Stopped`.
+- Moved support-bot control-reaction lifecycle behavior into L4 metadata:
+  ✅ sets `support_bot.status = "finished"` and 🛑 sets
+  `support_bot.status = "stopped"` via `SetThreadMetadata`.
+- Added an L4 pre-workflow live root reaction check in support-bot, replacing
+  the removed L3 debounce-time Mattermost API scan without making Layer 3 own
+  the lifecycle decision.
+- Added regression tests proving finished/stopped metadata prevents LLM
+  invocation even though Layer 3 still routes the thread, and proving
+  control-reaction metadata effects are executed.
+- Kept `ThreadStatus`, `MarkResolved`, `MarkStopped`, `on_thread_closed`, and
+  status store APIs in place for a later compatibility-breaking slice. The
+  WebSocket control-reaction path still calls `on_control_reaction`.
+
+Verification run:
+
+```bash
+cargo fmt -p thread-bot --check
+cargo test -p thread-bot
+cargo clippy -p thread-bot -- -D warnings
+cargo fmt -p support-bot --check
+cargo test -p support-bot
+cargo clippy -p support-bot -- -D warnings
+```
+
+All passed after slice 4.
+
 ## Next tasks
 
 Prefer one small reviewable slice at a time.
 
-1. Start removing L3 business lifecycle.
-   - Plan before editing because this touches store schema, handle API,
-     actor effects, tests, and support-bot.
-   - Replace routing checks that filter out `Resolved`/`Stopped`.
-   - Move support-bot lifecycle into its metadata/state.
+1. Continue removing L3 business lifecycle.
+   - Remove remaining support-bot `MarkResolved`/`MarkStopped` emissions from
+     finish and tool-loop-limit paths once equivalent metadata-only effects
+     are in place.
    - Eventually remove `ThreadStatus`, `MarkResolved`, `MarkStopped`, and
-     `on_thread_closed`.
+     `on_thread_closed` from Layer 3.
 
 2. Add `thread_kind`.
    - Update existing initial migration, not a forward migration.

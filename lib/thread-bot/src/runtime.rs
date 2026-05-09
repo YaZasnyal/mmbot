@@ -232,24 +232,19 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
         // Check if thread already exists in DB (idempotency for reconnection replays)
         match self.store.get_thread(&thread_id).await {
             Ok(Some(record)) => {
-                match record.status {
-                    ThreadStatus::New | ThreadStatus::Active => {
-                        // Already tracked — ensure actor exists (may be a new session)
-                        self.ensure_or_spawn_actor(&thread_id, mm_config).await;
-                        // Advance channel checkpoint (harmless if replayed — GREATEST keeps max)
-                        if let Err(e) = self
-                            .store
-                            .advance_channel_checkpoint(&channel_id, &post.id, post_at)
-                            .await
-                        {
-                            tracing::error!(channel_id = %channel_id, error = %e, "Failed to advance channel checkpoint");
-                        }
-                        return;
-                    }
-                    ThreadStatus::Resolved | ThreadStatus::Stopped => {
-                        return;
-                    }
+                // Already tracked — ensure actor exists (may be a new session).
+                // Lifecycle state belongs to Layer 4, so L3 routes any persisted thread.
+                self.ensure_or_spawn_actor(&record.thread_id, mm_config)
+                    .await;
+                // Advance channel checkpoint (harmless if replayed — GREATEST keeps max)
+                if let Err(e) = self
+                    .store
+                    .advance_channel_checkpoint(&channel_id, &post.id, post_at)
+                    .await
+                {
+                    tracing::error!(channel_id = %channel_id, error = %e, "Failed to advance channel checkpoint");
                 }
+                return;
             }
             Ok(None) => {
                 // Not tracked yet — proceed with should_track
@@ -370,14 +365,6 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             }
         };
 
-        // Only process active threads
-        if !matches!(
-            thread_record.status,
-            ThreadStatus::New | ThreadStatus::Active
-        ) {
-            return;
-        }
-
         // Advance channel checkpoint (covers both bot and user messages)
         let post_at = post
             .create_at
@@ -467,14 +454,6 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
                 return;
             }
         };
-
-        // Only process active threads
-        if !matches!(
-            thread_record.status,
-            ThreadStatus::New | ThreadStatus::Active
-        ) {
-            return;
-        }
 
         let created_at = ms_to_datetime(create_at);
         let change = ReactionChange {

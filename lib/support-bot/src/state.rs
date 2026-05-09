@@ -22,6 +22,7 @@ pub enum SupportThreadStatus {
     #[default]
     Active,
     Finished,
+    Stopped,
 }
 
 impl Default for SupportThreadState {

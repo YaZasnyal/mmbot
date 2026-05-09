@@ -548,6 +548,7 @@ fn support_status_label(status: &SupportThreadStatus) -> &'static str {
     match status {
         SupportThreadStatus::Active => "active",
         SupportThreadStatus::Finished => "finished",
+        SupportThreadStatus::Stopped => "stopped",
     }
 }
 

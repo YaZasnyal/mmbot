@@ -1,6 +1,6 @@
 use crate::config::SupportBotConfig;
 use crate::conversation::{
-    build_llm_messages, load_state, result_to_message, truncate_utf8, STATE_KEY,
+    build_llm_messages, load_state, result_to_message, store_state, truncate_utf8, STATE_KEY,
 };
 use crate::debug::{DebugCommand, DebugCommandHandler};
 use crate::debug_export::handle_debug_export_html;
@@ -8,18 +8,21 @@ use crate::llm::{LlmClient, LlmRequest};
 use crate::metrics::SupportBotMetricsHandle;
 use crate::notifier::MattermostSupportNotifier;
 use crate::output::sanitize_user_visible_message;
+use crate::state::SupportThreadStatus;
 use crate::tools::ToolCall;
 use crate::tools::{ToolContext, ToolExecutionOutcome, ToolRegistry, ToolResult};
 use crate::user_thread_run::StopAfterTools;
 use crate::user_thread_run::UserThreadRun;
 use crate::workflow::apply_action;
 use async_trait::async_trait;
+use chrono::Utc;
+use mattermost_api::apis::reactions_api;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Instant;
 use thread_bot::{
-    Thread, ThreadBotError, ThreadCloseReason, ThreadContext, ThreadEffect, ThreadHandler,
-    ThreadMessage,
+    ReactionAction, ReactionChange, Thread, ThreadBotError, ThreadCloseReason, ThreadContext,
+    ThreadEffect, ThreadHandler, ThreadMessage, ThreadRecord,
 };
 use tracing::{debug, info, warn, Instrument, Span};
 
@@ -166,6 +169,20 @@ impl SupportBotHandler {
         info!("support-bot: handling user thread message");
 
         let mut state = load_state(&thread.info.metadata)?;
+        if !matches!(state.status, SupportThreadStatus::Active) {
+            info!(
+                status = ?state.status,
+                finished_summary = state.finished_summary.as_deref(),
+                "support-bot: user thread is not active in metadata; skipping workflow"
+            );
+            return Ok(vec![ThreadEffect::Noop]);
+        }
+
+        if let Some(effect) = self.live_control_reaction_effect(thread, ctx).await {
+            info!("support-bot: live control reaction found; persisting metadata status");
+            return Ok(vec![effect]);
+        }
+
         if let Some(engineer_thread) = self
             .engineer_notifier(ctx)
             .ensure_engineer_thread(thread, state.engineer_thread.as_ref())
@@ -490,6 +507,100 @@ impl SupportBotHandler {
             self.config.engineer_notifications.target.clone(),
         )
     }
+
+    async fn live_control_reaction_effect(
+        &self,
+        thread: &Thread,
+        ctx: &ThreadContext,
+    ) -> Option<ThreadEffect> {
+        let reactions =
+            match reactions_api::get_reactions(&ctx.config, &thread.info.root_post_id).await {
+                Ok(reactions) => reactions,
+                Err(error) => {
+                    debug!(
+                        thread_id = %thread.info.thread_id,
+                        root_post_id = %thread.info.root_post_id,
+                        error = %error,
+                        "support-bot: failed to fetch live control reactions"
+                    );
+                    return None;
+                }
+            };
+
+        for reaction in reactions {
+            let (Some(user_id), Some(emoji_name)) = (reaction.user_id, reaction.emoji_name) else {
+                continue;
+            };
+            let change = ReactionChange {
+                post_id: thread.info.root_post_id.clone(),
+                user_id,
+                emoji_name,
+                action: ReactionAction::Added,
+                created_at: reaction
+                    .create_at
+                    .and_then(chrono::DateTime::from_timestamp_millis)
+                    .unwrap_or_else(Utc::now),
+            };
+            if let Some(effect) = self.support_control_reaction_effect(
+                &thread.info.channel_id,
+                &thread.info.thread_id,
+                &thread.info.metadata,
+                &change,
+            ) {
+                return Some(effect);
+            }
+        }
+
+        None
+    }
+
+    fn support_control_reaction_effect(
+        &self,
+        channel_id: &str,
+        thread_id: &str,
+        metadata: &serde_json::Value,
+        change: &ReactionChange,
+    ) -> Option<ThreadEffect> {
+        if !matches!(self.route(channel_id), SupportRoute::User) {
+            return None;
+        }
+
+        let status = match (&change.action, change.emoji_name.as_str()) {
+            (ReactionAction::Added, "white_check_mark") => SupportThreadStatus::Finished,
+            (ReactionAction::Added, "stop_sign") => SupportThreadStatus::Stopped,
+            _ => return None,
+        };
+
+        let mut state = match load_state(metadata) {
+            Ok(state) => state,
+            Err(error) => {
+                warn!(
+                    thread_id = %thread_id,
+                    post_id = %change.post_id,
+                    error = %error,
+                    "support-bot: failed to load state for control reaction"
+                );
+                return None;
+            }
+        };
+        if matches!(status, SupportThreadStatus::Finished) && state.finished_summary.is_none() {
+            state.finished_summary = Some("resolved by control reaction".to_string());
+        }
+        state.status = status;
+
+        match store_state(metadata, &state) {
+            Ok(metadata) => Some(ThreadEffect::SetThreadMetadata { metadata }),
+            Err(error) => {
+                warn!(
+                    thread_id = %thread_id,
+                    post_id = %change.post_id,
+                    error = %error,
+                    "support-bot: failed to store state for control reaction"
+                );
+                None
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -536,6 +647,19 @@ impl ThreadHandler for SupportBotHandler {
         self.metrics
             .observe_handle_duration(route_label, outcome, started.elapsed());
         result
+    }
+
+    fn on_control_reaction(
+        &self,
+        thread_record: &ThreadRecord,
+        change: &ReactionChange,
+    ) -> Option<ThreadEffect> {
+        self.support_control_reaction_effect(
+            &thread_record.channel_id,
+            &thread_record.thread_id,
+            &thread_record.metadata,
+            change,
+        )
     }
 
     async fn on_thread_closed(
@@ -661,20 +785,20 @@ mod tests {
     use crate::debug::DebugResponse;
     use crate::debug_export::source_user_thread_id;
     use crate::llm::{ChatMessage, ChatRole, LlmResponse};
-    use crate::state::{EngineerThreadRef, SupportThreadState};
+    use crate::state::{EngineerThreadRef, SupportThreadState, SupportThreadStatus};
     use crate::testutil::PanicStore;
     use crate::tools::{
         register_default_workflow_tools, SupportTool, ToolCall, ToolContext, ToolExecutionOutcome,
         ToolKind, ToolResult, ToolSpec,
     };
     use async_trait::async_trait;
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::Duration;
-    use thread_bot::{ThreadInfo, ThreadMessage, ThreadStatus};
+    use thread_bot::{ThreadInfo, ThreadMessage, ThreadRecord, ThreadStatus};
 
     struct StaticLlm;
 
@@ -818,6 +942,24 @@ mod tests {
                 is_new: true,
             }],
             reactions: Vec::new(),
+        }
+    }
+
+    fn thread_record(channel_id: &str, metadata: serde_json::Value) -> ThreadRecord {
+        let now: DateTime<Utc> = Utc::now();
+        ThreadRecord {
+            thread_id: "thread-1".to_string(),
+            root_post_id: "post-1".to_string(),
+            channel_id: channel_id.to_string(),
+            creator_user_id: "user-1".to_string(),
+            status: ThreadStatus::Active,
+            metadata,
+            last_seen_post_id: None,
+            last_seen_post_at: None,
+            last_processed_post_id: None,
+            last_processed_post_at: None,
+            created_at: now,
+            updated_at: now,
         }
     }
 
@@ -1277,6 +1419,115 @@ mod tests {
         assert!(effects
             .iter()
             .any(|effect| matches!(effect, ThreadEffect::MarkStopped)));
+    }
+
+    #[tokio::test]
+    async fn finished_user_thread_metadata_skips_workflow() {
+        let llm = Arc::new(SequenceLlm::new(vec![LlmResponse {
+            message: ChatMessage::assistant("should not run"),
+            tool_calls: Vec::new(),
+        }]));
+        let handler = SupportBotHandler::new(
+            "support",
+            test_config(),
+            llm.clone(),
+            Arc::new(ToolRegistry::new()),
+            "system",
+        );
+        let mut thread = thread("users", "new reply after finish");
+        thread.info.metadata = store_state(
+            &json!({}),
+            &SupportThreadState {
+                status: SupportThreadStatus::Finished,
+                finished_summary: Some("done".to_string()),
+                ..SupportThreadState::default()
+            },
+        )
+        .unwrap();
+
+        let effects = handler.handle(&thread, &context()).await.unwrap();
+
+        assert_eq!(llm.requests().len(), 0);
+        assert!(matches!(effects.as_slice(), [ThreadEffect::Noop]));
+    }
+
+    #[tokio::test]
+    async fn stopped_user_thread_metadata_skips_workflow() {
+        let llm = Arc::new(SequenceLlm::new(vec![LlmResponse {
+            message: ChatMessage::assistant("should not run"),
+            tool_calls: Vec::new(),
+        }]));
+        let handler = SupportBotHandler::new(
+            "support",
+            test_config(),
+            llm.clone(),
+            Arc::new(ToolRegistry::new()),
+            "system",
+        );
+        let mut thread = thread("users", "new reply after stop");
+        thread.info.metadata = store_state(
+            &json!({}),
+            &SupportThreadState {
+                status: SupportThreadStatus::Stopped,
+                ..SupportThreadState::default()
+            },
+        )
+        .unwrap();
+
+        let effects = handler.handle(&thread, &context()).await.unwrap();
+
+        assert_eq!(llm.requests().len(), 0);
+        assert!(matches!(effects.as_slice(), [ThreadEffect::Noop]));
+    }
+
+    #[test]
+    fn control_reactions_update_support_status_metadata() {
+        let handler = SupportBotHandler::new(
+            "support",
+            test_config(),
+            Arc::new(StaticLlm),
+            Arc::new(ToolRegistry::new()),
+            "system",
+        );
+        let record = thread_record("users", json!({}));
+
+        let resolved = handler
+            .on_control_reaction(
+                &record,
+                &ReactionChange {
+                    post_id: "post-1".to_string(),
+                    user_id: "user-2".to_string(),
+                    emoji_name: "white_check_mark".to_string(),
+                    action: ReactionAction::Added,
+                    created_at: Utc::now(),
+                },
+            )
+            .expect("white_check_mark should update support status");
+        let ThreadEffect::SetThreadMetadata { metadata } = resolved else {
+            panic!("expected SetThreadMetadata");
+        };
+        assert_eq!(metadata[STATE_KEY]["status"], "finished");
+        assert_eq!(
+            metadata[STATE_KEY]["finished_summary"],
+            "resolved by control reaction"
+        );
+
+        let stopped = handler
+            .on_control_reaction(
+                &record,
+                &ReactionChange {
+                    post_id: "post-1".to_string(),
+                    user_id: "user-2".to_string(),
+                    emoji_name: "stop_sign".to_string(),
+                    action: ReactionAction::Added,
+                    created_at: Utc::now(),
+                },
+            )
+            .expect("stop_sign should update support status");
+        let ThreadEffect::SetThreadMetadata { metadata } = stopped else {
+            panic!("expected SetThreadMetadata");
+        };
+        assert_eq!(metadata[STATE_KEY]["status"], "stopped");
     }
 
     #[tokio::test]

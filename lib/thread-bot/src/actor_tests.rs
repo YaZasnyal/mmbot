@@ -659,6 +659,40 @@ async fn actor_control_reaction_interrupts_handler() {
 }
 
 #[tokio::test]
+async fn actor_control_reaction_executes_metadata_effect() {
+    let handler = MockHandler::new();
+
+    let post = make_mm_post("thread1", "user_1", "root", None);
+    let (tx, store, _handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
+
+    tx.send(ThreadCommand::ControlReaction {
+        effect: ThreadEffect::SetThreadMetadata {
+            metadata: serde_json::json!({
+                "support_bot": {
+                    "status": "finished"
+                }
+            }),
+        },
+        change: ReactionChange {
+            post_id: "thread1".into(),
+            user_id: "user_2".into(),
+            emoji_name: "white_check_mark".into(),
+            action: ReactionAction::Added,
+            created_at: Utc::now(),
+        },
+    })
+    .await
+    .unwrap();
+
+    settle().await;
+
+    let thread = store.thread_snapshot("thread1").await.unwrap();
+    assert_eq!(thread.metadata["support_bot"]["status"], "finished");
+    assert!(!tx.is_closed());
+}
+
+#[tokio::test]
 async fn actor_multiple_effects_in_one_return() {
     let handler = MockHandler::new().with_default_effects(vec![
         ThreadEffect::Reply {
