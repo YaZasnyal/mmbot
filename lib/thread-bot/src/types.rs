@@ -182,6 +182,7 @@ pub struct UpsertThreadMessage {
 #[derive(Debug, Clone)]
 pub struct ChannelCheckpoint {
     pub channel_id: String,
+    pub last_seen_post_id: String,
     pub last_seen_post_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub is_reconciled: bool,

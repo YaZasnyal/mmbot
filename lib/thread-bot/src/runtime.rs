@@ -53,10 +53,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 use mattermost_api::apis::configuration::Configuration;
-use mattermost_api::apis::{posts_api, users_api};
+use mattermost_api::apis::users_api;
 use mattermost_api::models;
 use mattermost_bot::plugin::Event;
 use mattermost_bot::types::EventType;
@@ -68,6 +69,8 @@ use crate::actor::{
     get_root_post_id, is_root_post, ms_to_datetime, post_to_thread_message, thread_actor, ActorCtx,
     ThreadCommand,
 };
+use crate::channel_messages::{channel_messages_after, latest_channel_post};
+use crate::error::ThreadBotError;
 use crate::handler::{ThreadContext, ThreadHandler};
 use crate::metrics::ThreadBotMetricsHandle;
 use crate::store::ThreadStore;
@@ -223,7 +226,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
                         // Advance channel checkpoint (harmless if replayed — GREATEST keeps max)
                         if let Err(e) = self
                             .store
-                            .advance_channel_checkpoint(&channel_id, post_at)
+                            .advance_channel_checkpoint(&channel_id, &post.id, post_at)
                             .await
                         {
                             tracing::error!(channel_id = %channel_id, error = %e, "Failed to advance channel checkpoint");
@@ -313,7 +316,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
         // Register channel checkpoint (first tracked message in this channel)
         if let Err(e) = self
             .store
-            .upsert_channel_checkpoint(&channel_id, post_at)
+            .upsert_channel_checkpoint(&channel_id, &post.id, post_at)
             .await
         {
             tracing::error!(channel_id = %channel_id, error = %e, "Failed to upsert channel checkpoint");
@@ -369,7 +372,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             .unwrap_or_else(chrono::Utc::now);
         if let Err(e) = self
             .store
-            .advance_channel_checkpoint(&thread_record.channel_id, post_at)
+            .advance_channel_checkpoint(&thread_record.channel_id, &post.id, post_at)
             .await
         {
             tracing::error!(
@@ -540,8 +543,8 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
     ///
     /// 1. Snapshot channel checkpoints from DB (timestamps won't move during
     ///    reconciliation because `is_reconciled` is set to `false`).
-    /// 2. Load active threads → ensure actors exist → send `Reconcile`.
-    /// 3. Scan each checkpointed channel for root posts missed during downtime.
+    /// 2. Scan each checkpointed channel for posts missed during downtime.
+    /// 3. Replay each missed post through the normal post routing path.
     /// 4. Mark each channel as reconciled — normal processing resumes advancing
     ///    the checkpoint.
     async fn reconcile(&self, config: &Arc<Configuration>) {
@@ -561,133 +564,75 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             tracing::error!(error = %e, "Failed to mark channels as not reconciled");
         }
 
-        let threads = match self
-            .store
-            .list_threads_by_status(&[ThreadStatus::New, ThreadStatus::Active], None, None)
-            .await
-        {
-            Ok(threads) => threads,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to load active threads for reconciliation");
-                // Still mark channels reconciled so normal flow resumes
-                self.mark_all_channels_reconciled(&checkpoints).await;
-                return;
-            }
-        };
-
-        // Use the oldest checkpoint timestamp for max_reconcile_window check
-        let oldest_checkpoint = checkpoints.iter().map(|cp| cp.last_seen_post_at).min();
-
-        // If the gap exceeds max_reconcile_window, force-close everything
-        // and start fresh instead of replaying a huge backlog.
-        if let (Some(window), Some(since)) = (self.config.max_reconcile_window, oldest_checkpoint) {
-            let gap = chrono::Utc::now() - since;
-            if let Ok(window_chrono) = chrono::Duration::from_std(window) {
-                if gap > window_chrono {
-                    tracing::warn!(
-                        gap_secs = gap.num_seconds(),
-                        window_secs = window_chrono.num_seconds(),
-                        threads = threads.len(),
-                        "Reconciliation gap exceeds max window, force-closing active threads"
-                    );
-                    for thread in &threads {
-                        if let Err(e) = self
-                            .store
-                            .update_thread_status(&thread.thread_id, ThreadStatus::Stopped)
-                            .await
-                        {
-                            tracing::error!(
-                                thread_id = %thread.thread_id,
-                                error = %e,
-                                "Failed to force-close thread"
-                            );
-                        }
-                    }
-                    // Mark all channels reconciled so normal flow resumes
-                    self.mark_all_channels_reconciled(&checkpoints).await;
-                    return;
-                }
-            }
-        }
-
-        // Ensure actors exist (idempotent on reconnect) and send Reconcile
-        if !threads.is_empty() {
-            let mut senders = Vec::with_capacity(threads.len());
-            for thread in &threads {
-                let tx = self.ensure_or_spawn_actor(&thread.thread_id, config).await;
-                senders.push((thread.thread_id.clone(), tx));
-            }
-
-            for (thread_id, tx) in &senders {
-                if let Err(e) = tx.send(ThreadCommand::Reconcile).await {
-                    tracing::error!(
-                        thread_id = %thread_id,
-                        error = %e,
-                        "Failed to send reconcile to actor"
-                    );
-                }
-            }
-
-            tracing::info!(count = senders.len(), "Reconciled active threads");
-        }
-
-        // Scan each checkpointed channel for new threads missed during downtime
+        // Scan each checkpointed channel for posts missed during downtime.
+        // Reconciliation is proportional to missed posts, not tracked threads:
+        // old closed/stale/debug threads do not spawn actors unless a new
+        // message for that specific thread is replayed.
         if !checkpoints.is_empty() {
             tracing::info!(
                 channels = checkpoints.len(),
-                "Scanning channels for missed threads"
+                "Scanning channels for missed posts"
             );
 
             for cp in &checkpoints {
-                let since_ms = cp.last_seen_post_at.timestamp_millis();
-
-                let post_list = match posts_api::get_posts_for_channel(
-                    config,
-                    &cp.channel_id,
-                    None,
-                    Some(200),
-                    Some(since_ms),
-                    None,
-                    None,
-                    None,
-                )
-                .await
-                {
-                    Ok(pl) => pl,
-                    Err(e) => {
-                        tracing::error!(
-                            channel_id = %cp.channel_id,
-                            error = %e,
-                            "Failed to scan channel for missed threads"
-                        );
-                        // Mark this channel reconciled anyway to unblock normal flow
-                        if let Err(e) = self.store.set_channel_reconciled(&cp.channel_id).await {
-                            tracing::error!(channel_id = %cp.channel_id, error = %e, "Failed to mark channel reconciled");
-                        }
-                        continue;
+                if self.reconcile_gap_exceeds_window(cp) {
+                    let now = chrono::Utc::now();
+                    tracing::warn!(
+                        channel_id = %cp.channel_id,
+                        last_seen_post_at = %cp.last_seen_post_at,
+                        skipped_to = %now,
+                        "Reconciliation gap exceeds max window, skipping backlog"
+                    );
+                    if let Err(e) = self
+                        .advance_skipped_reconciliation_checkpoint(config, cp, now)
+                        .await
+                    {
+                        tracing::error!(channel_id = %cp.channel_id, error = %e, "Failed to advance skipped reconciliation checkpoint");
                     }
-                };
+                    if let Err(e) = self.store.set_channel_reconciled(&cp.channel_id).await {
+                        tracing::error!(channel_id = %cp.channel_id, error = %e, "Failed to mark channel reconciled");
+                    }
+                    continue;
+                }
 
-                if let (Some(order), Some(posts)) = (post_list.order, post_list.posts) {
-                    for post_id in &order {
-                        if let Some(post) = posts.get(post_id) {
-                            if !is_root_post(post) {
-                                continue;
-                            }
-                            match self.store.get_thread(&post.id).await {
-                                Ok(Some(_)) => continue,
-                                Ok(None) => {}
-                                Err(e) => {
-                                    tracing::error!(
-                                        post_id = %post.id,
-                                        error = %e,
-                                        "Failed to check thread existence during scan"
-                                    );
-                                    continue;
-                                }
-                            }
-                            self.handle_new_thread(post, config).await;
+                let mut channel_messages = channel_messages_after(Arc::clone(config), cp);
+                let mut replayed_count = 0usize;
+                let mut last_replayed = None;
+
+                while let Some(result) = channel_messages.next().await {
+                    let post = match result {
+                        Ok(post) => post,
+                        Err(e) => {
+                            tracing::error!(
+                                channel_id = %cp.channel_id,
+                                error = %e,
+                                "Failed to scan channel for missed posts"
+                            );
+                            break;
                         }
+                    };
+                    self.handle_replayed_post(&post, config).await;
+                    replayed_count += 1;
+                    last_replayed = Some(post);
+                }
+
+                tracing::info!(
+                    channel_id = %cp.channel_id,
+                    count = replayed_count,
+                    "Replayed missed posts"
+                );
+
+                if let Some(post) = last_replayed.as_ref() {
+                    let post_at = post
+                        .create_at
+                        .map(ms_to_datetime)
+                        .unwrap_or_else(chrono::Utc::now);
+                    if let Err(e) = self
+                        .store
+                        .upsert_channel_checkpoint(&cp.channel_id, &post.id, post_at)
+                        .await
+                    {
+                        tracing::error!(channel_id = %cp.channel_id, error = %e, "Failed to advance reconciled channel checkpoint");
                     }
                 }
 
@@ -699,13 +644,41 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
         }
     }
 
-    /// Helper: mark all checkpointed channels as reconciled.
-    async fn mark_all_channels_reconciled(&self, checkpoints: &[crate::types::ChannelCheckpoint]) {
-        for cp in checkpoints {
-            if let Err(e) = self.store.set_channel_reconciled(&cp.channel_id).await {
-                tracing::error!(channel_id = %cp.channel_id, error = %e, "Failed to mark channel reconciled");
-            }
+    async fn handle_replayed_post(&self, post: &models::Post, mm_config: &Arc<Configuration>) {
+        if is_root_post(post) {
+            self.handle_new_thread(post, mm_config).await;
+        } else {
+            let root_post_id = get_root_post_id(post);
+            self.handle_thread_reply(post, root_post_id, mm_config)
+                .await;
         }
+    }
+
+    fn reconcile_gap_exceeds_window(&self, checkpoint: &ChannelCheckpoint) -> bool {
+        let Some(window) = self.config.max_reconcile_window else {
+            return false;
+        };
+
+        let Ok(window_chrono) = chrono::Duration::from_std(window) else {
+            return false;
+        };
+
+        chrono::Utc::now() - checkpoint.last_seen_post_at > window_chrono
+    }
+
+    async fn advance_skipped_reconciliation_checkpoint(
+        &self,
+        config: &Arc<Configuration>,
+        checkpoint: &ChannelCheckpoint,
+        skipped_to: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), ThreadBotError> {
+        let Some(post) = latest_channel_post(config, &checkpoint.channel_id).await? else {
+            return Ok(());
+        };
+        let post_at = post.create_at.map(ms_to_datetime).unwrap_or(skipped_to);
+        self.store
+            .upsert_channel_checkpoint(&checkpoint.channel_id, &post.id, post_at)
+            .await
     }
 
     // ── Actor management ─────────────────────────────────────────────────

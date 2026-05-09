@@ -56,6 +56,7 @@ CREATE INDEX idx_thread_reactions_emoji_name ON thread_reactions(emoji_name);
 
 CREATE TABLE channel_checkpoints (
     channel_id TEXT PRIMARY KEY,
+    last_seen_post_id TEXT NOT NULL,
     last_seen_post_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     is_reconciled BOOLEAN NOT NULL

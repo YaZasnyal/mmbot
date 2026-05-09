@@ -108,14 +108,16 @@ pub trait ThreadStore: Send + Sync + 'static {
     /// Insert or update a channel checkpoint.
     ///
     /// On insert, sets `is_reconciled = true` (normal operation).
-    /// On conflict, updates `last_seen_post_at` only if it's newer.
+    /// On conflict, updates the post cursor when `last_seen_post_at` is not
+    /// older than the stored checkpoint.
     async fn upsert_channel_checkpoint(
         &self,
         channel_id: &str,
+        last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError>;
 
-    /// Advance checkpoint timestamp, but only when `is_reconciled = true`.
+    /// Advance checkpoint cursor, but only when `is_reconciled = true`.
     ///
     /// During reconciliation (`is_reconciled = false`) updates are skipped
     /// to prevent normal message processing from moving the checkpoint
@@ -123,6 +125,7 @@ pub trait ThreadStore: Send + Sync + 'static {
     async fn advance_channel_checkpoint(
         &self,
         channel_id: &str,
+        last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError>;
 

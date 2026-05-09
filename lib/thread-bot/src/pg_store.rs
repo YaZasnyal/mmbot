@@ -499,7 +499,7 @@ impl ThreadStore for PgThreadStore {
 
     async fn list_channel_checkpoints(&self) -> Result<Vec<ChannelCheckpoint>, ThreadBotError> {
         let rows: Vec<CheckpointRow> = sqlx::query_as(
-            "SELECT channel_id, last_seen_post_at, updated_at, is_reconciled FROM channel_checkpoints",
+            "SELECT channel_id, last_seen_post_id, last_seen_post_at, updated_at, is_reconciled FROM channel_checkpoints",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -510,20 +510,27 @@ impl ThreadStore for PgThreadStore {
     async fn upsert_channel_checkpoint(
         &self,
         channel_id: &str,
+        last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
         let now = Utc::now();
 
         sqlx::query(
             r#"
-            INSERT INTO channel_checkpoints (channel_id, last_seen_post_at, updated_at, is_reconciled)
-            VALUES ($1, $2, $3, true)
+            INSERT INTO channel_checkpoints (channel_id, last_seen_post_id, last_seen_post_at, updated_at, is_reconciled)
+            VALUES ($1, $2, $3, $4, true)
             ON CONFLICT (channel_id) DO UPDATE SET
+                last_seen_post_id = CASE
+                    WHEN EXCLUDED.last_seen_post_at >= channel_checkpoints.last_seen_post_at
+                    THEN EXCLUDED.last_seen_post_id
+                    ELSE channel_checkpoints.last_seen_post_id
+                END,
                 last_seen_post_at = GREATEST(channel_checkpoints.last_seen_post_at, EXCLUDED.last_seen_post_at),
                 updated_at = EXCLUDED.updated_at
             "#,
         )
         .bind(channel_id)
+        .bind(last_seen_post_id)
         .bind(last_seen_post_at)
         .bind(now)
         .execute(&self.pool)
@@ -535,6 +542,7 @@ impl ThreadStore for PgThreadStore {
     async fn advance_channel_checkpoint(
         &self,
         channel_id: &str,
+        last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
         let now = Utc::now();
@@ -542,12 +550,16 @@ impl ThreadStore for PgThreadStore {
         sqlx::query(
             r#"
             UPDATE channel_checkpoints
-            SET last_seen_post_at = GREATEST(last_seen_post_at, $2),
-                updated_at = $3
-            WHERE channel_id = $1 AND is_reconciled = true
+            SET last_seen_post_id = $2,
+                last_seen_post_at = GREATEST(last_seen_post_at, $3),
+                updated_at = $4
+            WHERE channel_id = $1
+              AND is_reconciled = true
+              AND $3 >= last_seen_post_at
             "#,
         )
         .bind(channel_id)
+        .bind(last_seen_post_id)
         .bind(last_seen_post_at)
         .bind(now)
         .execute(&self.pool)
@@ -582,6 +594,7 @@ impl ThreadStore for PgThreadStore {
 #[derive(FromRow)]
 struct CheckpointRow {
     channel_id: String,
+    last_seen_post_id: String,
     last_seen_post_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     is_reconciled: bool,
@@ -591,6 +604,7 @@ impl From<CheckpointRow> for ChannelCheckpoint {
     fn from(row: CheckpointRow) -> Self {
         Self {
             channel_id: row.channel_id,
+            last_seen_post_id: row.last_seen_post_id,
             last_seen_post_at: row.last_seen_post_at,
             updated_at: row.updated_at,
             is_reconciled: row.is_reconciled,

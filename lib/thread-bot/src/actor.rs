@@ -41,6 +41,7 @@ pub(crate) enum ThreadCommand {
 
     /// Startup reconciliation — triggers a debounced handler run to pick up
     /// messages that arrived while the bot was offline.
+    #[allow(dead_code)]
     Reconcile,
 
     /// Graceful shutdown signal.

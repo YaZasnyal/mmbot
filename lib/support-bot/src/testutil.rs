@@ -114,6 +114,7 @@ impl ThreadStore for PanicStore {
     async fn upsert_channel_checkpoint(
         &self,
         _channel_id: &str,
+        _last_seen_post_id: &str,
         _last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
         panic!("store should not be used")
@@ -122,6 +123,7 @@ impl ThreadStore for PanicStore {
     async fn advance_channel_checkpoint(
         &self,
         _channel_id: &str,
+        _last_seen_post_id: &str,
         _last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
         panic!("store should not be used")

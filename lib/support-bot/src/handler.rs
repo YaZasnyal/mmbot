@@ -503,9 +503,9 @@ impl ThreadHandler for SupportBotHandler {
         thread: &Thread,
         _ctx: &ThreadContext,
     ) -> Result<bool, ThreadBotError> {
-        Ok(!matches!(
+        Ok(matches!(
             self.route(&thread.info.channel_id),
-            SupportRoute::Ignored
+            SupportRoute::User
         ))
     }
 
@@ -838,6 +838,26 @@ mod tests {
             plugin_id: "test",
             bot_user_id: Some("bot".to_string()),
         }
+    }
+
+    #[tokio::test]
+    async fn should_track_only_user_threads() {
+        let handler = SupportBotHandler::new(
+            "support",
+            test_config(),
+            Arc::new(StaticLlm),
+            Arc::new(ToolRegistry::new()),
+            "system",
+        );
+
+        assert!(handler
+            .should_track(&thread("users", "help"), &context())
+            .await
+            .unwrap());
+        assert!(!handler
+            .should_track(&thread("engineers", "!support state"), &context())
+            .await
+            .unwrap());
     }
 
     #[tokio::test]

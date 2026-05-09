@@ -332,6 +332,7 @@ impl ThreadStore for MockStore {
     async fn upsert_channel_checkpoint(
         &self,
         channel_id: &str,
+        last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
         let mut state = self.state.write().await;
@@ -341,11 +342,13 @@ impl ThreadStore for MockStore {
             .entry(channel_id.to_string())
             .or_insert_with(|| ChannelCheckpoint {
                 channel_id: channel_id.to_string(),
+                last_seen_post_id: last_seen_post_id.to_string(),
                 last_seen_post_at,
                 updated_at: now,
                 is_reconciled: true,
             });
-        if last_seen_post_at > entry.last_seen_post_at {
+        if last_seen_post_at >= entry.last_seen_post_at {
+            entry.last_seen_post_id = last_seen_post_id.to_string();
             entry.last_seen_post_at = last_seen_post_at;
             entry.updated_at = now;
         }
@@ -355,11 +358,13 @@ impl ThreadStore for MockStore {
     async fn advance_channel_checkpoint(
         &self,
         channel_id: &str,
+        last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
         let mut state = self.state.write().await;
         if let Some(cp) = state.checkpoints.get_mut(channel_id) {
-            if cp.is_reconciled && last_seen_post_at > cp.last_seen_post_at {
+            if cp.is_reconciled && last_seen_post_at >= cp.last_seen_post_at {
+                cp.last_seen_post_id = last_seen_post_id.to_string();
                 cp.last_seen_post_at = last_seen_post_at;
                 cp.updated_at = Utc::now();
             }

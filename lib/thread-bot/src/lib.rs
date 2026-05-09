@@ -1,5 +1,6 @@
 // Public API
 mod actor;
+mod channel_messages;
 pub mod error;
 pub mod handle;
 pub mod handler;
