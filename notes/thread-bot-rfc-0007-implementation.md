@@ -22,19 +22,8 @@ High-level target:
 
 ## Current working tree note
 
-As of this note, the tree is already dirty. Do not assume every modified file
-belongs to the current slice.
-
-Known modified files:
-
-- `rfcs/0007-passive-thread-effects.md`
-- `lib/thread-bot/src/runtime.rs`
-- `lib/thread-bot/src/actor.rs`
-- `lib/thread-bot/src/handler.rs`
-- `lib/support-bot/src/handler.rs`
-
-Treat unrelated existing changes as user/previous-session work. Do not revert
-them.
+As of this note, implementation slice 1 was committed and the working tree was
+clean. Still verify with `git status --short` before starting the next slice.
 
 ## Done
 
@@ -89,8 +78,6 @@ Changes:
 - `max_reconcile_window` now skips a channel backlog by advancing the channel
   checkpoint to the latest channel post; it does not force-close any threads.
 - Removed raw-post execution support from runtime and `ThreadHandler`.
-- `ThreadCommand::Reconcile` is temporarily left in actor code with
-  `#[allow(dead_code)]` because actor-level legacy tests still cover it.
 
 Verification run:
 
@@ -102,31 +89,51 @@ cargo clippy -p thread-bot -- -D warnings
 
 All passed after slice 1.
 
+### Checkpoint-driven reconciliation follow-up
+
+The checkpoint/stream reconciliation task is considered solved for now. A
+separate focused runtime-test slice was discussed, but we are intentionally not
+blocking the refactor on it before removing the legacy actor-level
+reconciliation path.
+
+### Implementation slice 2: remove actor-level reconciliation
+
+Files touched:
+
+- `lib/thread-bot/src/actor.rs`
+- `lib/thread-bot/src/actor_tests.rs`
+
+Changes:
+
+- Removed `ThreadCommand::Reconcile`.
+- Removed `ReconcileOutcome` and `handle_reconcile`.
+- Removed actor tests that only validated the old reconnect reconciliation
+  command.
+- Kept live API control-reaction checks in the normal debounce path.
+- Runtime-level reconciliation remains channel checkpoint/post driven.
+
+Verification run:
+
+```bash
+cargo fmt -p thread-bot --check
+cargo test -p thread-bot
+cargo clippy -p thread-bot -- -D warnings
+```
+
+All passed after slice 2.
+
 ## Next tasks
 
 Prefer one small reviewable slice at a time.
 
-1. Add focused runtime tests for checkpoint-driven reconciliation.
-   - Reconnect does not call thread-list APIs.
-   - Missed root post runs tracking decision.
-   - Missed reply in a known thread spawns only that thread actor.
-   - Bot-authored missed post is persisted but does not trigger handler.
-   - `max_reconcile_window` advances checkpoint without thread status updates.
-
-2. Remove legacy actor-level reconciliation path.
-   - Remove `ThreadCommand::Reconcile`.
-   - Remove `ReconcileOutcome` and `handle_reconcile`.
-   - Remove actor tests that only validate old reconnect reconciliation.
-   - Keep normal `NewMessage` reconciliation coverage in runtime tests.
-
-3. Introduce `actor_idle_timeout`.
+1. Introduce `actor_idle_timeout`.
    - Add config field with `Duration::ZERO` default.
    - Make actor exit after quiescence when timeout expires.
    - Ensure no exit while pending work, handler running, or reschedule pending.
    - Remove actor from `actors` map when it exits, or make sender cleanup
      robust enough that next event respawns.
 
-4. Start removing L3 business lifecycle.
+2. Start removing L3 business lifecycle.
    - Plan before editing because this touches store schema, handle API,
      actor effects, tests, and support-bot.
    - Replace routing checks that filter out `Resolved`/`Stopped`.
@@ -134,19 +141,19 @@ Prefer one small reviewable slice at a time.
    - Eventually remove `ThreadStatus`, `MarkResolved`, `MarkStopped`, and
      `on_thread_closed`.
 
-5. Add `thread_kind`.
+3. Add `thread_kind`.
    - Update existing initial migration, not a forward migration.
    - Add `thread_kind` to record/input types and store queries.
    - Replace RFC-era `kind` wording in implementation with `thread_kind`.
 
-6. Add lazy invocation API.
+4. Add lazy invocation API.
    - Introduce `ThreadInvocation` and `ThreadTrigger`.
    - Handler receives lightweight record plus trigger.
    - Full snapshot is built only via `ctx.build_thread_snapshot(thread_id)`.
    - Update support-bot user flow to explicitly build snapshot only where
      LLM context needs transcript.
 
-7. Add thread links and linked effects.
+5. Add thread links and linked effects.
    - Add `thread_links` table to the initial migration.
    - Add store APIs for forward and reverse lookups.
    - Add `EnsureLinkedThread`.
@@ -155,7 +162,7 @@ Prefer one small reviewable slice at a time.
    - Move support engineer thread creation out of `MattermostSupportNotifier`
      raw API calls and into effects.
 
-8. Keep raw-post path removed.
+6. Keep raw-post path removed.
    - `execute_raw_post_effects` has been removed from runtime.
    - `ThreadHandler::handle_raw_post` has been removed.
    - `build_raw_engineer_thread_snapshot` is not present.

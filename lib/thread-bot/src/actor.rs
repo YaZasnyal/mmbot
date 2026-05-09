@@ -39,11 +39,6 @@ pub(crate) enum ThreadCommand {
         change: ReactionChange,
     },
 
-    /// Startup reconciliation — triggers a debounced handler run to pick up
-    /// messages that arrived while the bot was offline.
-    #[allow(dead_code)]
-    Reconcile,
-
     /// Graceful shutdown signal.
     Shutdown,
 
@@ -89,16 +84,6 @@ type HandlerFuture = Pin<Box<dyn Future<Output = HandlerResult> + Send>>;
 /// handler is running.
 fn pending_handler() -> HandlerFuture {
     Box::pin(std::future::pending())
-}
-
-/// Result of [`handle_reconcile`] — tells the actor what to do next.
-pub(crate) enum ReconcileOutcome {
-    /// Thread was closed by a control reaction found during reconciliation.
-    ThreadClosed,
-    /// New non-bot messages found — handler should run with this snapshot.
-    RunHandler(Box<Thread>),
-    /// Nothing to do.
-    NoAction,
 }
 
 // ─── Actor main loop ─────────────────────────────────────────────────────────
@@ -157,36 +142,6 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                         if handle_control_reaction(&effect, &change, &a).await {
                             stop_reason = "control_reaction";
                             break;
-                        }
-                    }
-
-                    Some(ThreadCommand::Reconcile) => {
-                        a.metrics.actor_command("reconcile", "received");
-                        if handler_running {
-                            handler_fut = pending_handler();
-                            handler_running = false;
-                        }
-                        let reconcile_started = std::time::Instant::now();
-                        match handle_reconcile(&a).await {
-                            ReconcileOutcome::ThreadClosed => {
-                                a.metrics.reconcile("thread_closed", reconcile_started.elapsed());
-                                stop_reason = "reconcile_closed";
-                                break;
-                            }
-                            ReconcileOutcome::RunHandler(snapshot) => {
-                                a.metrics.reconcile("run_handler", reconcile_started.elapsed());
-                                let handler = Arc::clone(&a.handler);
-                                let ctx = a.ctx.clone();
-                                handler_fut = Box::pin(async move {
-                                    let started = std::time::Instant::now();
-                                    let result = handler.handle(&snapshot, &ctx).await;
-                                    (*snapshot, started.elapsed(), result)
-                                });
-                                handler_running = true;
-                            }
-                            ReconcileOutcome::NoAction => {
-                                a.metrics.reconcile("no_action", reconcile_started.elapsed());
-                            }
                         }
                     }
 
@@ -443,7 +398,7 @@ async fn handle_control_reaction<H: ThreadHandler>(
     false
 }
 
-// ─── Reconciliation ─────────────────────────────────────────────────────────
+// ─── Control reaction checks ────────────────────────────────────────────────
 
 /// Check Mattermost API for control reactions on the root post.
 ///
@@ -451,8 +406,8 @@ async fn handle_control_reaction<H: ThreadHandler>(
 /// [`ThreadHandler::on_control_reaction`]. Returns the first closing effect
 /// found (`MarkResolved` or `MarkStopped`), or `None`.
 ///
-/// Used both before handler runs (debounce path) and during reconciliation
-/// to catch reactions that arrived before the WebSocket event was processed.
+/// Used before handler runs to catch reactions that arrived before the
+/// WebSocket event was processed.
 async fn check_api_control_reactions<H: ThreadHandler>(
     a: &ActorCtx<H>,
     snapshot: &Thread,
@@ -500,60 +455,6 @@ async fn check_api_control_reactions<H: ThreadHandler>(
 
     None
 }
-
-/// Reconcile a thread after (re)connection.
-///
-/// 1. Build snapshot from Mattermost API.
-/// 2. Fetch reactions on the root post — if a control reaction (✅ / 🛑)
-///    is found, close the thread immediately.
-/// 3. Otherwise check for new non-bot messages and schedule a handler run.
-pub(crate) async fn handle_reconcile<H: ThreadHandler>(a: &ActorCtx<H>) -> ReconcileOutcome {
-    // Build snapshot
-    let snapshot = match build_thread_snapshot(&a.thread_id, &*a.store, &a.mm_config).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(
-                thread_id = %a.thread_id,
-                error = %e,
-                "Failed to build snapshot for reconciliation"
-            );
-            return ReconcileOutcome::NoAction;
-        }
-    };
-
-    // Check control reactions on root post (may have arrived during downtime)
-    if let Some(effect) = check_api_control_reactions(a, &snapshot).await {
-        tracing::info!(
-            thread_id = %a.thread_id,
-            effect = ?effect,
-            "Reconciliation: control reaction found, closing thread"
-        );
-        let (exit, _) = execute_effects(vec![effect], &snapshot, a, CloseSource::Reaction).await;
-        if exit {
-            return ReconcileOutcome::ThreadClosed;
-        }
-    }
-
-    // Check for new non-bot messages
-    let bot_id = a.bot_user_id.read().await;
-    let has_new = snapshot
-        .messages
-        .iter()
-        .any(|m| m.is_new && bot_id.as_deref() != Some(m.user_id.as_str()));
-    drop(bot_id);
-
-    if has_new {
-        tracing::info!(
-            thread_id = %a.thread_id,
-            "Reconciliation: unprocessed messages found, scheduling handler"
-        );
-        ReconcileOutcome::RunHandler(Box::new(snapshot))
-    } else {
-        tracing::debug!(thread_id = %a.thread_id, "Reconciliation: nothing new");
-        ReconcileOutcome::NoAction
-    }
-}
-
 // ─── Effect execution ────────────────────────────────────────────────────────
 
 /// Execute a list of effects returned by the handler or a control reaction.
