@@ -9,12 +9,6 @@ pub struct SupportThreadState {
     pub finished_summary: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EngineerThreadRef {
-    pub channel_id: String,
-    pub root_post_id: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SupportThreadStatus {

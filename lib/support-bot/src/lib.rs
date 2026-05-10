@@ -42,9 +42,8 @@ pub use llm::{
     ChatMessage, ChatRole, LlmClient, LlmRequest, LlmResponse, OpenAiChatCompletionsClient,
 };
 pub use metrics::{SupportBotMetrics, SupportBotMetricsHandle};
-pub use notifier::MattermostSupportNotifier;
 pub use prometheus_client;
-pub use state::{EngineerThreadRef, SupportThreadState, SupportThreadStatus};
+pub use state::{SupportThreadState, SupportThreadStatus};
 pub use tools::{
     register_default_workflow_tools, register_remote_mcp_tools, SupportAction, SupportTool,
     ToolCall, ToolContext, ToolExecutionOutcome, ToolKind, ToolRegistry, ToolResult, ToolSpec,

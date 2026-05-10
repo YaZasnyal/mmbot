@@ -5,7 +5,7 @@ use crate::output::sanitize_user_visible_message;
 use crate::tools::{SupportAction, ToolResult};
 use crate::user_thread_run::UserThreadRun;
 use serde_json::json;
-use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadTarget};
+use thread_bot::{Thread, ThreadBotError, ThreadEffect, ThreadTarget};
 use tracing::info;
 
 #[tracing::instrument(
@@ -13,8 +13,7 @@ use tracing::info;
     skip_all,
     fields(thread_id = %thread.info.thread_id, tool_call_id = %call_id, action = tracing::field::Empty)
 )]
-pub(crate) async fn apply_action(
-    ctx: &ThreadContext,
+pub(crate) fn apply_action(
     thread: &Thread,
     run: &mut UserThreadRun,
     call_id: &str,
@@ -30,15 +29,13 @@ pub(crate) async fn apply_action(
                 ));
             };
             run.reply(
-                ctx,
                 thread,
                 message,
                 metadata_value(&SupportPostMetadata::tool_action(
                     call_id,
                     "send_user_message",
                 ))?,
-            )
-            .await?;
+            );
             run.await_next_user_message();
             sent_result(call_id)
         }

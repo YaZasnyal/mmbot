@@ -131,12 +131,7 @@ impl SupportBotHandler {
 
         if command.name == "debug-report" {
             info!("support-bot: received debug-report command");
-            let effects = handle_debug_export_html(
-                &self.config.engineer_notifications.channel_id,
-                &thread,
-                ctx,
-            )
-            .await;
+            let effects = handle_debug_export_html(&thread, ctx).await;
             if effects.is_ok() {
                 self.metrics.record_reply("engineer", "success");
             } else {
@@ -219,8 +214,11 @@ impl SupportBotHandler {
         )?;
         let mut run = UserThreadRun::new(state, messages);
 
-        run.mirror_user_message(ctx, &thread, trigger_message)
-            .await?;
+        run.mirror_user_message(
+            &thread,
+            trigger_message,
+            source_post_link(&ctx.config, &trigger_message.post_id),
+        );
 
         for round in 0..self.config.limits.max_tool_rounds {
             let round_started = Instant::now();
@@ -276,14 +274,12 @@ impl SupportBotHandler {
                     .and_then(sanitize_user_visible_message)
                 {
                     run.reply(
-                        ctx,
                         &thread,
                         content,
                         metadata_value(&SupportPostMetadata::new(
                             SupportPostKind::AssistantResponse,
                         ))?,
-                    )
-                    .await?;
+                    );
                     self.metrics.record_reply("user", "success");
                 }
                 return run.into_effects(&thread, trigger_message);
@@ -313,7 +309,6 @@ impl SupportBotHandler {
             );
 
             self.process_tool_calls(
-                ctx,
                 &thread,
                 &mut run,
                 ToolCallBatch {
@@ -362,12 +357,10 @@ impl SupportBotHandler {
         });
 
         run.reply(
-            ctx,
             &thread,
             failure_message,
             metadata_value(&SupportPostMetadata::new(SupportPostKind::ToolLoopLimit))?,
-        )
-        .await?;
+        );
         self.metrics.record_reply("user", "success");
         run.stop_request(Some("tool loop limit reached".to_string()));
         run.into_effects(&thread, trigger_message)
@@ -380,7 +373,6 @@ impl SupportBotHandler {
     )]
     async fn process_tool_calls(
         &self,
-        ctx: &ThreadContext,
         thread: &Thread,
         run: &mut UserThreadRun,
         batch: ToolCallBatch,
@@ -436,7 +428,7 @@ impl SupportBotHandler {
                 }
                 Ok(ToolExecutionOutcome::Action(action)) => {
                     info!("support-bot: applying workflow action from tool call");
-                    let action_result = apply_action(ctx, thread, run, &call.id, action).await;
+                    let action_result = apply_action(thread, run, &call.id, action);
                     let result = match action_result {
                         Ok(result) => {
                             self.metrics.record_tool_call(

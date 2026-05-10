@@ -3,7 +3,7 @@ use crate::handler::ENGINEER_LINK_KIND;
 use crate::llm::{ChatMessage, ChatRole};
 use crate::metadata::{metadata_value, SupportPostKind, SupportPostMetadata};
 use crate::notifier::{
-    render_thread_html_report, MattermostSupportNotifier, SupportReportPost, SupportReportSummary,
+    render_thread_html_report, DebugReportPoster, SupportReportPost, SupportReportSummary,
     SupportReportToolCall, SupportReportTrace,
 };
 use crate::state::SupportThreadStatus;
@@ -11,7 +11,6 @@ use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadTarg
 use tracing::{info, warn};
 
 pub(crate) async fn handle_debug_export_html(
-    engineer_channel_id: &str,
     engineer_thread: &Thread,
     ctx: &ThreadContext,
 ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
@@ -94,7 +93,7 @@ pub(crate) async fn handle_debug_export_html(
         &traces_by_post,
     );
     let html_size = html.len();
-    MattermostSupportNotifier::new(ctx.config.clone(), engineer_channel_id.to_string())
+    DebugReportPoster::new(ctx.config.clone())
         .post_html_attachment_to_thread(
             &engineer_thread.info.channel_id,
             &engineer_thread.info.root_post_id,

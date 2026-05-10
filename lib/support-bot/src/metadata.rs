@@ -22,24 +22,6 @@ pub(crate) enum SupportPostKind {
     UserMessage,
 }
 
-impl SupportPostKind {
-    pub(crate) fn as_str(&self) -> &'static str {
-        match self {
-            Self::AssistantResponse => "assistant_response",
-            Self::BotMessage => "bot_message",
-            Self::DebugResponse => "debug_response",
-            Self::EngineerNotification => "engineer_notification",
-            Self::EngineerThread => "engineer_thread",
-            Self::EngineerThreadRoot => "engineer_thread_root",
-            Self::StatusUpdate => "status_update",
-            Self::ThreadHtmlReport => "thread_html_report",
-            Self::ToolAction => "tool_action",
-            Self::ToolLoopLimit => "tool_loop_limit",
-            Self::UserMessage => "user_message",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct SupportPostMetadata {
     pub kind: SupportPostKind,

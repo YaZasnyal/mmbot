@@ -36,33 +36,14 @@ fn thread() -> Thread {
 }
 
 #[test]
-fn engineer_root_request_links_and_quotes_source_post() {
-    let request = engineer_thread_root_request(
-        "engineers",
+fn engineer_root_message_links_and_quotes_source_post() {
+    let message = engineer_thread_root_message(
         &thread(),
         "http://localhost:8065/_redirect/pl/root-1".to_string(),
     );
 
-    assert_eq!(request.channel_id, "engineers");
-    assert_eq!(request.root_id, None);
-    assert!(request
-        .message
-        .contains("Source: http://localhost:8065/_redirect/pl/root-1"));
-    assert!(request.message.contains("```\nservice is down\n```"));
-    assert_eq!(
-        request.props.unwrap()["support_bot"]["kind"],
-        "engineer_thread_root"
-    );
-}
-
-#[test]
-fn engineer_reply_request_posts_into_existing_thread() {
-    let request =
-        engineer_thread_reply_request("engineers", "eng-root", &thread(), "debug info".to_string());
-
-    assert_eq!(request.channel_id, "engineers");
-    assert_eq!(request.root_id.as_deref(), Some("eng-root"));
-    assert_eq!(request.message, "debug info");
+    assert!(message.contains("Source: http://localhost:8065/_redirect/pl/root-1"));
+    assert!(message.contains("```\nservice is down\n```"));
 }
 
 #[test]

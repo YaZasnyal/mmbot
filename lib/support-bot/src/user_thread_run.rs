@@ -5,8 +5,7 @@ use crate::notifier::{quote_for_mattermost, support_post_props};
 use crate::state::{SupportThreadState, SupportThreadStatus};
 use crate::tools::ToolCall;
 use thread_bot::{
-    Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadMessage, ThreadMetadataTarget,
-    ThreadTarget,
+    Thread, ThreadBotError, ThreadEffect, ThreadMessage, ThreadMetadataTarget, ThreadTarget,
 };
 use tracing::{info, warn};
 
@@ -70,13 +69,7 @@ impl UserThreadRun {
         self.trace.push(message);
     }
 
-    pub(crate) async fn reply(
-        &mut self,
-        _ctx: &ThreadContext,
-        thread: &Thread,
-        message: String,
-        metadata: serde_json::Value,
-    ) -> Result<(), ThreadBotError> {
+    pub(crate) fn reply(&mut self, thread: &Thread, message: String, metadata: serde_json::Value) {
         self.effects.push(ThreadEffect::Reply {
             target: ThreadTarget::CurrentThread,
             message: message.clone(),
@@ -89,17 +82,16 @@ impl UserThreadRun {
             message: format!("**Bot message**\n\n{}", quote_for_mattermost(&message)),
             metadata: support_post_props(SupportPostKind::BotMessage, thread),
         });
-        Ok(())
     }
 
-    pub(crate) async fn mirror_user_message(
+    pub(crate) fn mirror_user_message(
         &mut self,
-        ctx: &ThreadContext,
         thread: &Thread,
         message: &ThreadMessage,
-    ) -> Result<(), ThreadBotError> {
+        source_link: String,
+    ) {
         if message.post_id == thread.info.root_post_id {
-            return Ok(());
+            return;
         }
 
         self.effects.push(ThreadEffect::Reply {
@@ -108,12 +100,11 @@ impl UserThreadRun {
             },
             message: format!(
                 "**User message** ([source]({}))\n\n{}",
-                crate::notifier::source_post_link(&ctx.config, &message.post_id),
+                source_link,
                 quote_for_mattermost(&message.message)
             ),
             metadata: support_post_props(SupportPostKind::UserMessage, thread),
         });
-        Ok(())
     }
 
     pub(crate) fn push_effect(&mut self, effect: ThreadEffect) {
