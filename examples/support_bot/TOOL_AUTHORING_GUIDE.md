@@ -18,10 +18,9 @@ use std::time::Duration;
 
 use mattermost_bot::MattermostBotMetrics;
 use support_bot::{
-    DEFAULT_SUPPORT_SYSTEM_PROMPT, EngineerNotificationConfig, EngineerNotificationTarget,
-    InstructionConfig, InstructionRepository, LlmConfig, OpenAiChatCompletionsClient,
-    SupportBotBuilder, SupportBotConfig, SupportBotLimits, SupportBotMetrics, SupportRouteConfig,
-    ToolConfig,
+    DEFAULT_SUPPORT_SYSTEM_PROMPT, EngineerNotificationConfig, InstructionConfig,
+    InstructionRepository, LlmConfig, OpenAiChatCompletionsClient, SupportBotBuilder,
+    SupportBotConfig, SupportBotLimits, SupportBotMetrics, SupportRouteConfig, ToolConfig,
 };
 use thread_bot::ThreadBotMetrics;
 
@@ -47,7 +46,7 @@ async fn build_support_handler() -> anyhow::Result<support_bot::SupportBotHandle
         },
         routes: SupportRouteConfig::default(),
         engineer_notifications: EngineerNotificationConfig {
-            target: EngineerNotificationTarget::SameThread,
+            channel_id: "engineers".to_string(),
         },
     };
 

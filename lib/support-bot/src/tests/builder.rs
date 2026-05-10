@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::{
-    EngineerNotificationConfig, EngineerNotificationTarget, InstructionConfig, LlmConfig,
-    SupportBotLimits, SupportRouteConfig, ToolConfig,
+    EngineerNotificationConfig, InstructionConfig, LlmConfig, SupportBotLimits,
+    SupportRouteConfig, ToolConfig,
 };
 use crate::llm::{ChatMessage, LlmRequest, LlmResponse};
 use async_trait::async_trait;
@@ -38,7 +38,7 @@ fn test_config() -> SupportBotConfig {
         limits: SupportBotLimits::default(),
         routes: SupportRouteConfig::default(),
         engineer_notifications: EngineerNotificationConfig {
-            target: EngineerNotificationTarget::SameThread,
+            channel_id: "engineers".to_string(),
         },
     }
 }

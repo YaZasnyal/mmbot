@@ -30,6 +30,7 @@ use crate::types::*;
 // ─── Public (crate) types ────────────────────────────────────────────────────
 
 /// Command sent to a per-thread actor via mpsc channel.
+#[derive(Debug, Clone)]
 pub(crate) enum ThreadCommand {
     /// New message posted in the thread — triggers debounced handler run.
     NewMessage { post: models::Post },
@@ -99,6 +100,7 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
     a: &ActorCtx<H>,
 ) {
     let mut pending_run: Option<ThreadTrigger> = None;
+    let mut reschedule_trigger: Option<ThreadTrigger> = None;
     let mut debounce_deadline = Instant::now() + a.debounce;
     let mut handler_fut: HandlerFuture = pending_handler();
     let mut handler_running = false;
@@ -106,7 +108,6 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
 
     tracing::debug!(thread_id = %a.thread_id, "Thread actor started");
     a.metrics.actor_started("success");
-    let mut stop_reason = "channel_closed";
 
     loop {
         tokio::select! {
@@ -141,10 +142,7 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                             handler_fut = pending_handler();
                             handler_running = false;
                         }
-                        if handle_control_reaction(&effect, &change, a).await {
-                            stop_reason = "control_reaction";
-                            break;
-                        }
+                        handle_control_reaction(&effect, &change, a).await;
                         if pending_run.is_none() && !handler_running {
                             idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                         }
@@ -153,7 +151,6 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                     Some(ThreadCommand::Shutdown) => {
                         a.metrics.actor_command("shutdown", "received");
                         tracing::info!(thread_id = %a.thread_id, "Thread actor shutting down");
-                        stop_reason = "shutdown";
                         break;
                     }
 
@@ -173,18 +170,19 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
             }
 
             result = &mut handler_fut, if handler_running => {
-                handler_running = false;
                 handler_fut = pending_handler();
                 if handle_handler_result(result, a, &mut pending_run, &mut debounce_deadline).await {
-                    stop_reason = "handler_closed";
-                    break;
+                    pending_run = reschedule_trigger.clone();
+                    continue;
                 }
+                handler_running = false;
                 if pending_run.is_none() {
                     idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                 }
             }
 
             _ = tokio::time::sleep_until(debounce_deadline), if pending_run.is_some() => {
+                reschedule_trigger = pending_run.clone();
                 let trigger = pending_run
                     .take()
                     .expect("pending_run is Some when debounce branch is enabled");
@@ -227,14 +225,13 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
 
             _ = idle_sleep_until(idle_deadline), if pending_run.is_none() && !handler_running => {
                 tracing::debug!(thread_id = %a.thread_id, "Thread actor idle timeout elapsed");
-                stop_reason = "idle_timeout";
                 break;
             }
         }
     }
 
     tracing::debug!(thread_id = %a.thread_id, "Thread actor stopped");
-    a.metrics.actor_stopped(stop_reason);
+    a.metrics.actor_stopped("stopped");
 }
 
 fn next_idle_deadline(timeout: Duration) -> Instant {
@@ -252,7 +249,6 @@ async fn idle_sleep_until(deadline: Option<Instant>) {
 
 /// Process the completed handler result: execute effects, update DB state.
 ///
-/// Returns `true` if the actor should exit (thread closed).
 async fn handle_handler_result<H: ThreadHandler>(
     (invocation, handler_duration, result): HandlerResult,
     a: &ActorCtx<H>,
@@ -262,11 +258,8 @@ async fn handle_handler_result<H: ThreadHandler>(
     match result {
         Ok(effects) => {
             let effect_count = effects.len();
-            let (should_exit, should_reschedule) =
-                execute_effects(effects, &invocation.thread, a).await;
-            let outcome = if should_exit {
-                "closed"
-            } else if should_reschedule {
+            let should_reschedule = execute_effects(effects, &invocation.thread, a).await;
+            let outcome = if should_reschedule {
                 "rescheduled"
             } else {
                 "success"
@@ -296,12 +289,12 @@ async fn handle_handler_result<H: ThreadHandler>(
                 }
             }
 
-            if should_reschedule && !should_exit {
-                *pending_run = Some(ThreadTrigger::Reschedule);
+            if should_reschedule {
                 *debounce_deadline = Instant::now();
+                return true;
             }
 
-            should_exit
+            false
         }
         Err(e) => {
             a.metrics.handler_run("error", handler_duration);
@@ -317,12 +310,12 @@ async fn handle_handler_result<H: ThreadHandler>(
 
 // ─── Control reaction handling ───────────────────────────────────────────────
 
-/// Process a control reaction. Returns `true` if the actor should exit.
+/// Process a control reaction effect.
 async fn handle_control_reaction<H: ThreadHandler>(
     effect: &ThreadEffect,
     change: &ReactionChange,
     a: &ActorCtx<H>,
-) -> bool {
+) {
     tracing::info!(
         thread_id = %a.thread_id,
         emoji = %change.emoji_name,
@@ -337,7 +330,7 @@ async fn handle_control_reaction<H: ThreadHandler>(
                 thread_id = %a.thread_id,
                 "Cannot execute control reaction for missing thread record"
             );
-            return false;
+            return;
         }
         Err(e) => {
             tracing::error!(
@@ -345,27 +338,24 @@ async fn handle_control_reaction<H: ThreadHandler>(
                 error = %e,
                 "Failed to load thread record for control reaction"
             );
-            return false;
+            return;
         }
     };
 
-    let (should_exit, _) = execute_effects(vec![effect.clone()], &thread_record, a).await;
-
-    should_exit
+    let _ = execute_effects(vec![effect.clone()], &thread_record, a).await;
 }
 
 // ─── Effect execution ────────────────────────────────────────────────────────
 
 /// Execute a list of effects returned by the handler or a control reaction.
 ///
-/// Returns `(should_exit, should_reschedule)`.
+/// Returns `should_reschedule`.
 #[tracing::instrument(level = "debug", skip_all, fields(thread_id = %a.thread_id))]
 async fn execute_effects<H: ThreadHandler>(
     effects: Vec<ThreadEffect>,
     thread: &ThreadRecord,
     a: &ActorCtx<H>,
-) -> (bool, bool) {
-    let mut should_exit = false;
+) -> bool {
     let mut should_reschedule = false;
     let total_effects = effects.len();
 
@@ -399,7 +389,6 @@ async fn execute_effects<H: ThreadHandler>(
                             "Failed to resolve reply target"
                         );
                         stop_after_critical_effect_failure(thread, a, "reply");
-                        should_exit = true;
                         break;
                     }
                 };
@@ -467,7 +456,6 @@ async fn execute_effects<H: ThreadHandler>(
                             "Failed to resolve thread metadata target"
                         );
                         stop_after_critical_effect_failure(thread, a, "set_thread_metadata");
-                        should_exit = true;
                         break;
                     }
                 };
@@ -491,7 +479,6 @@ async fn execute_effects<H: ThreadHandler>(
                         "Critical thread effect failed"
                     );
                     stop_after_critical_effect_failure(thread, a, "set_thread_metadata");
-                    should_exit = true;
                     break;
                 } else {
                     a.metrics.effect(effect_label, "success");
@@ -516,7 +503,6 @@ async fn execute_effects<H: ThreadHandler>(
                         "Critical thread effect failed"
                     );
                     stop_after_critical_effect_failure(thread, a, "set_message_metadata");
-                    should_exit = true;
                     break;
                 } else {
                     a.metrics.effect(effect_label, "success");
@@ -558,7 +544,6 @@ async fn execute_effects<H: ThreadHandler>(
                             "Critical linked thread effect failed"
                         );
                         stop_after_critical_effect_failure(thread, a, "ensure_linked_thread");
-                        should_exit = true;
                         break;
                     }
                 }
@@ -571,7 +556,7 @@ async fn execute_effects<H: ThreadHandler>(
         }
     }
 
-    (should_exit, should_reschedule)
+    should_reschedule
 }
 
 fn thread_effect_label(effect: &ThreadEffect) -> &'static str {

@@ -554,7 +554,7 @@ async fn actor_set_thread_metadata_effect_supports_explicit_targets() {
 }
 
 #[tokio::test]
-async fn actor_stops_thread_when_critical_metadata_effect_fails() {
+async fn actor_keeps_running_when_critical_metadata_effect_fails() {
     let handler = MockHandler::new().with_default_effects(vec![
         ThreadEffect::SetMessageMetadata {
             post_id: "missing-post".to_string(),
@@ -576,7 +576,7 @@ async fn actor_stops_thread_when_critical_metadata_effect_fails() {
     let thread = store.thread_snapshot("thread1").await.unwrap();
     assert_eq!(thread.metadata, serde_json::Value::Null);
 
-    assert!(tx.is_closed());
+    assert!(!tx.is_closed());
 }
 
 #[tokio::test]

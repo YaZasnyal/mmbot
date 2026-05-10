@@ -718,11 +718,6 @@ Prefer one small reviewable slice at a time.
 1. Decide whether to move `EnsureLinkedThread` duplicate avoidance into Layer 3
    by making `(source_thread_id, link_kind)` lookup/no-op semantics part of the
    effect executor, or keep the current plugin-owned policy.
-2. Keep raw-post path removed.
-   - `execute_raw_post_effects` has been removed from runtime.
-   - `ThreadHandler::handle_raw_post` has been removed.
-   - `build_raw_engineer_thread_snapshot` is not present.
-   - RFC target says no separate raw executor long-term.
 
 ## Review posture
 

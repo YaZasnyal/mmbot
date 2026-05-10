@@ -48,13 +48,7 @@ pub struct SupportBotLimits {
 
 #[derive(Debug, Clone)]
 pub struct EngineerNotificationConfig {
-    pub target: EngineerNotificationTarget,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EngineerNotificationTarget {
-    SameThread,
-    MattermostChannel { channel_id: String },
+    pub channel_id: String,
 }
 
 #[derive(Debug, Clone, Default)]

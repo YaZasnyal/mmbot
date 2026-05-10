@@ -1,4 +1,3 @@
-use crate::config::EngineerNotificationTarget;
 use crate::conversation::{load_state, load_trace, STATE_KEY};
 use crate::llm::{ChatMessage, ChatRole};
 use crate::notifier::{
@@ -11,7 +10,7 @@ use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadTarg
 use tracing::{info, warn};
 
 pub(crate) async fn handle_debug_export_html(
-    target: &EngineerNotificationTarget,
+    engineer_channel_id: &str,
     engineer_thread: &Thread,
     ctx: &ThreadContext,
 ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
@@ -87,7 +86,10 @@ pub(crate) async fn handle_debug_export_html(
         &traces_by_post,
     );
     let html_size = html.len();
-    MattermostSupportNotifier::new(ctx.config.clone(), target.clone())
+    MattermostSupportNotifier::new(
+        ctx.config.clone(),
+        engineer_channel_id.to_string(),
+    )
         .post_html_attachment_to_thread(
             &engineer_thread.info.channel_id,
             &engineer_thread.info.root_post_id,

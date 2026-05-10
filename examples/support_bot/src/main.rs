@@ -5,10 +5,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use support_bot::{
-    DEFAULT_SUPPORT_SYSTEM_PROMPT, EngineerNotificationConfig, EngineerNotificationTarget,
-    InstructionConfig, InstructionRepository, LlmConfig, OpenAiChatCompletionsClient,
-    SupportBotBuilder, SupportBotConfig, SupportBotLimits, SupportBotMetrics, SupportRouteConfig,
-    ToolConfig,
+    DEFAULT_SUPPORT_SYSTEM_PROMPT, EngineerNotificationConfig, InstructionConfig,
+    InstructionRepository, LlmConfig, OpenAiChatCompletionsClient, SupportBotBuilder,
+    SupportBotConfig, SupportBotLimits, SupportBotMetrics, SupportRouteConfig, ToolConfig,
 };
 use thread_bot::{PgThreadStore, ThreadBotMetrics, ThreadBotPlugin, ThreadStore};
 
@@ -88,12 +87,7 @@ fn load_support_config() -> Result<SupportBotConfig> {
     let max_instruction_bytes: usize =
         read_env("SUPPORT_MAX_INSTRUCTION_BYTES", "16384")?.parse()?;
 
-    let engineer_notification_target = match std::env::var("SUPPORT_ENGINEER_CHANNEL_ID") {
-        Ok(channel_id) if !channel_id.trim().is_empty() => {
-            EngineerNotificationTarget::MattermostChannel { channel_id }
-        }
-        _ => EngineerNotificationTarget::SameThread,
-    };
+    let engineer_channel_id = read_required_env("SUPPORT_ENGINEER_CHANNEL_ID")?;
 
     let remote_mcp_endpoints = load_remote_mcp_endpoints()?;
 
@@ -120,11 +114,11 @@ fn load_support_config() -> Result<SupportBotConfig> {
         },
         routes: SupportRouteConfig {
             user_channel_ids: read_csv_env("SUPPORT_USER_CHANNEL_IDS"),
-            engineer_channel_id: std::env::var("SUPPORT_ENGINEER_CHANNEL_ID").ok(),
+            engineer_channel_id: Some(engineer_channel_id.clone()),
             ..SupportRouteConfig::default()
         },
         engineer_notifications: EngineerNotificationConfig {
-            target: engineer_notification_target,
+            channel_id: engineer_channel_id,
         },
     })
 }

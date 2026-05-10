@@ -67,13 +67,8 @@ Default workflow tools return structured actions:
 - `notify_engineer`: sends diagnostic context or escalation notes to the
   engineer sink.
 - `finish_request`: stores `status = "finished"` and `finished_summary`,
-  posts a status update to the engineer thread when a separate engineer channel
-  is configured, and resolves the underlying `thread-bot` thread.
-
-If `EngineerNotificationTarget::SameThread` is used, explicit
-`notify_engineer` calls become ordinary reply effects in the user thread.
-Message mirroring and status-update posts are only emitted for a separate
-Mattermost engineer channel.
+  posts a status update to the engineer thread, and resolves the underlying
+  `thread-bot` thread.
 
 ## Engineer Debug Commands
 

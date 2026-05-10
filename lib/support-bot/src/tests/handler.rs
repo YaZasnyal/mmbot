@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::{
-    DebugCommandConfig, EngineerNotificationConfig, EngineerNotificationTarget, InstructionConfig,
-    LlmConfig, SupportBotLimits, SupportRouteConfig, ToolConfig,
+    DebugCommandConfig, EngineerNotificationConfig, InstructionConfig, LlmConfig,
+    SupportBotLimits, SupportRouteConfig, ToolConfig,
 };
 use crate::conversation::{store_state, TRACE_KEY};
 use crate::debug::DebugResponse;
@@ -128,19 +128,24 @@ fn test_config() -> SupportBotConfig {
             debug_commands: DebugCommandConfig::default(),
         },
         engineer_notifications: EngineerNotificationConfig {
-            target: EngineerNotificationTarget::SameThread,
+            channel_id: "engineers".to_string(),
         },
     }
 }
 
 fn thread(channel_id: &str, message: &str) -> Thread {
+    let thread_kind = match channel_id {
+        "users" => Some(USER_THREAD_KIND.to_string()),
+        "engineers" => Some(ENGINEER_LINK_KIND.to_string()),
+        _ => None,
+    };
     Thread {
         info: ThreadInfo {
             thread_id: "thread-1".to_string(),
             root_post_id: "post-1".to_string(),
             channel_id: channel_id.to_string(),
             creator_user_id: "user-1".to_string(),
-            thread_kind: Some("support_user".to_string()),
+            thread_kind,
             metadata: json!({}),
             last_seen_post_id: None,
             last_seen_post_at: None,
@@ -173,7 +178,7 @@ fn thread_record(channel_id: &str, metadata: serde_json::Value) -> ThreadRecord 
         root_post_id: "post-1".to_string(),
         channel_id: channel_id.to_string(),
         creator_user_id: "user-1".to_string(),
-        thread_kind: Some("support_user".to_string()),
+        thread_kind: Some(USER_THREAD_KIND.to_string()),
         metadata,
         last_seen_post_id: None,
         last_seen_post_at: None,
@@ -378,7 +383,19 @@ async fn handle_thread(
 }
 
 async fn context_with_snapshot(thread: &Thread) -> (ThreadContext, MockServer) {
-    context_with_snapshot_and_links(thread, Vec::new()).await
+    let links = if thread.info.thread_kind.as_deref() == Some(USER_THREAD_KIND) {
+        vec![ThreadLink {
+            source_thread_id: thread.info.thread_id.clone(),
+            link_kind: ENGINEER_LINK_KIND.to_string(),
+            target_thread_id: "engineer-thread".to_string(),
+            metadata: json!({}),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }]
+    } else {
+        Vec::new()
+    };
+    context_with_snapshot_and_links(thread, links).await
 }
 
 async fn context_with_snapshot_and_links(
@@ -841,7 +858,7 @@ async fn send_user_message_tool_strips_hidden_reasoning() {
 }
 
 #[tokio::test]
-async fn notify_engineer_same_thread_uses_reply_effect() {
+async fn notify_engineer_uses_linked_engineer_thread_reply_effect() {
     let call = ToolCall {
         id: "call-1".to_string(),
         name: "notify_engineer".to_string(),
@@ -1122,9 +1139,7 @@ async fn finish_request_persists_finished_state_and_queues_status_notification()
     let mut registry = ToolRegistry::new();
     register_default_workflow_tools(&mut registry).unwrap();
     let mut config = test_config();
-    config.engineer_notifications.target = EngineerNotificationTarget::MattermostChannel {
-        channel_id: "engineers".to_string(),
-    };
+    config.engineer_notifications.channel_id = "engineers".to_string();
     let handler = SupportBotHandler::new("support", config, llm, Arc::new(registry), "system");
 
     let mut thread = thread("users", "help");

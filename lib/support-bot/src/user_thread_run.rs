@@ -1,4 +1,3 @@
-use crate::config::EngineerNotificationTarget;
 use crate::conversation::{store_state, with_trace_metadata};
 use crate::llm::{ChatMessage, ChatRole};
 use crate::notifier::{quote_for_mattermost, support_post_props};
@@ -72,7 +71,6 @@ impl UserThreadRun {
 
     pub(crate) async fn reply(
         &mut self,
-        target: &EngineerNotificationTarget,
         _ctx: &ThreadContext,
         thread: &Thread,
         message: String,
@@ -83,21 +81,18 @@ impl UserThreadRun {
             message: message.clone(),
             metadata,
         });
-        if matches!(target, EngineerNotificationTarget::MattermostChannel { .. }) {
-            self.effects.push(ThreadEffect::Reply {
-                target: ThreadTarget::LinkedThreads {
-                    link_kind: crate::handler::ENGINEER_LINK_KIND.to_string(),
-                },
-                message: format!("**Bot message**\n\n{}", quote_for_mattermost(&message)),
-                metadata: support_post_props("bot_message", thread),
-            });
-        }
+        self.effects.push(ThreadEffect::Reply {
+            target: ThreadTarget::LinkedThreads {
+                link_kind: crate::handler::ENGINEER_LINK_KIND.to_string(),
+            },
+            message: format!("**Bot message**\n\n{}", quote_for_mattermost(&message)),
+            metadata: support_post_props("bot_message", thread),
+        });
         Ok(())
     }
 
     pub(crate) async fn mirror_user_message(
         &mut self,
-        target: &EngineerNotificationTarget,
         ctx: &ThreadContext,
         thread: &Thread,
         message: &ThreadMessage,
@@ -106,19 +101,17 @@ impl UserThreadRun {
             return Ok(());
         }
 
-        if matches!(target, EngineerNotificationTarget::MattermostChannel { .. }) {
-            self.effects.push(ThreadEffect::Reply {
-                target: ThreadTarget::LinkedThreads {
-                    link_kind: crate::handler::ENGINEER_LINK_KIND.to_string(),
-                },
-                message: format!(
-                    "**User message** ([source]({}))\n\n{}",
-                    crate::notifier::source_post_link(&ctx.config, &message.post_id),
-                    quote_for_mattermost(&message.message)
-                ),
-                metadata: support_post_props("user_message", thread),
-            });
-        }
+        self.effects.push(ThreadEffect::Reply {
+            target: ThreadTarget::LinkedThreads {
+                link_kind: crate::handler::ENGINEER_LINK_KIND.to_string(),
+            },
+            message: format!(
+                "**User message** ([source]({}))\n\n{}",
+                crate::notifier::source_post_link(&ctx.config, &message.post_id),
+                quote_for_mattermost(&message.message)
+            ),
+            metadata: support_post_props("user_message", thread),
+        });
         Ok(())
     }
 

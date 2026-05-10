@@ -1,4 +1,4 @@
-use crate::config::{EngineerNotificationTarget, SupportBotConfig};
+use crate::config::SupportBotConfig;
 use crate::conversation::{
     build_llm_messages, load_state, result_to_message, store_state, truncate_utf8, STATE_KEY,
 };
@@ -38,6 +38,7 @@ pub struct SupportBotHandler {
 }
 
 pub(crate) const ENGINEER_LINK_KIND: &str = "support_engineer";
+pub(crate) const USER_THREAD_KIND: &str = "support_user";
 
 struct ToolCallBatch {
     assistant_content: Option<String>,
@@ -74,29 +75,26 @@ impl SupportBotHandler {
         self
     }
 
-    fn route(&self, channel_id: &str) -> SupportRoute {
-        if self
-            .config
-            .routes
-            .engineer_channel_id
-            .as_deref()
-            .is_some_and(|engineer_channel_id| engineer_channel_id == channel_id)
-        {
-            return SupportRoute::Engineer;
+    fn route(&self, thread_kind: Option<&str>, channel_id: &str) -> SupportRoute {
+        match thread_kind {
+            Some(ENGINEER_LINK_KIND) => SupportRoute::Engineer,
+            Some(USER_THREAD_KIND) => SupportRoute::User,
+            _ => {
+                if self
+                    .config
+                    .routes
+                    .user_channel_ids
+                    .iter()
+                    .any(|user_channel_id| user_channel_id == channel_id)
+                {
+                    SupportRoute::User
+                } else if channel_id == &self.config.engineer_notifications.channel_id {
+                    SupportRoute::Engineer
+                } else {
+                    SupportRoute::Ignored
+                }
+            }
         }
-
-        if self.config.routes.user_channel_ids.is_empty()
-            || self
-                .config
-                .routes
-                .user_channel_ids
-                .iter()
-                .any(|user_channel_id| user_channel_id == channel_id)
-        {
-            return SupportRoute::User;
-        }
-
-        SupportRoute::Ignored
     }
 
     #[tracing::instrument(
@@ -132,9 +130,12 @@ impl SupportBotHandler {
 
         if command.name == "debug-report" {
             info!("support-bot: received debug-report command");
-            let effects =
-                handle_debug_export_html(&self.config.engineer_notifications.target, &thread, ctx)
-                    .await;
+            let effects = handle_debug_export_html(
+                &self.config.engineer_notifications.channel_id,
+                &thread,
+                ctx,
+            )
+            .await;
             if effects.is_ok() {
                 self.metrics.record_reply("engineer", "success");
             } else {
@@ -201,17 +202,16 @@ impl SupportBotHandler {
         };
         info!("support-bot: handling user thread message");
 
-        match &self.config.engineer_notifications.target {
-            EngineerNotificationTarget::SameThread => {}
-            EngineerNotificationTarget::MattermostChannel { channel_id } => {
-                if let Some(effects) = self
-                    .ensure_engineer_thread_effects(ctx, &thread, channel_id)
-                    .await?
-                {
-                    info!("support-bot: queuing linked engineer thread creation");
-                    return Ok(effects);
-                }
-            }
+        if let Some(effects) = self
+            .ensure_engineer_thread_effects(
+                ctx,
+                &thread,
+                &self.config.engineer_notifications.channel_id,
+            )
+            .await?
+        {
+            info!("support-bot: queuing linked engineer thread creation");
+            return Ok(effects);
         }
 
         let messages = build_llm_messages(
@@ -222,13 +222,8 @@ impl SupportBotHandler {
         )?;
         let mut run = UserThreadRun::new(state, messages);
 
-        run.mirror_user_message(
-            &self.config.engineer_notifications.target,
-            ctx,
-            &thread,
-            trigger_message,
-        )
-        .await?;
+        run.mirror_user_message(ctx, &thread, trigger_message)
+            .await?;
 
         for round in 0..self.config.limits.max_tool_rounds {
             let round_started = Instant::now();
@@ -284,7 +279,6 @@ impl SupportBotHandler {
                     .and_then(sanitize_user_visible_message)
                 {
                     run.reply(
-                        &self.config.engineer_notifications.target,
                         ctx,
                         &thread,
                         content,
@@ -358,27 +352,21 @@ impl SupportBotHandler {
             .to_string()
             + "I've notified the engineering team and stopped this thread for now.";
 
-        if matches!(
-            self.config.engineer_notifications.target,
-            EngineerNotificationTarget::MattermostChannel { .. }
-        ) {
-            run.push_effect(ThreadEffect::Reply {
-                target: ThreadTarget::LinkedThreads {
-                    link_kind: ENGINEER_LINK_KIND.to_string(),
-                },
-                message: tool_loop_limit_engineer_message(
-                    &thread,
-                    trigger_message,
-                    self.config.limits.max_tool_rounds,
-                    self.config.limits.max_tool_calls_per_round,
-                    run.trace_summary(),
-                ),
-                metadata: support_post_props("engineer_notification", &thread),
-            });
-        }
+        run.push_effect(ThreadEffect::Reply {
+            target: ThreadTarget::LinkedThreads {
+                link_kind: ENGINEER_LINK_KIND.to_string(),
+            },
+            message: tool_loop_limit_engineer_message(
+                &thread,
+                trigger_message,
+                self.config.limits.max_tool_rounds,
+                self.config.limits.max_tool_calls_per_round,
+                run.trace_summary(),
+            ),
+            metadata: support_post_props("engineer_notification", &thread),
+        });
 
         run.reply(
-            &self.config.engineer_notifications.target,
             ctx,
             &thread,
             failure_message,
@@ -457,15 +445,7 @@ impl SupportBotHandler {
                 }
                 Ok(ToolExecutionOutcome::Action(action)) => {
                     info!("support-bot: applying workflow action from tool call");
-                    let action_result = apply_action(
-                        &self.config.engineer_notifications.target,
-                        ctx,
-                        thread,
-                        run,
-                        &call.id,
-                        action,
-                    )
-                    .await;
+                    let action_result = apply_action(ctx, thread, run, &call.id, action).await;
                     let result = match action_result {
                         Ok(result) => {
                             self.metrics.record_tool_call(
@@ -548,7 +528,7 @@ impl SupportBotHandler {
             ThreadEffect::EnsureLinkedThread {
                 link_kind: ENGINEER_LINK_KIND.to_string(),
                 channel_id: channel_id.to_string(),
-                thread_kind: Some("support_engineer".to_string()),
+                thread_kind: Some(ENGINEER_LINK_KIND.to_string()),
                 message: engineer_thread_root_message(
                     thread,
                     source_post_link(&ctx.config, &thread.info.root_post_id),
@@ -606,7 +586,7 @@ impl SupportBotHandler {
                     .unwrap_or_else(Utc::now),
             };
             if let Some(effect) = self.support_control_reaction_effect(
-                &record.channel_id,
+                record.thread_kind.as_deref(),
                 &record.thread_id,
                 &record.metadata,
                 &change,
@@ -620,12 +600,12 @@ impl SupportBotHandler {
 
     fn support_control_reaction_effect(
         &self,
-        channel_id: &str,
+        thread_kind: Option<&str>,
         thread_id: &str,
         metadata: &serde_json::Value,
         change: &ReactionChange,
     ) -> Option<ThreadEffect> {
-        if !matches!(self.route(channel_id), SupportRoute::User) {
+        if !matches!(self.route(thread_kind, thread_id), SupportRoute::User) {
             return None;
         }
 
@@ -681,7 +661,10 @@ impl ThreadHandler for SupportBotHandler {
         invocation: &ThreadInvocation,
         ctx: &ThreadContext,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
-        let route = self.route(&invocation.thread.channel_id);
+        let route = self.route(
+            invocation.thread.thread_kind.as_deref(),
+            invocation.thread.channel_id.as_str(),
+        );
         let route_label = route.label();
         let started = Instant::now();
         let result = match route {
@@ -695,7 +678,10 @@ impl ThreadHandler for SupportBotHandler {
                     .instrument(tracing::info_span!("handle", route = "engineer"))
                     .await
             }
-            SupportRoute::Ignored => Ok(vec![ThreadEffect::Noop]),
+            SupportRoute::Ignored => {
+                tracing::warn!("Unknown thread type. Ignoring it");
+                Ok(vec![ThreadEffect::Noop])
+            }
         };
         let outcome = if result.is_ok() { "success" } else { "error" };
         self.metrics
@@ -711,7 +697,7 @@ impl ThreadHandler for SupportBotHandler {
         change: &ReactionChange,
     ) -> Option<ThreadEffect> {
         self.support_control_reaction_effect(
-            &thread_record.channel_id,
+            thread_record.thread_kind.as_deref(),
             &thread_record.thread_id,
             &thread_record.metadata,
             change,

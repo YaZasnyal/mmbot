@@ -1,4 +1,3 @@
-use crate::config::EngineerNotificationTarget;
 use crate::conversation::STATE_KEY;
 use crate::handler::ENGINEER_LINK_KIND;
 use crate::notifier::{status_update_message, support_post_props};
@@ -15,7 +14,6 @@ use tracing::info;
     fields(thread_id = %thread.info.thread_id, tool_call_id = %call_id, action = tracing::field::Empty)
 )]
 pub(crate) async fn apply_action(
-    target: &EngineerNotificationTarget,
     ctx: &ThreadContext,
     thread: &Thread,
     run: &mut UserThreadRun,
@@ -32,7 +30,6 @@ pub(crate) async fn apply_action(
                 ));
             };
             run.reply(
-                target,
                 ctx,
                 thread,
                 message,
@@ -50,29 +47,13 @@ pub(crate) async fn apply_action(
         }
         SupportAction::NotifyEngineer { message } => {
             tracing::Span::current().record("action", tracing::field::display("notify_engineer"));
-            match target {
-                EngineerNotificationTarget::SameThread => {
-                    run.push_effect(ThreadEffect::Reply {
-                        target: ThreadTarget::CurrentThread,
-                        message: message.clone(),
-                        metadata: json!({
-                            STATE_KEY: {
-                                "kind": "engineer_notification",
-                                "tool_call_id": call_id
-                            }
-                        }),
-                    });
-                }
-                EngineerNotificationTarget::MattermostChannel { .. } => {
-                    run.push_effect(ThreadEffect::Reply {
-                        target: ThreadTarget::LinkedThreads {
-                            link_kind: ENGINEER_LINK_KIND.to_string(),
-                        },
-                        message: message.clone(),
-                        metadata: support_post_props("engineer_notification", thread),
-                    });
-                }
-            }
+            run.push_effect(ThreadEffect::Reply {
+                target: ThreadTarget::LinkedThreads {
+                    link_kind: ENGINEER_LINK_KIND.to_string(),
+                },
+                message: message.clone(),
+                metadata: support_post_props("engineer_notification", thread),
+            });
 
             ToolResult {
                 call_id: call_id.to_string(),
@@ -86,25 +67,14 @@ pub(crate) async fn apply_action(
         SupportAction::FinishRequest { summary } => {
             tracing::Span::current().record("action", tracing::field::display("finish_request"));
             run.finish_request(summary.clone());
-            match target {
-                EngineerNotificationTarget::SameThread => {
-                    finished_result(call_id, summary, "skipped", None)
-                }
-                EngineerNotificationTarget::MattermostChannel { .. } => {
-                    run.push_effect(ThreadEffect::Reply {
-                        target: ThreadTarget::LinkedThreads {
-                            link_kind: ENGINEER_LINK_KIND.to_string(),
-                        },
-                        message: status_update_message(
-                            thread,
-                            run.status(),
-                            run.finished_summary(),
-                        ),
-                        metadata: support_post_props("status_update", thread),
-                    });
-                    finished_result(call_id, summary, "queued", None)
-                }
-            }
+            run.push_effect(ThreadEffect::Reply {
+                target: ThreadTarget::LinkedThreads {
+                    link_kind: ENGINEER_LINK_KIND.to_string(),
+                },
+                message: status_update_message(thread, run.status(), run.finished_summary()),
+                metadata: support_post_props("status_update", thread),
+            });
+            finished_result(call_id, summary, "queued", None)
         }
     };
     info!("support-bot: workflow action applied");

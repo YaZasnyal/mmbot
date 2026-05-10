@@ -1,4 +1,3 @@
-use crate::config::EngineerNotificationTarget;
 use crate::error::{Result, SupportBotError};
 use crate::state::{EngineerThreadRef, SupportThreadStatus};
 use mattermost_api::apis::posts_api;
@@ -11,12 +10,15 @@ const MIRRORED_MESSAGE_MAX_CHARS: usize = 4000;
 
 pub struct MattermostSupportNotifier {
     config: Arc<Configuration>,
-    target: EngineerNotificationTarget,
+    engineer_channel_id: String,
 }
 
 impl MattermostSupportNotifier {
-    pub fn new(config: Arc<Configuration>, target: EngineerNotificationTarget) -> Self {
-        Self { config, target }
+    pub fn new(config: Arc<Configuration>, engineer_channel_id: String) -> Self {
+        Self {
+            config,
+            engineer_channel_id,
+        }
     }
 
     #[tracing::instrument(
@@ -29,44 +31,39 @@ impl MattermostSupportNotifier {
         thread: &Thread,
         current_thread: Option<&EngineerThreadRef>,
     ) -> Result<Option<EngineerThreadRef>> {
-        match &self.target {
-            EngineerNotificationTarget::SameThread => Ok(None),
-            EngineerNotificationTarget::MattermostChannel { channel_id } => {
-                if let Some(current_thread) = current_thread {
-                    info!(
-                        source_thread_id = %thread.info.thread_id,
-                        source_root_post_id = %thread.info.root_post_id,
-                        engineer_channel_id = %channel_id,
-                        engineer_root_post_id = %current_thread.root_post_id,
-                        created_or_reused = "reused",
-                        "support-bot: engineer thread reused"
-                    );
-                    return Ok(Some(current_thread.clone()));
-                }
-
-                let request = engineer_thread_root_request(
-                    channel_id,
-                    thread,
-                    source_post_link(&self.config, &thread.info.root_post_id),
-                );
-                let created = posts_api::create_post(&self.config, request, None)
-                    .await
-                    .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
-                info!(
-                    source_thread_id = %thread.info.thread_id,
-                    source_root_post_id = %thread.info.root_post_id,
-                    engineer_channel_id = %channel_id,
-                    engineer_root_post_id = %created.id,
-                    created_or_reused = "created",
-                    "support-bot: engineer thread created"
-                );
-
-                Ok(Some(EngineerThreadRef {
-                    channel_id: channel_id.clone(),
-                    root_post_id: created.id,
-                }))
-            }
+        if let Some(current_thread) = current_thread {
+            info!(
+                source_thread_id = %thread.info.thread_id,
+                source_root_post_id = %thread.info.root_post_id,
+                engineer_channel_id = %self.engineer_channel_id,
+                engineer_root_post_id = %current_thread.root_post_id,
+                created_or_reused = "reused",
+                "support-bot: engineer thread reused"
+            );
+            return Ok(Some(current_thread.clone()));
         }
+
+        let request = engineer_thread_root_request(
+            &self.engineer_channel_id,
+            thread,
+            source_post_link(&self.config, &thread.info.root_post_id),
+        );
+        let created = posts_api::create_post(&self.config, request, None)
+            .await
+            .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
+        info!(
+            source_thread_id = %thread.info.thread_id,
+            source_root_post_id = %thread.info.root_post_id,
+            engineer_channel_id = %self.engineer_channel_id,
+            engineer_root_post_id = %created.id,
+            created_or_reused = "created",
+            "support-bot: engineer thread created"
+        );
+
+        Ok(Some(EngineerThreadRef {
+            channel_id: self.engineer_channel_id.clone(),
+            root_post_id: created.id,
+        }))
     }
 
     #[tracing::instrument(
@@ -80,36 +77,25 @@ impl MattermostSupportNotifier {
         current_thread: Option<&EngineerThreadRef>,
         message: String,
     ) -> Result<Option<EngineerThreadRef>> {
-        match &self.target {
-            EngineerNotificationTarget::SameThread => Ok(None),
-            EngineerNotificationTarget::MattermostChannel { channel_id } => {
-                let thread_ref = self
-                    .ensure_engineer_thread(thread, current_thread)
-                    .await?
-                    .ok_or_else(|| {
-                        SupportBotError::Internal("engineer thread was not created".into())
-                    })?;
-                let message_bytes = message.len();
-                let request = engineer_thread_reply_request(
-                    channel_id,
-                    &thread_ref.root_post_id,
-                    thread,
-                    message,
-                );
+        let thread_ref = self
+            .ensure_engineer_thread(thread, current_thread)
+            .await?
+            .ok_or_else(|| SupportBotError::Internal("engineer thread was not created".into()))?;
+        let message_bytes = message.len();
+        let request =
+            engineer_thread_reply_request(&self.engineer_channel_id, &thread_ref.root_post_id, thread, message);
 
-                posts_api::create_post(&self.config, request, None)
-                    .await
-                    .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
-                info!(
-                    source_thread_id = %thread.info.thread_id,
-                    engineer_root_post_id = %thread_ref.root_post_id,
-                    message_bytes,
-                    "support-bot: engineer notification posted"
-                );
+        posts_api::create_post(&self.config, request, None)
+            .await
+            .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
+        info!(
+            source_thread_id = %thread.info.thread_id,
+            engineer_root_post_id = %thread_ref.root_post_id,
+            message_bytes,
+            "support-bot: engineer notification posted"
+        );
 
-                Ok(Some(thread_ref))
-            }
-        }
+        Ok(Some(thread_ref))
     }
 
     #[tracing::instrument(
@@ -168,39 +154,32 @@ impl MattermostSupportNotifier {
         status: &SupportThreadStatus,
         summary: Option<&str>,
     ) -> Result<Option<EngineerThreadRef>> {
-        match &self.target {
-            EngineerNotificationTarget::SameThread => Ok(None),
-            EngineerNotificationTarget::MattermostChannel { channel_id } => {
-                let thread_ref = self
-                    .ensure_engineer_thread(thread, current_thread)
-                    .await?
-                    .ok_or_else(|| {
-                        SupportBotError::Internal("engineer thread was not created".into())
-                    })?;
-                let message = status_update_message(thread, status, summary);
-                let message_bytes = message.len();
-                let mut request = engineer_thread_reply_request(
-                    channel_id,
-                    &thread_ref.root_post_id,
-                    thread,
-                    message,
-                );
-                request.props = Some(support_post_props("status_update", thread));
+        let thread_ref = self
+            .ensure_engineer_thread(thread, current_thread)
+            .await?
+            .ok_or_else(|| SupportBotError::Internal("engineer thread was not created".into()))?;
+        let message = status_update_message(thread, status, summary);
+        let message_bytes = message.len();
+        let mut request = engineer_thread_reply_request(
+            &self.engineer_channel_id,
+            &thread_ref.root_post_id,
+            thread,
+            message,
+        );
+        request.props = Some(support_post_props("status_update", thread));
 
-                posts_api::create_post(&self.config, request, None)
-                    .await
-                    .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
-                info!(
-                    source_thread_id = %thread.info.thread_id,
-                    engineer_root_post_id = %thread_ref.root_post_id,
-                    status = support_status_label(status),
-                    message_bytes,
-                    "support-bot: status update posted to engineer thread"
-                );
+        posts_api::create_post(&self.config, request, None)
+            .await
+            .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
+        info!(
+            source_thread_id = %thread.info.thread_id,
+            engineer_root_post_id = %thread_ref.root_post_id,
+            status = support_status_label(status),
+            message_bytes,
+            "support-bot: status update posted to engineer thread"
+        );
 
-                Ok(Some(thread_ref))
-            }
-        }
+        Ok(Some(thread_ref))
     }
 
     #[tracing::instrument(
@@ -262,38 +241,31 @@ impl MattermostSupportNotifier {
         kind: &str,
         message: String,
     ) -> Result<Option<EngineerThreadRef>> {
-        match &self.target {
-            EngineerNotificationTarget::SameThread => Ok(None),
-            EngineerNotificationTarget::MattermostChannel { channel_id } => {
-                let thread_ref = self
-                    .ensure_engineer_thread(thread, current_thread)
-                    .await?
-                    .ok_or_else(|| {
-                        SupportBotError::Internal("engineer thread was not created".into())
-                    })?;
-                let message_bytes = message.len();
-                let mut request = engineer_thread_reply_request(
-                    channel_id,
-                    &thread_ref.root_post_id,
-                    thread,
-                    message,
-                );
-                request.props = Some(support_post_props(kind, thread));
+        let thread_ref = self
+            .ensure_engineer_thread(thread, current_thread)
+            .await?
+            .ok_or_else(|| SupportBotError::Internal("engineer thread was not created".into()))?;
+        let message_bytes = message.len();
+        let mut request = engineer_thread_reply_request(
+            &self.engineer_channel_id,
+            &thread_ref.root_post_id,
+            thread,
+            message,
+        );
+        request.props = Some(support_post_props(kind, thread));
 
-                posts_api::create_post(&self.config, request, None)
-                    .await
-                    .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
-                info!(
-                    source_thread_id = %thread.info.thread_id,
-                    engineer_root_post_id = %thread_ref.root_post_id,
-                    kind = %kind,
-                    message_bytes,
-                    "support-bot: mirrored message posted to engineer thread"
-                );
+        posts_api::create_post(&self.config, request, None)
+            .await
+            .map_err(|error| SupportBotError::Mattermost(error.to_string()))?;
+        info!(
+            source_thread_id = %thread.info.thread_id,
+            engineer_root_post_id = %thread_ref.root_post_id,
+            kind = %kind,
+            message_bytes,
+            "support-bot: mirrored message posted to engineer thread"
+        );
 
-                Ok(Some(thread_ref))
-            }
-        }
+        Ok(Some(thread_ref))
     }
 
     async fn upload_html_file(
