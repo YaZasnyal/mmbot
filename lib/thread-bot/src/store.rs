@@ -1,7 +1,7 @@
 use crate::error::ThreadBotError;
 use crate::types::{
-    AppendReaction, ChannelCheckpoint, ThreadMessageRecord, ThreadReaction, ThreadRecord,
-    UpsertThread, UpsertThreadMessage,
+    AppendReaction, ChannelCheckpoint, ThreadLink, ThreadMessageRecord, ThreadReaction,
+    ThreadRecord, UpsertThread, UpsertThreadLink, UpsertThreadMessage,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -41,6 +41,31 @@ pub trait ThreadStore: Send + Sync + 'static {
         thread_id: &str,
         metadata: serde_json::Value,
     ) -> Result<(), ThreadBotError>;
+
+    /// Create or update a typed link from one tracked thread to another.
+    async fn upsert_thread_link(
+        &self,
+        input: UpsertThreadLink,
+    ) -> Result<ThreadLink, ThreadBotError>;
+
+    /// Get one forward link by source thread and link kind.
+    async fn get_thread_link(
+        &self,
+        source_thread_id: &str,
+        link_kind: &str,
+    ) -> Result<Option<ThreadLink>, ThreadBotError>;
+
+    /// List links originating from a thread.
+    async fn list_thread_links(
+        &self,
+        source_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError>;
+
+    /// List links pointing at a thread.
+    async fn list_reverse_thread_links(
+        &self,
+        target_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError>;
 
     /// Update thread seen position
     async fn update_thread_seen(

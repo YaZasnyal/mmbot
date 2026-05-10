@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use thread_bot::{
-    AppendReaction, ChannelCheckpoint, ThreadBotError, ThreadMessageRecord, ThreadReaction,
-    ThreadRecord, ThreadStore, UpsertThread, UpsertThreadMessage,
+    AppendReaction, ChannelCheckpoint, ThreadBotError, ThreadLink, ThreadMessageRecord,
+    ThreadReaction, ThreadRecord, ThreadStore, UpsertThread, UpsertThreadLink, UpsertThreadMessage,
 };
 
 pub struct PanicStore;
@@ -37,6 +37,35 @@ impl ThreadStore for PanicStore {
         _thread_id: &str,
         _metadata: serde_json::Value,
     ) -> Result<(), ThreadBotError> {
+        panic!("store should not be used")
+    }
+
+    async fn upsert_thread_link(
+        &self,
+        _input: UpsertThreadLink,
+    ) -> Result<ThreadLink, ThreadBotError> {
+        panic!("store should not be used")
+    }
+
+    async fn get_thread_link(
+        &self,
+        _source_thread_id: &str,
+        _link_kind: &str,
+    ) -> Result<Option<ThreadLink>, ThreadBotError> {
+        panic!("store should not be used")
+    }
+
+    async fn list_thread_links(
+        &self,
+        _source_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError> {
+        panic!("store should not be used")
+    }
+
+    async fn list_reverse_thread_links(
+        &self,
+        _target_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError> {
         panic!("store should not be used")
     }
 

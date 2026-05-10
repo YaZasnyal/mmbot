@@ -18,6 +18,21 @@ CREATE INDEX idx_threads_thread_kind ON threads(thread_kind);
 CREATE INDEX idx_threads_updated_at ON threads(updated_at DESC);
 CREATE INDEX idx_threads_metadata_gin ON threads USING GIN(metadata);
 
+CREATE TABLE thread_links (
+    source_thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+    link_kind TEXT NOT NULL,
+    target_thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (source_thread_id, link_kind)
+);
+
+CREATE INDEX idx_thread_links_target_thread_id
+    ON thread_links(target_thread_id);
+CREATE INDEX idx_thread_links_link_kind
+    ON thread_links(link_kind);
+
 CREATE TABLE thread_messages (
     post_id TEXT PRIMARY KEY,
     thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,

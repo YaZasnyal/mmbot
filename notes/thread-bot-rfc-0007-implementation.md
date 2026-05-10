@@ -398,13 +398,51 @@ cargo clippy -p hello-thread-bot -- -D warnings
 
 All passed after slice 8.
 
+### Implementation slice 9: thread link storage
+
+Files touched:
+
+- `lib/thread-bot/migrations/20260408_001_initial.sql`
+- `lib/thread-bot/src/types.rs`
+- `lib/thread-bot/src/store.rs`
+- `lib/thread-bot/src/pg_store.rs`
+- `lib/thread-bot/src/testutil.rs`
+- `lib/thread-bot/src/lib.rs`
+- `lib/thread-bot/tests/pg_store_tests.rs`
+- `lib/support-bot/src/testutil.rs`
+- `lib/support-bot/src/handler.rs`
+
+Changes:
+
+- Added normalized `thread_links` table to the initial migration.
+- Added `ThreadLink` and `UpsertThreadLink` public types.
+- Added store APIs for typed forward links:
+  `upsert_thread_link`, `get_thread_link`, and `list_thread_links`.
+- Added `list_reverse_thread_links` for reverse lookup by target thread.
+- Implemented link APIs in PostgreSQL store and in-memory test store.
+- Added pg-store tests for create/read, update-by-link-kind, forward listing,
+  and reverse listing.
+- Updated support-bot test stores for the expanded `ThreadStore` trait.
+- This slice intentionally does not add `EnsureLinkedThread`,
+  `ThreadTarget::LinkedThread`, or support-bot notifier migration yet.
+
+Verification run:
+
+```bash
+cargo fmt -p thread-bot -p support-bot
+cargo test -p thread-bot
+cargo test -p support-bot
+cargo clippy -p thread-bot -- -D warnings
+cargo clippy -p support-bot -- -D warnings
+```
+
+All passed after slice 9.
+
 ## Next tasks
 
 Prefer one small reviewable slice at a time.
 
-1. Add thread links and linked effects.
-   - Add `thread_links` table to the initial migration.
-   - Add store APIs for forward and reverse lookups.
+1. Add linked thread effects.
    - Add `EnsureLinkedThread`.
    - Add `ThreadTarget::LinkedThread`.
    - Persist created bot replies immediately after Mattermost `create_post`.

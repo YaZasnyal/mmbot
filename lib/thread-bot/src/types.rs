@@ -18,6 +18,26 @@ pub struct ThreadRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Normalized typed link between two tracked threads.
+#[derive(Debug, Clone)]
+pub struct ThreadLink {
+    pub source_thread_id: String,
+    pub link_kind: String,
+    pub target_thread_id: String,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Input for creating or updating a thread link.
+#[derive(Debug, Clone)]
+pub struct UpsertThreadLink {
+    pub source_thread_id: String,
+    pub link_kind: String,
+    pub target_thread_id: String,
+    pub metadata: serde_json::Value,
+}
+
 /// Lightweight handler invocation.
 ///
 /// Contains the persisted thread record plus the reason the actor invoked the

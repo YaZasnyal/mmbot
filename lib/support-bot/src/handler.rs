@@ -773,9 +773,9 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
     use thread_bot::{
-        AppendReaction, ChannelCheckpoint, ThreadInfo, ThreadInvocation, ThreadMessage,
+        AppendReaction, ChannelCheckpoint, ThreadInfo, ThreadInvocation, ThreadLink, ThreadMessage,
         ThreadMessageRecord, ThreadReaction, ThreadRecord, ThreadStore, ThreadTrigger,
-        UpsertThread, UpsertThreadMessage,
+        UpsertThread, UpsertThreadLink, UpsertThreadMessage,
     };
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1004,6 +1004,35 @@ mod tests {
             _metadata: serde_json::Value,
         ) -> Result<(), ThreadBotError> {
             panic!("store should not set thread metadata")
+        }
+
+        async fn upsert_thread_link(
+            &self,
+            _input: UpsertThreadLink,
+        ) -> Result<ThreadLink, ThreadBotError> {
+            panic!("store should not upsert thread links")
+        }
+
+        async fn get_thread_link(
+            &self,
+            _source_thread_id: &str,
+            _link_kind: &str,
+        ) -> Result<Option<ThreadLink>, ThreadBotError> {
+            panic!("store should not get thread links")
+        }
+
+        async fn list_thread_links(
+            &self,
+            _source_thread_id: &str,
+        ) -> Result<Vec<ThreadLink>, ThreadBotError> {
+            panic!("store should not list thread links")
+        }
+
+        async fn list_reverse_thread_links(
+            &self,
+            _target_thread_id: &str,
+        ) -> Result<Vec<ThreadLink>, ThreadBotError> {
+            panic!("store should not list reverse thread links")
         }
 
         async fn update_thread_seen(

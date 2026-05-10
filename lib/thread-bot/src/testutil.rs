@@ -33,6 +33,7 @@ pub struct MockStore {
 
 struct MockStoreState {
     threads: HashMap<String, ThreadRecord>,
+    links: HashMap<(String, String), ThreadLink>,
     messages: HashMap<String, ThreadMessageRecord>,
     reactions: Vec<StoredReaction>,
     checkpoints: HashMap<String, ChannelCheckpoint>,
@@ -52,6 +53,7 @@ impl MockStore {
         Self {
             state: RwLock::new(MockStoreState {
                 threads: HashMap::new(),
+                links: HashMap::new(),
                 messages: HashMap::new(),
                 reactions: Vec::new(),
                 checkpoints: HashMap::new(),
@@ -156,6 +158,86 @@ impl ThreadStore for MockStore {
             }
             None => Err(ThreadBotError::ThreadNotFound(thread_id.to_string())),
         }
+    }
+
+    async fn upsert_thread_link(
+        &self,
+        input: UpsertThreadLink,
+    ) -> Result<ThreadLink, ThreadBotError> {
+        let mut state = self.state.write().await;
+        let now = Utc::now();
+        let key = (input.source_thread_id.clone(), input.link_kind.clone());
+        let link = if let Some(existing) = state.links.get(&key) {
+            ThreadLink {
+                target_thread_id: input.target_thread_id,
+                metadata: input.metadata,
+                updated_at: now,
+                ..existing.clone()
+            }
+        } else {
+            ThreadLink {
+                source_thread_id: input.source_thread_id,
+                link_kind: input.link_kind,
+                target_thread_id: input.target_thread_id,
+                metadata: input.metadata,
+                created_at: now,
+                updated_at: now,
+            }
+        };
+        state.links.insert(key, link.clone());
+        Ok(link)
+    }
+
+    async fn get_thread_link(
+        &self,
+        source_thread_id: &str,
+        link_kind: &str,
+    ) -> Result<Option<ThreadLink>, ThreadBotError> {
+        Ok(self
+            .state
+            .read()
+            .await
+            .links
+            .get(&(source_thread_id.to_string(), link_kind.to_string()))
+            .cloned())
+    }
+
+    async fn list_thread_links(
+        &self,
+        source_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError> {
+        let mut links = self
+            .state
+            .read()
+            .await
+            .links
+            .values()
+            .filter(|link| link.source_thread_id == source_thread_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        links.sort_by(|left, right| left.link_kind.cmp(&right.link_kind));
+        Ok(links)
+    }
+
+    async fn list_reverse_thread_links(
+        &self,
+        target_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError> {
+        let mut links = self
+            .state
+            .read()
+            .await
+            .links
+            .values()
+            .filter(|link| link.target_thread_id == target_thread_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        links.sort_by(|left, right| {
+            left.source_thread_id
+                .cmp(&right.source_thread_id)
+                .then_with(|| left.link_kind.cmp(&right.link_kind))
+        });
+        Ok(links)
     }
 
     async fn update_thread_seen(

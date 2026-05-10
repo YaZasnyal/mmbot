@@ -1,8 +1,8 @@
 use crate::error::ThreadBotError;
 use crate::store::ThreadStore;
 use crate::types::{
-    AppendReaction, ChannelCheckpoint, ReactionAction, ThreadMessageRecord, ThreadReaction,
-    ThreadRecord, UpsertThread, UpsertThreadMessage,
+    AppendReaction, ChannelCheckpoint, ReactionAction, ThreadLink, ThreadMessageRecord,
+    ThreadReaction, ThreadRecord, UpsertThread, UpsertThreadLink, UpsertThreadMessage,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -78,6 +78,29 @@ impl From<ThreadRow> for ThreadRecord {
 }
 
 #[derive(FromRow)]
+struct ThreadLinkRow {
+    source_thread_id: String,
+    link_kind: String,
+    target_thread_id: String,
+    metadata: serde_json::Value,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl From<ThreadLinkRow> for ThreadLink {
+    fn from(row: ThreadLinkRow) -> Self {
+        Self {
+            source_thread_id: row.source_thread_id,
+            link_kind: row.link_kind,
+            target_thread_id: row.target_thread_id,
+            metadata: row.metadata,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+#[derive(FromRow)]
 struct MessageRow {
     post_id: String,
     thread_id: String,
@@ -145,6 +168,10 @@ const MESSAGE_COLUMNS: &str = r#"
     post_id, thread_id, user_id, is_bot_message, root_id, parent_post_id,
     metadata, post_created_at, post_updated_at, post_deleted_at,
     created_at, updated_at
+"#;
+
+const THREAD_LINK_COLUMNS: &str = r#"
+    source_thread_id, link_kind, target_thread_id, metadata, created_at, updated_at
 "#;
 
 #[async_trait]
@@ -255,6 +282,91 @@ impl ThreadStore for PgThreadStore {
             return Err(ThreadBotError::ThreadNotFound(thread_id.to_string()));
         }
         Ok(())
+    }
+
+    async fn upsert_thread_link(
+        &self,
+        input: UpsertThreadLink,
+    ) -> Result<ThreadLink, ThreadBotError> {
+        let now = Utc::now();
+        let sql = format!(
+            r#"
+            INSERT INTO thread_links (
+                source_thread_id, link_kind, target_thread_id, metadata,
+                created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $5)
+            ON CONFLICT (source_thread_id, link_kind) DO UPDATE SET
+                target_thread_id = EXCLUDED.target_thread_id,
+                metadata = EXCLUDED.metadata,
+                updated_at = EXCLUDED.updated_at
+            RETURNING {THREAD_LINK_COLUMNS}
+            "#
+        );
+
+        let row: ThreadLinkRow = sqlx::query_as(&sql)
+            .bind(&input.source_thread_id)
+            .bind(&input.link_kind)
+            .bind(&input.target_thread_id)
+            .bind(&input.metadata)
+            .bind(now)
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok(row.into())
+    }
+
+    async fn get_thread_link(
+        &self,
+        source_thread_id: &str,
+        link_kind: &str,
+    ) -> Result<Option<ThreadLink>, ThreadBotError> {
+        let sql = format!(
+            "SELECT {THREAD_LINK_COLUMNS} FROM thread_links \
+             WHERE source_thread_id = $1 AND link_kind = $2"
+        );
+
+        let row: Option<ThreadLinkRow> = sqlx::query_as(&sql)
+            .bind(source_thread_id)
+            .bind(link_kind)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        Ok(row.map(Into::into))
+    }
+
+    async fn list_thread_links(
+        &self,
+        source_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError> {
+        let sql = format!(
+            "SELECT {THREAD_LINK_COLUMNS} FROM thread_links \
+             WHERE source_thread_id = $1 ORDER BY link_kind ASC"
+        );
+
+        let rows: Vec<ThreadLinkRow> = sqlx::query_as(&sql)
+            .bind(source_thread_id)
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    async fn list_reverse_thread_links(
+        &self,
+        target_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError> {
+        let sql = format!(
+            "SELECT {THREAD_LINK_COLUMNS} FROM thread_links \
+             WHERE target_thread_id = $1 ORDER BY source_thread_id ASC, link_kind ASC"
+        );
+
+        let rows: Vec<ThreadLinkRow> = sqlx::query_as(&sql)
+            .bind(target_thread_id)
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     async fn update_thread_seen(
