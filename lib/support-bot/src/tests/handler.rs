@@ -493,7 +493,7 @@ fn message_record(message: &ThreadMessage) -> ThreadMessageRecord {
 }
 
 #[tokio::test]
-async fn should_track_only_user_threads() {
+async fn ignored_route_returns_noop() {
     let handler = SupportBotHandler::new(
         "support",
         test_config(),
@@ -502,14 +502,21 @@ async fn should_track_only_user_threads() {
         "system",
     );
 
-    assert!(handler
-        .should_track(&thread("users", "help"), &context())
+    let ignored = thread("other", "hello");
+    let effects = handler
+        .handle(
+            &ThreadInvocation {
+                thread: record_from_thread(&ignored),
+                trigger: ThreadTrigger::NewMessage {
+                    post_id: "root".to_string(),
+                },
+            },
+            &context(),
+        )
         .await
-        .unwrap());
-    assert!(!handler
-        .should_track(&thread("engineers", "!support state"), &context())
-        .await
-        .unwrap());
+        .unwrap();
+
+    assert!(matches!(effects.as_slice(), [ThreadEffect::Noop]));
 }
 
 #[tokio::test]

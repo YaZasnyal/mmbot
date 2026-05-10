@@ -23,13 +23,12 @@
 //!
 //! ```no_run
 //! # use std::sync::Arc;
-//! # use thread_bot::{async_trait, ThreadHandler, ThreadEffect, ThreadBotError, Thread, ThreadContext, ThreadInvocation};
+//! # use thread_bot::{async_trait, ThreadHandler, ThreadEffect, ThreadBotError, ThreadContext, ThreadInvocation};
 //! # struct MyHandler;
 //! # impl MyHandler { fn new() -> Self { Self } }
 //! # #[async_trait]
 //! # impl ThreadHandler for MyHandler {
 //! #     fn id(&self) -> &'static str { "my" }
-//! #     async fn should_track(&self, _: &Thread, _: &ThreadContext) -> Result<bool, ThreadBotError> { Ok(true) }
 //! #     async fn handle(&self, _: &ThreadInvocation, _: &ThreadContext) -> Result<Vec<ThreadEffect>, ThreadBotError> { Ok(vec![]) }
 //! # }
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -66,8 +65,7 @@ use mattermost_bot::{chrono, cron_tab};
 use crate::handle::ThreadBotHandle;
 
 use crate::actor::{
-    get_root_post_id, is_root_post, ms_to_datetime, post_to_thread_message, thread_actor, ActorCtx,
-    ThreadCommand,
+    get_root_post_id, is_root_post, ms_to_datetime, thread_actor, ActorCtx, ThreadCommand,
 };
 use crate::channel_messages::{channel_messages_after, latest_channel_post};
 use crate::error::ThreadBotError;
@@ -219,7 +217,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
         }
     }
 
-    /// Handle a new root post — decide whether to track this thread.
+    /// Handle a new root post by persisting and routing the thread.
     async fn handle_new_thread(&self, post: &models::Post, mm_config: &Arc<Configuration>) {
         let thread_id = post.id.clone();
         let channel_id = post.channel_id.clone().unwrap_or_default();
@@ -246,65 +244,18 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
                 }
                 return;
             }
-            Ok(None) => {
-                // Not tracked yet — proceed with should_track
-            }
+            Ok(None) => {}
             Err(e) => {
                 tracing::error!(thread_id = %thread_id, error = %e, "Failed to check thread existence");
                 return;
             }
         }
 
-        // Build a minimal Thread snapshot for should_track
-        let now = chrono::Utc::now();
-        let thread = Thread {
-            info: ThreadInfo {
-                thread_id: thread_id.clone(),
-                root_post_id: thread_id.clone(),
-                channel_id: channel_id.clone(),
-                creator_user_id: user_id.clone(),
-                thread_kind: None,
-                metadata: serde_json::Value::Null,
-                last_seen_post_id: None,
-                last_seen_post_at: None,
-                last_processed_post_id: None,
-                last_processed_post_at: None,
-                created_at: now,
-                updated_at: now,
-            },
-            messages: vec![{
-                let mut msg = post_to_thread_message(post, &thread_id);
-                msg.is_new = true;
-                msg
-            }],
-            reactions: vec![],
-        };
-
-        let ctx = ThreadContext {
-            config: Arc::clone(mm_config),
-            store: Arc::clone(&self.store),
-            plugin_id: self.handler.id(),
-            bot_user_id: self.bot_user_id.read().await.clone(),
-        };
-
-        // Ask handler if it wants to track this thread
-        match self.handler.should_track(&thread, &ctx).await {
-            Ok(true) => {
-                tracing::info!(
-                    thread_id = %thread_id,
-                    channel_id = %channel_id,
-                    "Tracking new thread"
-                );
-            }
-            Ok(false) => {
-                tracing::debug!(thread_id = %thread_id, "Handler declined to track thread");
-                return;
-            }
-            Err(e) => {
-                tracing::error!(thread_id = %thread_id, error = %e, "should_track failed");
-                return;
-            }
-        }
+        tracing::info!(
+            thread_id = %thread_id,
+            channel_id = %channel_id,
+            "Persisting new thread"
+        );
 
         // Create thread record in DB
         let upsert = UpsertThread {
@@ -312,7 +263,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             root_post_id: thread_id.clone(),
             channel_id: channel_id.clone(),
             creator_user_id: user_id,
-            thread_kind: self.handler.thread_kind(&thread),
+            thread_kind: None,
             metadata: serde_json::Value::Null,
         };
 

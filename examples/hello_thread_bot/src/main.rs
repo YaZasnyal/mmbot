@@ -26,18 +26,6 @@ impl ThreadHandler for HelloWorldHandler {
         "hello_world_handler"
     }
 
-    async fn should_track(
-        &self,
-        _thread: &thread_bot::Thread,
-        _ctx: &thread_bot::ThreadContext,
-    ) -> Result<bool, thread_bot::ThreadBotError> {
-        Ok(true)
-    }
-
-    fn thread_kind(&self, _thread: &thread_bot::Thread) -> Option<String> {
-        Some("hello_world".to_string())
-    }
-
     async fn handle(
         &self,
         invocation: &thread_bot::ThreadInvocation,

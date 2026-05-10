@@ -483,8 +483,6 @@ pub struct MockHandler {
 
     /// Number of times `handle()` was called.
     pub handle_call_count: AtomicUsize,
-    /// Whether `should_track()` returns true.
-    should_track_result: bool,
 }
 
 impl MockHandler {
@@ -499,7 +497,6 @@ impl MockHandler {
             handle_entered_tx: tx,
             handle_entered_rx: Mutex::new(rx),
             handle_call_count: AtomicUsize::new(0),
-            should_track_result: true,
         }
     }
 
@@ -528,13 +525,6 @@ impl MockHandler {
         self
     }
 
-    /// Set whether `should_track()` returns true.
-    #[allow(dead_code)]
-    pub fn with_should_track(mut self, value: bool) -> Self {
-        self.should_track_result = value;
-        self
-    }
-
     /// Get the number of times `handle()` was called.
     pub fn call_count(&self) -> usize {
         self.handle_call_count.load(Ordering::SeqCst)
@@ -550,14 +540,6 @@ impl MockHandler {
 impl ThreadHandler for MockHandler {
     fn id(&self) -> &'static str {
         "mock-handler"
-    }
-
-    async fn should_track(
-        &self,
-        _thread: &Thread,
-        _ctx: &ThreadContext,
-    ) -> Result<bool, ThreadBotError> {
-        Ok(self.should_track_result)
     }
 
     async fn handle(

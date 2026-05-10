@@ -666,17 +666,59 @@ cargo clippy -p hello-thread-bot -- -D warnings
 
 All passed after slice 15.
 
+### Implementation slice 16: remove L3 tracking policy hook
+
+Files touched:
+
+- `lib/thread-bot/src/handler.rs`
+- `lib/thread-bot/src/runtime.rs`
+- `lib/thread-bot/src/testutil.rs`
+- `lib/support-bot/src/handler.rs`
+- `lib/support-bot/src/tests/handler.rs`
+- `examples/hello_thread_bot/src/main.rs`
+
+Changes:
+
+- Removed `ThreadHandler::should_track(...)` from the Layer 3 API.
+- Removed the temporary `ThreadHandler::thread_kind(...)` compatibility hook.
+- New Mattermost root posts are now persisted/routed by Layer 3 without asking
+  Layer 4 whether the thread is worth tracking.
+- Runtime creates the system thread record with neutral L3 fields:
+  `thread_kind = None` and `metadata = Null`.
+- Layer 4 remains responsible for business routing and lifecycle policy in
+  `handle(...)`; support-bot already routes by `channel_id` and returns
+  `Noop` for ignored routes.
+- Updated support-bot tests to assert ignored-route handler behavior instead
+  of tracking-decision behavior.
+- This replaces the previously considered tracking-decision API. That API was
+  rejected because it kept the tracking policy hook in Layer 3 and made the
+  wrong boundary more complex.
+
+Verification run:
+
+```bash
+cargo fmt -p thread-bot -p support-bot -p hello-thread-bot
+cargo fmt -p thread-bot -p support-bot -p hello-thread-bot --check
+cargo test -p support-bot ignored_route_returns_noop -- --nocapture
+cargo check -p hello-thread-bot
+cargo test -p thread-bot --no-run
+cargo test -p thread-bot
+cargo test -p support-bot
+cargo clippy -p thread-bot -- -D warnings
+cargo clippy -p support-bot -- -D warnings
+cargo clippy -p hello-thread-bot -- -D warnings
+```
+
+All passed after slice 16.
+
 ## Next tasks
 
 Prefer one small reviewable slice at a time.
 
-1. Replace the temporary `should_track(...) -> bool` plus `thread_kind(...)`
-   compatibility hook with a single tracking decision API that can return
-   `Ignore` or `Track { thread_kind, metadata }`.
-2. Decide whether to move `EnsureLinkedThread` duplicate avoidance into Layer 3
+1. Decide whether to move `EnsureLinkedThread` duplicate avoidance into Layer 3
    by making `(source_thread_id, link_kind)` lookup/no-op semantics part of the
    effect executor, or keep the current plugin-owned policy.
-3. Keep raw-post path removed.
+2. Keep raw-post path removed.
    - `execute_raw_post_effects` has been removed from runtime.
    - `ThreadHandler::handle_raw_post` has been removed.
    - `build_raw_engineer_thread_snapshot` is not present.

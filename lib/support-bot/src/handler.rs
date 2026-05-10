@@ -676,25 +676,6 @@ impl ThreadHandler for SupportBotHandler {
         self.id
     }
 
-    async fn should_track(
-        &self,
-        thread: &Thread,
-        _ctx: &ThreadContext,
-    ) -> Result<bool, ThreadBotError> {
-        Ok(matches!(
-            self.route(&thread.info.channel_id),
-            SupportRoute::User
-        ))
-    }
-
-    fn thread_kind(&self, thread: &Thread) -> Option<String> {
-        match self.route(&thread.info.channel_id) {
-            SupportRoute::User => Some("support_user".to_string()),
-            SupportRoute::Engineer => Some("support_engineer".to_string()),
-            SupportRoute::Ignored => None,
-        }
-    }
-
     async fn handle(
         &self,
         invocation: &ThreadInvocation,
