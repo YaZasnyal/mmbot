@@ -1,12 +1,12 @@
-use crate::conversation::{load_state, load_trace, STATE_KEY};
+use crate::conversation::{load_state, load_trace};
 use crate::handler::ENGINEER_LINK_KIND;
 use crate::llm::{ChatMessage, ChatRole};
+use crate::metadata::{metadata_value, SupportPostKind, SupportPostMetadata};
 use crate::notifier::{
     render_thread_html_report, MattermostSupportNotifier, SupportReportPost, SupportReportSummary,
     SupportReportToolCall, SupportReportTrace,
 };
 use crate::state::SupportThreadStatus;
-use serde_json::json;
 use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadTarget};
 use tracing::{info, warn};
 
@@ -38,7 +38,7 @@ pub(crate) async fn handle_debug_export_html(
         source_thread_id = %source_thread_id,
         "support-bot: exporting debug-report"
     );
-    let Some(record) = ctx.store.get_thread(&source_thread_id).await? else {
+    let Some(record) = ctx.store.get_thread(source_thread_id).await? else {
         warn!(
             source_thread_id = %source_thread_id,
             "support-bot: debug-report source thread not found in store"
@@ -94,10 +94,7 @@ pub(crate) async fn handle_debug_export_html(
         &traces_by_post,
     );
     let html_size = html.len();
-    MattermostSupportNotifier::new(
-        ctx.config.clone(),
-        engineer_channel_id.to_string(),
-    )
+    MattermostSupportNotifier::new(ctx.config.clone(), engineer_channel_id.to_string())
         .post_html_attachment_to_thread(
             &engineer_thread.info.channel_id,
             &engineer_thread.info.root_post_id,
@@ -107,13 +104,7 @@ pub(crate) async fn handle_debug_export_html(
                 "Attached: support thread HTML export for `{}`.",
                 record.thread_id
             ),
-            json!({
-                STATE_KEY: {
-                    "kind": "thread_html_report",
-                    "source_thread_id": record.thread_id,
-                    "reason": "engineer_request"
-                }
-            }),
+            metadata_value(&SupportPostMetadata::thread_html_report(&record.thread_id))?,
         )
         .await?;
     info!(
@@ -134,11 +125,8 @@ pub(crate) async fn handle_debug_export_html(
 }
 
 pub(crate) fn debug_response_metadata() -> serde_json::Value {
-    json!({
-        STATE_KEY: {
-            "kind": "debug_response"
-        }
-    })
+    metadata_value(&SupportPostMetadata::new(SupportPostKind::DebugResponse))
+        .unwrap_or(serde_json::Value::Null)
 }
 
 fn report_post_from_thread_message(message: &thread_bot::ThreadMessage) -> SupportReportPost {

@@ -12,6 +12,7 @@ pub mod error;
 pub mod handler;
 pub mod instructions;
 pub mod llm;
+mod metadata;
 pub mod metrics;
 pub mod notifier;
 mod output;

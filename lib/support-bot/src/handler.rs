@@ -1,10 +1,11 @@
 use crate::config::SupportBotConfig;
 use crate::conversation::{
-    build_llm_messages, load_state, result_to_message, store_state, truncate_utf8, STATE_KEY,
+    build_llm_messages, load_state, result_to_message, store_state, truncate_utf8,
 };
 use crate::debug::{DebugCommand, DebugCommandHandler};
 use crate::debug_export::handle_debug_export_html;
 use crate::llm::{LlmClient, LlmRequest};
+use crate::metadata::{metadata_value, SupportPostKind, SupportPostMetadata};
 use crate::metrics::SupportBotMetricsHandle;
 use crate::notifier::{engineer_thread_root_message, source_post_link, support_post_props};
 use crate::output::sanitize_user_visible_message;
@@ -88,7 +89,7 @@ impl SupportBotHandler {
                     .any(|user_channel_id| user_channel_id == channel_id)
                 {
                     SupportRoute::User
-                } else if channel_id == &self.config.engineer_notifications.channel_id {
+                } else if channel_id == self.config.engineer_notifications.channel_id {
                     SupportRoute::Engineer
                 } else {
                     SupportRoute::Ignored
@@ -155,11 +156,7 @@ impl SupportBotHandler {
         Ok(vec![ThreadEffect::Reply {
             target: ThreadTarget::CurrentThread,
             message: response.message,
-            metadata: json!({
-                STATE_KEY: {
-                    "kind": "debug_response"
-                }
-            }),
+            metadata: metadata_value(&SupportPostMetadata::new(SupportPostKind::DebugResponse))?,
         }])
     }
 
@@ -282,11 +279,9 @@ impl SupportBotHandler {
                         ctx,
                         &thread,
                         content,
-                        json!({
-                            STATE_KEY: {
-                                "kind": "assistant_response"
-                            }
-                        }),
+                        metadata_value(&SupportPostMetadata::new(
+                            SupportPostKind::AssistantResponse,
+                        ))?,
                     )
                     .await?;
                     self.metrics.record_reply("user", "success");
@@ -363,18 +358,14 @@ impl SupportBotHandler {
                 self.config.limits.max_tool_calls_per_round,
                 run.trace_summary(),
             ),
-            metadata: support_post_props("engineer_notification", &thread),
+            metadata: support_post_props(SupportPostKind::EngineerNotification, &thread),
         });
 
         run.reply(
             ctx,
             &thread,
             failure_message,
-            json!({
-                STATE_KEY: {
-                    "kind": "tool_loop_limit"
-                }
-            }),
+            metadata_value(&SupportPostMetadata::new(SupportPostKind::ToolLoopLimit))?,
         )
         .await?;
         self.metrics.record_reply("user", "success");
@@ -533,15 +524,11 @@ impl SupportBotHandler {
                     thread,
                     source_post_link(&ctx.config, &thread.info.root_post_id),
                 ),
-                metadata: support_post_props("engineer_thread_root", thread),
-                thread_metadata: json!({
-                    STATE_KEY: {
-                        "kind": "engineer_thread",
-                        "source_thread_id": thread.info.thread_id,
-                        "source_root_post_id": thread.info.root_post_id,
-                        "source_channel_id": thread.info.channel_id
-                    }
-                }),
+                metadata: support_post_props(SupportPostKind::EngineerThreadRoot, thread),
+                thread_metadata: metadata_value(&SupportPostMetadata::for_source_thread(
+                    SupportPostKind::EngineerThread,
+                    thread,
+                ))?,
             },
             ThreadEffect::Reschedule,
         ]))
@@ -583,6 +570,7 @@ impl SupportBotHandler {
             if let Some(effect) = self.support_control_reaction_effect(
                 record.thread_kind.as_deref(),
                 &record.thread_id,
+                &record.channel_id,
                 &record.metadata,
                 &change,
             ) {
@@ -597,10 +585,11 @@ impl SupportBotHandler {
         &self,
         thread_kind: Option<&str>,
         thread_id: &str,
+        channel_id: &str,
         metadata: &serde_json::Value,
         change: &ReactionChange,
     ) -> Option<ThreadEffect> {
-        if !matches!(self.route(thread_kind, thread_id), SupportRoute::User) {
+        if !matches!(self.route(thread_kind, channel_id), SupportRoute::User) {
             return None;
         }
 
@@ -694,6 +683,7 @@ impl ThreadHandler for SupportBotHandler {
         self.support_control_reaction_effect(
             thread_record.thread_kind.as_deref(),
             &thread_record.thread_id,
+            &thread_record.channel_id,
             &thread_record.metadata,
             change,
         )

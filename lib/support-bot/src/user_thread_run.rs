@@ -1,5 +1,6 @@
 use crate::conversation::{store_state, with_trace_metadata};
 use crate::llm::{ChatMessage, ChatRole};
+use crate::metadata::SupportPostKind;
 use crate::notifier::{quote_for_mattermost, support_post_props};
 use crate::state::{SupportThreadState, SupportThreadStatus};
 use crate::tools::ToolCall;
@@ -86,7 +87,7 @@ impl UserThreadRun {
                 link_kind: crate::handler::ENGINEER_LINK_KIND.to_string(),
             },
             message: format!("**Bot message**\n\n{}", quote_for_mattermost(&message)),
-            metadata: support_post_props("bot_message", thread),
+            metadata: support_post_props(SupportPostKind::BotMessage, thread),
         });
         Ok(())
     }
@@ -110,7 +111,7 @@ impl UserThreadRun {
                 crate::notifier::source_post_link(&ctx.config, &message.post_id),
                 quote_for_mattermost(&message.message)
             ),
-            metadata: support_post_props("user_message", thread),
+            metadata: support_post_props(SupportPostKind::UserMessage, thread),
         });
         Ok(())
     }

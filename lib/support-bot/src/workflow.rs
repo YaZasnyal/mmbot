@@ -1,5 +1,5 @@
-use crate::conversation::STATE_KEY;
 use crate::handler::ENGINEER_LINK_KIND;
+use crate::metadata::{metadata_value, SupportPostKind, SupportPostMetadata};
 use crate::notifier::{status_update_message, support_post_props};
 use crate::output::sanitize_user_visible_message;
 use crate::tools::{SupportAction, ToolResult};
@@ -33,13 +33,10 @@ pub(crate) async fn apply_action(
                 ctx,
                 thread,
                 message,
-                json!({
-                    STATE_KEY: {
-                        "kind": "tool_action",
-                        "tool_call_id": call_id,
-                        "action": "send_user_message"
-                    }
-                }),
+                metadata_value(&SupportPostMetadata::tool_action(
+                    call_id,
+                    "send_user_message",
+                ))?,
             )
             .await?;
             run.await_next_user_message();
@@ -52,7 +49,7 @@ pub(crate) async fn apply_action(
                     link_kind: ENGINEER_LINK_KIND.to_string(),
                 },
                 message: message.clone(),
-                metadata: support_post_props("engineer_notification", thread),
+                metadata: support_post_props(SupportPostKind::EngineerNotification, thread),
             });
 
             ToolResult {
@@ -72,7 +69,7 @@ pub(crate) async fn apply_action(
                     link_kind: ENGINEER_LINK_KIND.to_string(),
                 },
                 message: status_update_message(thread, run.status(), run.finished_summary()),
-                metadata: support_post_props("status_update", thread),
+                metadata: support_post_props(SupportPostKind::StatusUpdate, thread),
             });
             finished_result(call_id, summary, "queued", None)
         }

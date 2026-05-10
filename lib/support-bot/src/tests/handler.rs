@@ -1,9 +1,9 @@
 use super::*;
 use crate::config::{
-    DebugCommandConfig, EngineerNotificationConfig, InstructionConfig, LlmConfig,
-    SupportBotLimits, SupportRouteConfig, ToolConfig,
+    DebugCommandConfig, EngineerNotificationConfig, InstructionConfig, LlmConfig, SupportBotLimits,
+    SupportRouteConfig, ToolConfig,
 };
-use crate::conversation::{store_state, TRACE_KEY};
+use crate::conversation::{store_state, STATE_KEY, TRACE_KEY};
 use crate::debug::DebugResponse;
 use crate::llm::{ChatMessage, ChatRole, LlmResponse};
 use crate::state::{SupportThreadState, SupportThreadStatus};
@@ -1053,6 +1053,37 @@ fn control_reactions_update_support_status_metadata() {
         panic!("expected SetThreadMetadata");
     };
     assert_eq!(metadata[STATE_KEY]["status"], "stopped");
+}
+
+#[test]
+fn control_reactions_route_channel_backed_user_threads_without_thread_kind() {
+    let handler = SupportBotHandler::new(
+        "support",
+        test_config(),
+        Arc::new(StaticLlm),
+        Arc::new(ToolRegistry::new()),
+        "system",
+    );
+    let mut record = thread_record("users", json!({}));
+    record.thread_kind = None;
+
+    let resolved = handler
+        .on_control_reaction(
+            &record,
+            &ReactionChange {
+                post_id: "post-1".to_string(),
+                user_id: "user-2".to_string(),
+                emoji_name: "white_check_mark".to_string(),
+                action: ReactionAction::Added,
+                created_at: Utc::now(),
+            },
+        )
+        .expect("channel-routed user thread should accept control reaction");
+    let ThreadEffect::SetThreadMetadata { metadata, .. } = resolved else {
+        panic!("expected SetThreadMetadata");
+    };
+
+    assert_eq!(metadata[STATE_KEY]["status"], "finished");
 }
 
 #[tokio::test]

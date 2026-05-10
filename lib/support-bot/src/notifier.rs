@@ -1,4 +1,5 @@
 use crate::error::{Result, SupportBotError};
+use crate::metadata::{metadata_value, SupportPostKind, SupportPostMetadata};
 use crate::state::{EngineerThreadRef, SupportThreadStatus};
 use mattermost_api::apis::posts_api;
 use mattermost_api::{apis::configuration::Configuration, models};
@@ -82,8 +83,12 @@ impl MattermostSupportNotifier {
             .await?
             .ok_or_else(|| SupportBotError::Internal("engineer thread was not created".into()))?;
         let message_bytes = message.len();
-        let request =
-            engineer_thread_reply_request(&self.engineer_channel_id, &thread_ref.root_post_id, thread, message);
+        let request = engineer_thread_reply_request(
+            &self.engineer_channel_id,
+            &thread_ref.root_post_id,
+            thread,
+            message,
+        );
 
         posts_api::create_post(&self.config, request, None)
             .await
@@ -112,7 +117,7 @@ impl MattermostSupportNotifier {
         self.post_engineer_thread_message(
             thread,
             current_thread,
-            "user_message",
+            SupportPostKind::UserMessage,
             format!(
                 "**User message** ([source]({}))\n\n{}",
                 source_post_link(&self.config, &message.post_id),
@@ -136,7 +141,7 @@ impl MattermostSupportNotifier {
         self.post_engineer_thread_message(
             thread,
             current_thread,
-            "bot_message",
+            SupportPostKind::BotMessage,
             format!("**Bot message**\n\n{}", quote_for_mattermost(&message)),
         )
         .await
@@ -166,7 +171,7 @@ impl MattermostSupportNotifier {
             thread,
             message,
         );
-        request.props = Some(support_post_props("status_update", thread));
+        request.props = Some(support_post_props(SupportPostKind::StatusUpdate, thread));
 
         posts_api::create_post(&self.config, request, None)
             .await
@@ -232,13 +237,13 @@ impl MattermostSupportNotifier {
     #[tracing::instrument(
         level = "debug",
         skip_all,
-        fields(thread_id = %thread.info.thread_id, kind = %kind)
+        fields(thread_id = %thread.info.thread_id, kind = %kind.as_str())
     )]
     async fn post_engineer_thread_message(
         &self,
         thread: &Thread,
         current_thread: Option<&EngineerThreadRef>,
-        kind: &str,
+        kind: SupportPostKind,
         message: String,
     ) -> Result<Option<EngineerThreadRef>> {
         let thread_ref = self
@@ -252,7 +257,7 @@ impl MattermostSupportNotifier {
             thread,
             message,
         );
-        request.props = Some(support_post_props(kind, thread));
+        request.props = Some(support_post_props(kind.clone(), thread));
 
         posts_api::create_post(&self.config, request, None)
             .await
@@ -260,7 +265,7 @@ impl MattermostSupportNotifier {
         info!(
             source_thread_id = %thread.info.thread_id,
             engineer_root_post_id = %thread_ref.root_post_id,
-            kind = %kind,
+            kind = %kind.as_str(),
             message_bytes,
             "support-bot: mirrored message posted to engineer thread"
         );
@@ -470,7 +475,10 @@ fn engineer_thread_root_request(
         channel_id.to_string(),
         engineer_thread_root_message(thread, source_link),
     );
-    request.props = Some(support_post_props("engineer_thread_root", thread));
+    request.props = Some(support_post_props(
+        SupportPostKind::EngineerThreadRoot,
+        thread,
+    ));
     request
 }
 
@@ -499,7 +507,10 @@ fn engineer_thread_reply_request(
 ) -> models::CreatePostRequest {
     let mut request = models::CreatePostRequest::new(channel_id.to_string(), message);
     request.root_id = Some(root_post_id.to_string());
-    request.props = Some(support_post_props("engineer_notification", thread));
+    request.props = Some(support_post_props(
+        SupportPostKind::EngineerNotification,
+        thread,
+    ));
     request
 }
 
@@ -580,15 +591,9 @@ fn markdown_fence_for(message: &str) -> String {
     "`".repeat((longest_run + 1).max(3))
 }
 
-pub(crate) fn support_post_props(kind: &str, thread: &Thread) -> serde_json::Value {
-    serde_json::json!({
-        "support_bot": {
-            "kind": kind,
-            "source_thread_id": thread.info.thread_id,
-            "source_root_post_id": thread.info.root_post_id,
-            "source_channel_id": thread.info.channel_id
-        }
-    })
+pub(crate) fn support_post_props(kind: SupportPostKind, thread: &Thread) -> serde_json::Value {
+    metadata_value(&SupportPostMetadata::for_source_thread(kind, thread))
+        .unwrap_or(serde_json::Value::Null)
 }
 
 #[cfg(test)]
