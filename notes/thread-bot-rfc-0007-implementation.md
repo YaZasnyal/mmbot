@@ -593,17 +593,39 @@ cargo check -p hello-thread-bot
 
 All passed after slice 13.
 
+### Implementation slice 14: remove legacy engineer-thread state
+
+Files touched:
+
+- `lib/support-bot/src/handler.rs`
+- `lib/support-bot/src/state.rs`
+
+Changes:
+
+- Removed `engineer_thread` from persisted `SupportThreadState`.
+- User-thread flow no longer caches engineer-thread coordinates in thread
+  metadata; it uses normalized `thread_links` only.
+- `ensure_engineer_thread_effects` remains the explicit plugin-side gate for
+  deciding whether a linked engineer thread must be created.
+- Kept backward compatibility when reading old metadata by ignoring the legacy
+  `engineer_thread` field during deserialization.
+- Updated tests to model existing engineer routing through `thread_links`
+  instead of metadata.
+
+Verification run:
+
+```bash
+cargo fmt -p support-bot
+cargo test -p support-bot
+```
+
+All passed after slice 14.
+
 ## Next tasks
 
 Prefer one small reviewable slice at a time.
 
-1. Clean up support-bot legacy engineer-thread state.
-   - `SupportThreadState.engineer_thread` remains as compatibility metadata.
-   - Prefer normalized `thread_links` for new behavior.
-   - Decide whether to keep, migrate, or remove the metadata field in a later
-     compatibility-breaking slice.
-
-2. Keep raw-post path removed.
+1. Keep raw-post path removed.
    - `execute_raw_post_effects` has been removed from runtime.
    - `ThreadHandler::handle_raw_post` has been removed.
    - `build_raw_engineer_thread_snapshot` is not present.

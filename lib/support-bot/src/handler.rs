@@ -8,7 +8,7 @@ use crate::llm::{LlmClient, LlmRequest};
 use crate::metrics::SupportBotMetricsHandle;
 use crate::notifier::{engineer_thread_root_message, source_post_link, support_post_props};
 use crate::output::sanitize_user_visible_message;
-use crate::state::{EngineerThreadRef, SupportThreadStatus};
+use crate::state::SupportThreadStatus;
 use crate::tools::ToolCall;
 use crate::tools::{ToolContext, ToolExecutionOutcome, ToolRegistry, ToolResult};
 use crate::user_thread_run::StopAfterTools;
@@ -178,7 +178,7 @@ impl SupportBotHandler {
         };
         Span::current().record("post_id", tracing::field::display(trigger_post_id));
 
-        let mut state = load_state(&record.metadata)?;
+        let state = load_state(&record.metadata)?;
         if !matches!(state.status, SupportThreadStatus::Active) {
             info!(
                 status = ?state.status,
@@ -203,19 +203,12 @@ impl SupportBotHandler {
         match &self.config.engineer_notifications.target {
             EngineerNotificationTarget::SameThread => {}
             EngineerNotificationTarget::MattermostChannel { channel_id } => {
-                if let Some(engineer_thread) = state.engineer_thread.clone() {
-                    state.engineer_thread = Some(engineer_thread);
-                } else if let Some(effects) = self
+                if let Some(effects) = self
                     .ensure_engineer_thread_effects(ctx, &thread, channel_id)
                     .await?
                 {
                     info!("support-bot: queuing linked engineer thread creation");
                     return Ok(effects);
-                } else if let Some(engineer_thread) = self
-                    .linked_engineer_thread(ctx, &thread.info.thread_id)
-                    .await?
-                {
-                    state.engineer_thread = Some(engineer_thread);
                 }
             }
         }
@@ -533,29 +526,6 @@ impl SupportBotHandler {
         Ok(())
     }
 
-    async fn linked_engineer_thread(
-        &self,
-        ctx: &ThreadContext,
-        source_thread_id: &str,
-    ) -> Result<Option<EngineerThreadRef>, ThreadBotError> {
-        let Some(link) = ctx
-            .store
-            .list_thread_links(source_thread_id)
-            .await?
-            .into_iter()
-            .find(|link| link.link_kind == ENGINEER_LINK_KIND)
-        else {
-            return Ok(None);
-        };
-        let Some(record) = ctx.store.get_thread(&link.target_thread_id).await? else {
-            return Ok(None);
-        };
-        Ok(Some(EngineerThreadRef {
-            channel_id: record.channel_id,
-            root_post_id: record.root_post_id,
-        }))
-    }
-
     async fn ensure_engineer_thread_effects(
         &self,
         ctx: &ThreadContext,
@@ -837,7 +807,7 @@ mod tests {
     use crate::debug::DebugResponse;
     use crate::debug_export::source_user_thread_id;
     use crate::llm::{ChatMessage, ChatRole, LlmResponse};
-    use crate::state::{EngineerThreadRef, SupportThreadState, SupportThreadStatus};
+    use crate::state::{SupportThreadState, SupportThreadStatus};
     use crate::testutil::PanicStore;
     use crate::tools::{
         register_default_workflow_tools, SupportTool, ToolCall, ToolContext, ToolExecutionOutcome,
@@ -1043,6 +1013,7 @@ mod tests {
     struct SnapshotStore {
         record: ThreadRecord,
         messages: Vec<ThreadMessageRecord>,
+        links: Vec<ThreadLink>,
     }
 
     #[async_trait]
@@ -1101,9 +1072,14 @@ mod tests {
 
         async fn list_thread_links(
             &self,
-            _source_thread_id: &str,
+            source_thread_id: &str,
         ) -> Result<Vec<ThreadLink>, ThreadBotError> {
-            panic!("store should not list thread links")
+            Ok(self
+                .links
+                .iter()
+                .filter(|link| link.source_thread_id == source_thread_id)
+                .cloned()
+                .collect())
         }
 
         async fn list_reverse_thread_links(
@@ -1215,6 +1191,13 @@ mod tests {
     }
 
     async fn context_with_snapshot(thread: &Thread) -> (ThreadContext, MockServer) {
+        context_with_snapshot_and_links(thread, Vec::new()).await
+    }
+
+    async fn context_with_snapshot_and_links(
+        thread: &Thread,
+        links: Vec<ThreadLink>,
+    ) -> (ThreadContext, MockServer) {
         let server = MockServer::start().await;
         let posts = thread
             .messages
@@ -1265,6 +1248,7 @@ mod tests {
             store: Arc::new(SnapshotStore {
                 record: record_from_thread(thread),
                 messages: thread.messages.iter().map(message_record).collect(),
+                links,
             }),
             plugin_id: "test",
             bot_user_id: Some("bot".to_string()),
@@ -1950,18 +1934,19 @@ mod tests {
         let handler = SupportBotHandler::new("support", config, llm, Arc::new(registry), "system");
 
         let mut thread = thread("users", "help");
-        thread.info.metadata = store_state(
-            &json!({}),
-            &SupportThreadState {
-                engineer_thread: Some(EngineerThreadRef {
-                    channel_id: "engineers".to_string(),
-                    root_post_id: "engineer-root".to_string(),
-                }),
-                ..SupportThreadState::default()
-            },
+        thread.info.metadata = store_state(&json!({}), &SupportThreadState::default()).unwrap();
+        let (ctx, _server) = context_with_snapshot_and_links(
+            &thread,
+            vec![ThreadLink {
+                source_thread_id: thread.info.thread_id.clone(),
+                link_kind: ENGINEER_LINK_KIND.to_string(),
+                target_thread_id: "engineer-thread".to_string(),
+                metadata: json!({}),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            }],
         )
-        .unwrap();
-        let (ctx, _server) = context_with_snapshot(&thread).await;
+        .await;
 
         let effects = handler
             .handle(&invocation_for(&thread), &ctx)
