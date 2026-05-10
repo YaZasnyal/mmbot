@@ -107,7 +107,7 @@ Expected result:
 - Easier tests.
 - Clearer separation: async boundary is LLM/tool/Mattermost, not effect assembly.
 
-### 3. Extract user workflow loop from `handler.rs`
+### 3. Extract user workflow loop from `handler.rs` (done)
 
 Current state:
 
@@ -125,28 +125,22 @@ Relevant locations:
 - `lib/support-bot/src/handler.rs:501`
 - `lib/support-bot/src/handler.rs:537`
 
-Recommendation:
+Applied:
 
-- Move the LLM/tool loop into a module like `user_workflow.rs`.
-- Keep `SupportBotHandler::handle(...)` responsible for:
-  route;
-  status guard;
-  live control reaction guard;
-  snapshot load;
-  engineer-link ensure/reschedule;
-  call `UserWorkflow::run(...)`.
-- Move `ToolCallBatch`, tool overflow handling, and tool-loop-limit message into
-  that workflow module.
+- Moved the user-thread loop and tool-call batch processing from
+  `lib/support-bot/src/handler.rs` into
+  `lib/support-bot/src/handler/user_workflow.rs`.
+- Kept `SupportBotHandler` as the coordinator while preserving behavior and
+  metrics/reporting semantics.
 
 Expected result:
 
-- `handler.rs` becomes a small coordinator.
-- LLM loop gets local tests without building full handler route fixtures.
-- Future workflow changes stop touching routing/debug code.
+- `handler.rs` becomes a smaller coordinator.
+- Workflow internals are local to a dedicated module.
 
-### 4. Split `tests/handler.rs`
+### 4. Split `tests/handler.rs` (done)
 
-Current state:
+Original state:
 
 - `lib/support-bot/src/tests/handler.rs` is 1329 lines with 22 tests plus large
   fixtures/mocks.
@@ -154,22 +148,24 @@ Current state:
   tools, metadata lifecycle, linked engineer effects, control reactions, and
   debug report handling.
 
-Recommendation:
+Applied:
 
-- Split into behavior files:
-  `tests/handler/routing.rs`,
-  `tests/handler/user_workflow.rs`,
-  `tests/handler/engineer_thread.rs`,
-  `tests/handler/control_reactions.rs`,
-  `tests/handler/debug_report.rs`.
-- Put shared fixtures in `tests/handler/support.rs` or promote useful pieces to
-  `testutil.rs`.
+- Replaced monolithic `lib/support-bot/src/tests/handler.rs` with
+  `lib/support-bot/src/tests/handler/mod.rs` for shared fixtures/mocks.
+- Split behavior tests into:
+  `lib/support-bot/src/tests/handler/routing.rs`,
+  `lib/support-bot/src/tests/handler/user_workflow.rs`,
+  `lib/support-bot/src/tests/handler/engineer_thread.rs`,
+  `lib/support-bot/src/tests/handler/control_reactions.rs`,
+  `lib/support-bot/src/tests/handler/debug_report.rs`.
+- Updated `lib/support-bot/src/handler.rs` test module path to
+  `tests/handler/mod.rs`.
 
 Expected result:
 
 - Less review friction.
 - Smaller compile-error blast radius when changing one behavior.
-- Easier to delete old tests when old notifier/state paths disappear.
+- Easier to evolve user workflow tests after extraction.
 
 ### 5. Collapse workflow tool boilerplate
 
