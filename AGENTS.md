@@ -23,7 +23,7 @@ Use Rust 2021 conventions and `cargo fmt` defaults. Keep modules and files in `s
 
 ## Testing Guidelines
 
-Unit tests may live beside code, such as `lib/thread-bot/src/actor_tests.rs`, or under crate-level `tests/`. Name tests by behavior, for example `test_reconnect_reconciles_threads`. Integration tests for `mattermost-bot` require the Compose environment from `docker-compose.yml` and should run serially with `--test-threads=1`. Add focused tests for middleware, lifecycle, persistence, and thread actor behavior when changing those areas.
+Prefer extracted module tests over inline `mod tests` blocks for new code, especially in `support-bot`: place tests under `src/tests/...` (for example `src/tests/handler.rs`) and connect them from the source file via `#[cfg(test)] #[path = "..."] mod tests;`. Unit tests may also live beside code when needed, such as `lib/thread-bot/src/actor_tests.rs`, or under crate-level `tests/`. Name tests by behavior, for example `test_reconnect_reconciles_threads`. Integration tests for `mattermost-bot` require the Compose environment from `docker-compose.yml` and should run serially with `--test-threads=1`. Add focused tests for middleware, lifecycle, persistence, and thread actor behavior when changing those areas.
 
 ## Commit & Pull Request Guidelines
 
