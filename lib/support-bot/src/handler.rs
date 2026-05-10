@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use thread_bot::{
     ReactionAction, ReactionChange, Thread, ThreadBotError, ThreadContext, ThreadEffect,
-    ThreadHandler, ThreadMessage, ThreadRecord,
+    ThreadHandler, ThreadInvocation, ThreadMessage, ThreadRecord, ThreadTrigger,
 };
 use tracing::{debug, info, warn, Instrument, Span};
 
@@ -99,14 +99,20 @@ impl SupportBotHandler {
     #[tracing::instrument(
         level = "info",
         skip_all,
-        fields(thread_id = %thread.info.thread_id, post_id = tracing::field::Empty)
+        fields(thread_id = %record.thread_id, post_id = tracing::field::Empty)
     )]
     async fn handle_engineer_thread(
         &self,
-        thread: &Thread,
+        record: &ThreadRecord,
+        trigger: &ThreadTrigger,
         ctx: &ThreadContext,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
-        let Some(message) = last_new_external_message(thread, ctx) else {
+        let Some(trigger_post_id) = trigger_post_id(trigger) else {
+            info!("support-bot: engineer thread was invoked without a new message");
+            return Ok(vec![ThreadEffect::Noop]);
+        };
+        let thread = ctx.build_thread_snapshot(&record.thread_id).await?;
+        let Some(message) = external_message_by_id(&thread, ctx, trigger_post_id) else {
             info!("support-bot: engineer thread has no new external message");
             return Ok(vec![ThreadEffect::Noop]);
         };
@@ -124,7 +130,7 @@ impl SupportBotHandler {
         if command.name == "debug-report" {
             info!("support-bot: received debug-report command");
             let effects =
-                handle_debug_export_html(&self.config.engineer_notifications.target, thread, ctx)
+                handle_debug_export_html(&self.config.engineer_notifications.target, &thread, ctx)
                     .await;
             if effects.is_ok() {
                 self.metrics.record_reply("engineer", "success");
@@ -155,20 +161,21 @@ impl SupportBotHandler {
     #[tracing::instrument(
         level = "info",
         skip_all,
-        fields(thread_id = %thread.info.thread_id, post_id = tracing::field::Empty)
+        fields(thread_id = %record.thread_id, post_id = tracing::field::Empty)
     )]
     async fn handle_user_thread(
         &self,
-        thread: &Thread,
+        record: &ThreadRecord,
+        trigger: &ThreadTrigger,
         ctx: &ThreadContext,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
-        let Some(trigger_message) = last_new_external_message(thread, ctx) else {
+        let Some(trigger_post_id) = trigger_post_id(trigger) else {
+            info!("support-bot: user thread was invoked without a new message");
             return Ok(vec![ThreadEffect::Noop]);
         };
-        Span::current().record("post_id", tracing::field::display(&trigger_message.post_id));
-        info!("support-bot: handling user thread message");
+        Span::current().record("post_id", tracing::field::display(trigger_post_id));
 
-        let mut state = load_state(&thread.info.metadata)?;
+        let mut state = load_state(&record.metadata)?;
         if !matches!(state.status, SupportThreadStatus::Active) {
             info!(
                 status = ?state.status,
@@ -178,21 +185,28 @@ impl SupportBotHandler {
             return Ok(vec![ThreadEffect::Noop]);
         }
 
-        if let Some(effect) = self.live_control_reaction_effect(thread, ctx).await {
+        if let Some(effect) = self.live_control_reaction_effect(record, ctx).await {
             info!("support-bot: live control reaction found; persisting metadata status");
             return Ok(vec![effect]);
         }
 
+        let thread = ctx.build_thread_snapshot(&record.thread_id).await?;
+        let Some(trigger_message) = external_message_by_id(&thread, ctx, trigger_post_id) else {
+            info!("support-bot: user thread trigger message is not processable");
+            return Ok(vec![ThreadEffect::Noop]);
+        };
+        info!("support-bot: handling user thread message");
+
         if let Some(engineer_thread) = self
             .engineer_notifier(ctx)
-            .ensure_engineer_thread(thread, state.engineer_thread.as_ref())
+            .ensure_engineer_thread(&thread, state.engineer_thread.as_ref())
             .await?
         {
             state.engineer_thread = Some(engineer_thread);
         }
         let messages = build_llm_messages(
             &self.system_prompt,
-            thread,
+            &thread,
             &state,
             ctx.bot_user_id.as_deref(),
         )?;
@@ -201,7 +215,7 @@ impl SupportBotHandler {
         run.mirror_user_message(
             &self.config.engineer_notifications.target,
             ctx,
-            thread,
+            &thread,
             trigger_message,
         )
         .await?;
@@ -262,7 +276,7 @@ impl SupportBotHandler {
                     run.reply(
                         &self.config.engineer_notifications.target,
                         ctx,
-                        thread,
+                        &thread,
                         content,
                         json!({
                             STATE_KEY: {
@@ -273,7 +287,7 @@ impl SupportBotHandler {
                     .await?;
                     self.metrics.record_reply("user", "success");
                 }
-                return run.into_effects(thread, trigger_message);
+                return run.into_effects(&thread, trigger_message);
             }
 
             let mut tool_calls = response.tool_calls;
@@ -301,7 +315,7 @@ impl SupportBotHandler {
 
             self.process_tool_calls(
                 ctx,
-                thread,
+                &thread,
                 &mut run,
                 ToolCallBatch {
                     assistant_content: response.message.content,
@@ -321,11 +335,11 @@ impl SupportBotHandler {
                 StopAfterTools::Continue => {}
                 StopAfterTools::AwaitNextUser => {
                     info!("support-bot: stopping tool loop after user-facing workflow action");
-                    return run.into_effects(thread, trigger_message);
+                    return run.into_effects(&thread, trigger_message);
                 }
                 StopAfterTools::FinishRequest => {
                     info!("support-bot: finishing request after finish_request action");
-                    return run.into_effects(thread, trigger_message);
+                    return run.into_effects(&thread, trigger_message);
                 }
             }
         }
@@ -337,10 +351,10 @@ impl SupportBotHandler {
         if let Ok(Some(engineer_thread)) = self
             .engineer_notifier(ctx)
             .notify_engineer(
-                thread,
+                &thread,
                 run.engineer_thread(),
                 tool_loop_limit_engineer_message(
-                    thread,
+                    &thread,
                     trigger_message,
                     self.config.limits.max_tool_rounds,
                     self.config.limits.max_tool_calls_per_round,
@@ -355,7 +369,7 @@ impl SupportBotHandler {
         run.reply(
             &self.config.engineer_notifications.target,
             ctx,
-            thread,
+            &thread,
             failure_message,
             json!({
                 STATE_KEY: {
@@ -366,7 +380,7 @@ impl SupportBotHandler {
         .await?;
         self.metrics.record_reply("user", "success");
         run.stop_request(Some("tool loop limit reached".to_string()));
-        run.into_effects(thread, trigger_message)
+        run.into_effects(&thread, trigger_message)
     }
 
     #[tracing::instrument(
@@ -511,29 +525,29 @@ impl SupportBotHandler {
 
     async fn live_control_reaction_effect(
         &self,
-        thread: &Thread,
+        record: &ThreadRecord,
         ctx: &ThreadContext,
     ) -> Option<ThreadEffect> {
-        let reactions =
-            match reactions_api::get_reactions(&ctx.config, &thread.info.root_post_id).await {
-                Ok(reactions) => reactions,
-                Err(error) => {
-                    debug!(
-                        thread_id = %thread.info.thread_id,
-                        root_post_id = %thread.info.root_post_id,
-                        error = %error,
-                        "support-bot: failed to fetch live control reactions"
-                    );
-                    return None;
-                }
-            };
+        let reactions = match reactions_api::get_reactions(&ctx.config, &record.root_post_id).await
+        {
+            Ok(reactions) => reactions,
+            Err(error) => {
+                debug!(
+                    thread_id = %record.thread_id,
+                    root_post_id = %record.root_post_id,
+                    error = %error,
+                    "support-bot: failed to fetch live control reactions"
+                );
+                return None;
+            }
+        };
 
         for reaction in reactions {
             let (Some(user_id), Some(emoji_name)) = (reaction.user_id, reaction.emoji_name) else {
                 continue;
             };
             let change = ReactionChange {
-                post_id: thread.info.root_post_id.clone(),
+                post_id: record.root_post_id.clone(),
                 user_id,
                 emoji_name,
                 action: ReactionAction::Added,
@@ -543,9 +557,9 @@ impl SupportBotHandler {
                     .unwrap_or_else(Utc::now),
             };
             if let Some(effect) = self.support_control_reaction_effect(
-                &thread.info.channel_id,
-                &thread.info.thread_id,
-                &thread.info.metadata,
+                &record.channel_id,
+                &record.thread_id,
+                &record.metadata,
                 &change,
             ) {
                 return Some(effect);
@@ -631,20 +645,20 @@ impl ThreadHandler for SupportBotHandler {
 
     async fn handle(
         &self,
-        thread: &Thread,
+        invocation: &ThreadInvocation,
         ctx: &ThreadContext,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
-        let route = self.route(&thread.info.channel_id);
+        let route = self.route(&invocation.thread.channel_id);
         let route_label = route.label();
         let started = Instant::now();
         let result = match route {
             SupportRoute::User => {
-                self.handle_user_thread(thread, ctx)
+                self.handle_user_thread(&invocation.thread, &invocation.trigger, ctx)
                     .instrument(tracing::info_span!("handle", route = "user"))
                     .await
             }
             SupportRoute::Engineer => {
-                self.handle_engineer_thread(thread, ctx)
+                self.handle_engineer_thread(&invocation.thread, &invocation.trigger, ctx)
                     .instrument(tracing::info_span!("handle", route = "engineer"))
                     .await
             }
@@ -689,12 +703,20 @@ impl SupportRoute {
     }
 }
 
-fn last_new_external_message<'a>(
+fn trigger_post_id(trigger: &ThreadTrigger) -> Option<&str> {
+    match trigger {
+        ThreadTrigger::NewMessage { post_id } => Some(post_id),
+        ThreadTrigger::Reschedule | ThreadTrigger::Wake => None,
+    }
+}
+
+fn external_message_by_id<'a>(
     thread: &'a Thread,
     ctx: &ThreadContext,
+    post_id: &str,
 ) -> Option<&'a ThreadMessage> {
-    thread.messages.iter().rev().find(|message| {
-        message.is_new
+    thread.messages.iter().find(|message| {
+        message.post_id == post_id
             && ctx.bot_user_id.as_deref() != Some(message.user_id.as_str())
             && !message.message.trim().is_empty()
     })
@@ -750,7 +772,13 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::Duration;
-    use thread_bot::{ThreadInfo, ThreadMessage, ThreadRecord};
+    use thread_bot::{
+        AppendReaction, ChannelCheckpoint, ThreadInfo, ThreadInvocation, ThreadMessage,
+        ThreadMessageRecord, ThreadReaction, ThreadRecord, ThreadStore, ThreadTrigger,
+        UpsertThread, UpsertThreadMessage,
+    };
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     struct StaticLlm;
 
@@ -934,6 +962,258 @@ mod tests {
         }
     }
 
+    struct SnapshotStore {
+        record: ThreadRecord,
+        messages: Vec<ThreadMessageRecord>,
+    }
+
+    #[async_trait]
+    impl ThreadStore for SnapshotStore {
+        async fn upsert_thread(
+            &self,
+            _input: UpsertThread,
+        ) -> Result<ThreadRecord, ThreadBotError> {
+            panic!("store should not upsert threads")
+        }
+
+        async fn get_thread(
+            &self,
+            thread_id: &str,
+        ) -> Result<Option<ThreadRecord>, ThreadBotError> {
+            Ok((thread_id == self.record.thread_id).then(|| self.record.clone()))
+        }
+
+        async fn get_thread_by_post(
+            &self,
+            _post_id: &str,
+        ) -> Result<Option<ThreadRecord>, ThreadBotError> {
+            panic!("store should not look up by post")
+        }
+
+        async fn list_threads(
+            &self,
+            _updated_after: Option<DateTime<Utc>>,
+            _updated_before: Option<DateTime<Utc>>,
+        ) -> Result<Vec<ThreadRecord>, ThreadBotError> {
+            panic!("store should not list threads")
+        }
+
+        async fn set_thread_metadata(
+            &self,
+            _thread_id: &str,
+            _metadata: serde_json::Value,
+        ) -> Result<(), ThreadBotError> {
+            panic!("store should not set thread metadata")
+        }
+
+        async fn update_thread_seen(
+            &self,
+            _thread_id: &str,
+            _post_id: &str,
+            _seen_at: DateTime<Utc>,
+        ) -> Result<(), ThreadBotError> {
+            panic!("store should not update seen")
+        }
+
+        async fn update_thread_processed(
+            &self,
+            _thread_id: &str,
+            _post_id: &str,
+            _processed_at: DateTime<Utc>,
+        ) -> Result<(), ThreadBotError> {
+            panic!("store should not update processed")
+        }
+
+        async fn upsert_message(
+            &self,
+            _input: UpsertThreadMessage,
+        ) -> Result<ThreadMessageRecord, ThreadBotError> {
+            panic!("store should not upsert messages")
+        }
+
+        async fn get_message(
+            &self,
+            _post_id: &str,
+        ) -> Result<Option<ThreadMessageRecord>, ThreadBotError> {
+            panic!("store should not get messages")
+        }
+
+        async fn list_thread_messages(
+            &self,
+            thread_id: &str,
+        ) -> Result<Vec<ThreadMessageRecord>, ThreadBotError> {
+            Ok(if thread_id == self.record.thread_id {
+                self.messages.clone()
+            } else {
+                Vec::new()
+            })
+        }
+
+        async fn set_message_metadata(
+            &self,
+            _post_id: &str,
+            _metadata: serde_json::Value,
+        ) -> Result<(), ThreadBotError> {
+            panic!("store should not set message metadata")
+        }
+
+        async fn append_reaction(&self, _input: AppendReaction) -> Result<(), ThreadBotError> {
+            panic!("store should not append reactions")
+        }
+
+        async fn list_thread_reactions(
+            &self,
+            _thread_id: &str,
+        ) -> Result<Vec<ThreadReaction>, ThreadBotError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_channel_checkpoints(&self) -> Result<Vec<ChannelCheckpoint>, ThreadBotError> {
+            panic!("store should not list checkpoints")
+        }
+
+        async fn upsert_channel_checkpoint(
+            &self,
+            _channel_id: &str,
+            _last_seen_post_id: &str,
+            _last_seen_post_at: DateTime<Utc>,
+        ) -> Result<(), ThreadBotError> {
+            panic!("store should not upsert checkpoints")
+        }
+
+        async fn advance_channel_checkpoint(
+            &self,
+            _channel_id: &str,
+            _last_seen_post_id: &str,
+            _last_seen_post_at: DateTime<Utc>,
+        ) -> Result<(), ThreadBotError> {
+            panic!("store should not advance checkpoints")
+        }
+
+        async fn set_all_channels_not_reconciled(&self) -> Result<(), ThreadBotError> {
+            panic!("store should not mark checkpoints")
+        }
+
+        async fn set_channel_reconciled(&self, _channel_id: &str) -> Result<(), ThreadBotError> {
+            panic!("store should not reconcile checkpoints")
+        }
+    }
+
+    async fn handle_thread(
+        handler: &SupportBotHandler,
+        thread: Thread,
+    ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
+        let (ctx, _server) = context_with_snapshot(&thread).await;
+        handler.handle(&invocation_for(&thread), &ctx).await
+    }
+
+    async fn context_with_snapshot(thread: &Thread) -> (ThreadContext, MockServer) {
+        let server = MockServer::start().await;
+        let posts = thread
+            .messages
+            .iter()
+            .map(|message| {
+                let mut post = mattermost_api::models::Post::new();
+                post.id = message.post_id.clone();
+                post.channel_id = Some(thread.info.channel_id.clone());
+                post.user_id = Some(message.user_id.clone());
+                post.message = Some(message.message.clone());
+                post.root_id = message.root_id.clone();
+                post.props = Some(message.props.clone());
+                post.create_at = Some(message.created_at.timestamp_millis());
+                post.update_at = Some(message.updated_at.timestamp_millis());
+                (message.post_id.clone(), serde_json::to_value(post).unwrap())
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let order = thread
+            .messages
+            .iter()
+            .map(|message| serde_json::Value::String(message.post_id.clone()))
+            .collect::<Vec<_>>();
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/v4/posts/{}/thread",
+                thread.info.thread_id
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "order": order,
+                "posts": posts
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/v4/posts/{}/reactions",
+                thread.info.root_post_id
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&server)
+            .await;
+
+        let ctx = ThreadContext {
+            config: Arc::new(mattermost_api::apis::configuration::Configuration {
+                base_path: server.uri(),
+                ..Default::default()
+            }),
+            store: Arc::new(SnapshotStore {
+                record: record_from_thread(thread),
+                messages: thread.messages.iter().map(message_record).collect(),
+            }),
+            plugin_id: "test",
+            bot_user_id: Some("bot".to_string()),
+        };
+        (ctx, server)
+    }
+
+    fn invocation_for(thread: &Thread) -> ThreadInvocation {
+        ThreadInvocation {
+            thread: record_from_thread(thread),
+            trigger: ThreadTrigger::NewMessage {
+                post_id: thread
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.user_id != "bot")
+                    .map(|message| message.post_id.clone())
+                    .unwrap_or_else(|| thread.info.root_post_id.clone()),
+            },
+        }
+    }
+
+    fn record_from_thread(thread: &Thread) -> ThreadRecord {
+        ThreadRecord {
+            thread_id: thread.info.thread_id.clone(),
+            root_post_id: thread.info.root_post_id.clone(),
+            channel_id: thread.info.channel_id.clone(),
+            creator_user_id: thread.info.creator_user_id.clone(),
+            thread_kind: thread.info.thread_kind.clone(),
+            metadata: thread.info.metadata.clone(),
+            last_seen_post_id: thread.info.last_seen_post_id.clone(),
+            last_seen_post_at: thread.info.last_seen_post_at,
+            last_processed_post_id: thread.info.last_processed_post_id.clone(),
+            last_processed_post_at: thread.info.last_processed_post_at,
+            created_at: thread.info.created_at,
+            updated_at: thread.info.updated_at,
+        }
+    }
+
+    fn message_record(message: &ThreadMessage) -> ThreadMessageRecord {
+        ThreadMessageRecord {
+            post_id: message.post_id.clone(),
+            thread_id: message.thread_id.clone(),
+            user_id: message.user_id.clone(),
+            is_bot_message: message.user_id == "bot",
+            root_id: message.root_id.clone(),
+            parent_post_id: message.parent_post_id.clone(),
+            metadata: message.metadata.clone(),
+            post_created_at: message.created_at,
+            post_updated_at: Some(message.updated_at),
+            post_deleted_at: None,
+            created_at: message.created_at,
+            updated_at: message.updated_at,
+        }
+    }
+
     #[tokio::test]
     async fn should_track_only_user_threads() {
         let handler = SupportBotHandler::new(
@@ -965,8 +1245,7 @@ mod tests {
         )
         .with_debug_handler(Arc::new(StaticDebug));
 
-        let effects = handler
-            .handle(&thread("engineers", "!support state"), &context())
+        let effects = handle_thread(&handler, thread("engineers", "!support state"))
             .await
             .unwrap();
 
@@ -1001,7 +1280,7 @@ mod tests {
             is_new: true,
         });
 
-        let effects = handler.handle(&thread, &context()).await.unwrap();
+        let effects = handle_thread(&handler, thread).await.unwrap();
 
         assert!(matches!(effects.as_slice(), [ThreadEffect::Noop]));
     }
@@ -1031,7 +1310,7 @@ mod tests {
             is_new: true,
         });
 
-        let effects = handler.handle(&thread, &context()).await.unwrap();
+        let effects = handle_thread(&handler, thread).await.unwrap();
 
         assert!(matches!(
             &effects[0],
@@ -1049,8 +1328,7 @@ mod tests {
             "system",
         );
 
-        let effects = handler
-            .handle(&thread("users", "help"), &context())
+        let effects = handle_thread(&handler, thread("users", "help"))
             .await
             .unwrap();
 
@@ -1076,10 +1354,7 @@ mod tests {
             "system",
         );
 
-        let effects = handler
-            .handle(&thread("users", ""), &context())
-            .await
-            .unwrap();
+        let effects = handle_thread(&handler, thread("users", "")).await.unwrap();
 
         assert!(matches!(effects.as_slice(), [ThreadEffect::Noop]));
         assert!(llm.requests().is_empty());
@@ -1101,8 +1376,7 @@ mod tests {
             "system",
         );
 
-        let effects = handler
-            .handle(&thread("users", "help"), &context())
+        let effects = handle_thread(&handler, thread("users", "help"))
             .await
             .unwrap();
 
@@ -1155,8 +1429,7 @@ mod tests {
             "system",
         );
 
-        let effects = handler
-            .handle(&thread("users", "help"), &context())
+        let effects = handle_thread(&handler, thread("users", "help"))
             .await
             .unwrap();
         assert!(!effects
@@ -1211,8 +1484,7 @@ mod tests {
         let handler =
             SupportBotHandler::new("support", config, llm.clone(), Arc::new(registry), "system");
 
-        handler
-            .handle(&thread("users", "help"), &context())
+        handle_thread(&handler, thread("users", "help"))
             .await
             .unwrap();
 
@@ -1264,8 +1536,7 @@ mod tests {
         let handler =
             SupportBotHandler::new("support", test_config(), llm, Arc::new(registry), "system");
 
-        let effects = handler
-            .handle(&thread("users", "help"), &context())
+        let effects = handle_thread(&handler, thread("users", "help"))
             .await
             .unwrap();
 
@@ -1312,8 +1583,7 @@ mod tests {
         let handler =
             SupportBotHandler::new("support", test_config(), llm, Arc::new(registry), "system");
 
-        let effects = handler
-            .handle(&thread("users", "help"), &context())
+        let effects = handle_thread(&handler, thread("users", "help"))
             .await
             .unwrap();
 
@@ -1355,8 +1625,7 @@ mod tests {
             "system",
         );
 
-        let effects = handler
-            .handle(&thread("users", "help"), &context())
+        let effects = handle_thread(&handler, thread("users", "help"))
             .await
             .unwrap();
 
@@ -1402,7 +1671,7 @@ mod tests {
         )
         .unwrap();
 
-        let effects = handler.handle(&thread, &context()).await.unwrap();
+        let effects = handle_thread(&handler, thread).await.unwrap();
 
         assert_eq!(llm.requests().len(), 0);
         assert!(matches!(effects.as_slice(), [ThreadEffect::Noop]));
@@ -1431,7 +1700,7 @@ mod tests {
         )
         .unwrap();
 
-        let effects = handler.handle(&thread, &context()).await.unwrap();
+        let effects = handle_thread(&handler, thread).await.unwrap();
 
         assert_eq!(llm.requests().len(), 0);
         assert!(matches!(effects.as_slice(), [ThreadEffect::Noop]));
@@ -1520,8 +1789,7 @@ mod tests {
             "system",
         );
 
-        let effects = handler
-            .handle(&thread("users", "help"), &context())
+        let effects = handle_thread(&handler, thread("users", "help"))
             .await
             .unwrap();
 
@@ -1582,13 +1850,12 @@ mod tests {
             },
         )
         .unwrap();
-        let mut ctx = context();
-        ctx.config = Arc::new(mattermost_api::apis::configuration::Configuration {
-            base_path: "://invalid-mattermost-url".to_string(),
-            ..Default::default()
-        });
+        let (ctx, _server) = context_with_snapshot(&thread).await;
 
-        let effects = handler.handle(&thread, &ctx).await.unwrap();
+        let effects = handler
+            .handle(&invocation_for(&thread), &ctx)
+            .await
+            .unwrap();
 
         let state_meta = effects
             .iter()

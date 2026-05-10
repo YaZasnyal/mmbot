@@ -37,9 +37,12 @@ impl ThreadHandler for HelloWorldHandler {
 
     async fn handle(
         &self,
-        thread: &thread_bot::Thread,
+        invocation: &thread_bot::ThreadInvocation,
         ctx: &thread_bot::ThreadContext,
     ) -> Result<Vec<ThreadEffect>, thread_bot::ThreadBotError> {
+        let thread = ctx
+            .build_thread_snapshot(&invocation.thread.thread_id)
+            .await?;
         tracing::info!(
             thread_id = %thread.info.thread_id,
             message_count = thread.messages.len(),

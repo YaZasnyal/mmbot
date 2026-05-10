@@ -25,8 +25,8 @@ pub use runtime::{ThreadBotConfig, ThreadBotPlugin};
 pub use store::ThreadStore;
 pub use types::{
     AppendReaction, ChannelCheckpoint, ReactionAction, ReactionChange, Thread, ThreadInfo,
-    ThreadMessage, ThreadMessageRecord, ThreadReaction, ThreadRecord, UpsertThread,
-    UpsertThreadMessage,
+    ThreadInvocation, ThreadMessage, ThreadMessageRecord, ThreadReaction, ThreadRecord,
+    ThreadTrigger, UpsertThread, UpsertThreadMessage,
 };
 
 // Re-export async_trait for convenience

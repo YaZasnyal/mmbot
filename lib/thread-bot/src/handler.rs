@@ -1,7 +1,7 @@
 use crate::actor::build_thread_snapshot;
 use crate::error::ThreadBotError;
 use crate::handle::ThreadBotHandle;
-use crate::types::{ReactionChange, Thread, ThreadRecord};
+use crate::types::{ReactionChange, Thread, ThreadInvocation, ThreadRecord};
 use async_trait::async_trait;
 use mattermost_bot::{chrono, cron_tab};
 use std::sync::Arc;
@@ -84,13 +84,16 @@ pub trait ThreadHandler: Send + Sync + 'static {
         None
     }
 
-    /// Main thread processing logic
+    /// Main thread processing logic.
     ///
-    /// Called after debounce with full thread snapshot from Mattermost API.
+    /// Called after debounce with a lightweight thread record and trigger.
+    /// Build a full snapshot explicitly with
+    /// [`ThreadContext::build_thread_snapshot`] only when message/reaction
+    /// history is needed.
     /// Returns a list of effects to apply.
     async fn handle(
         &self,
-        thread: &Thread,
+        invocation: &ThreadInvocation,
         ctx: &ThreadContext,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError>;
 

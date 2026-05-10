@@ -62,9 +62,13 @@ pub(crate) struct ActorCtx<H: ThreadHandler> {
 
 // ─── Private types ───────────────────────────────────────────────────────────
 
-/// Output of the boxed handler future: snapshot is returned alongside the
+/// Output of the boxed handler future: invocation is returned alongside the
 /// measured handler duration and result so it can be used for post-processing.
-type HandlerResult = (Thread, Duration, Result<Vec<ThreadEffect>, ThreadBotError>);
+type HandlerResult = (
+    ThreadInvocation,
+    Duration,
+    Result<Vec<ThreadEffect>, ThreadBotError>,
+);
 
 /// A boxed, Send future that yields [`HandlerResult`].
 type HandlerFuture = Pin<Box<dyn Future<Output = HandlerResult> + Send>>;
@@ -92,7 +96,7 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
     rx: &mut mpsc::Receiver<ThreadCommand>,
     a: &ActorCtx<H>,
 ) {
-    let mut has_pending = false;
+    let mut pending_run: Option<ThreadTrigger> = None;
     let mut debounce_deadline = Instant::now() + a.debounce;
     let mut handler_fut: HandlerFuture = pending_handler();
     let mut handler_running = false;
@@ -113,7 +117,9 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                         a.metrics.actor_command("new_message", "received");
                         let should_trigger = save_incoming_message(a, &post).await;
                         if should_trigger {
-                            has_pending = true;
+                            pending_run = Some(ThreadTrigger::NewMessage {
+                                post_id: post.id.clone(),
+                            });
                             debounce_deadline = Instant::now() + a.debounce;
                             // Cancel running handler — will re-run with fresh snapshot
                             if handler_running {
@@ -121,7 +127,7 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                                 handler_running = false;
                             }
                         }
-                        if !has_pending && !handler_running {
+                        if pending_run.is_none() && !handler_running {
                             idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                         }
                     }
@@ -137,7 +143,7 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                             stop_reason = "control_reaction";
                             break;
                         }
-                        if !has_pending && !handler_running {
+                        if pending_run.is_none() && !handler_running {
                             idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                         }
                     }
@@ -152,7 +158,7 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                     Some(ThreadCommand::Wake) => {
                         a.metrics.actor_command("wake", "received");
                         // Don't cancel running handler — just ensure re-run after it completes
-                        has_pending = true;
+                        pending_run.get_or_insert(ThreadTrigger::Wake);
                         debounce_deadline = Instant::now();
                         tracing::debug!(thread_id = %a.thread_id, "Thread woken by external trigger");
                     }
@@ -167,45 +173,57 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
             result = &mut handler_fut, if handler_running => {
                 handler_running = false;
                 handler_fut = pending_handler();
-                if handle_handler_result(result, a, &mut has_pending, &mut debounce_deadline).await {
+                if handle_handler_result(result, a, &mut pending_run, &mut debounce_deadline).await {
                     stop_reason = "handler_closed";
                     break;
                 }
-                if !has_pending {
+                if pending_run.is_none() {
                     idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                 }
             }
 
-            _ = tokio::time::sleep_until(debounce_deadline), if has_pending => {
-                has_pending = false;
+            _ = tokio::time::sleep_until(debounce_deadline), if pending_run.is_some() => {
+                let trigger = pending_run
+                    .take()
+                    .expect("pending_run is Some when debounce branch is enabled");
 
-                let snapshot = match build_thread_snapshot(
-                    &a.thread_id, &*a.store, &a.mm_config,
-                ).await {
-                    Ok(s) => s,
+                let thread_record = match a.store.get_thread(&a.thread_id).await {
+                    Ok(Some(record)) => record,
+                    Ok(None) => {
+                        tracing::error!(
+                            thread_id = %a.thread_id,
+                            "Cannot invoke handler for missing thread record"
+                        );
+                        idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
+                        continue;
+                    }
                     Err(e) => {
                         tracing::error!(
                             thread_id = %a.thread_id,
                             error = %e,
-                            "Failed to build thread snapshot"
+                            "Failed to load thread record for handler invocation"
                         );
                         idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                         continue;
                     }
                 };
+                let invocation = ThreadInvocation {
+                    thread: thread_record,
+                    trigger,
+                };
 
-                // Start handler — move snapshot in, get it back with the result
+                // Start handler — move invocation in, get it back with the result
                 let handler = Arc::clone(&a.handler);
                 let ctx = a.ctx.clone();
                 handler_fut = Box::pin(async move {
                     let started = std::time::Instant::now();
-                    let result = handler.handle(&snapshot, &ctx).await;
-                    (snapshot, started.elapsed(), result)
+                    let result = handler.handle(&invocation, &ctx).await;
+                    (invocation, started.elapsed(), result)
                 });
                 handler_running = true;
             }
 
-            _ = idle_sleep_until(idle_deadline), if !has_pending && !handler_running => {
+            _ = idle_sleep_until(idle_deadline), if pending_run.is_none() && !handler_running => {
                 tracing::debug!(thread_id = %a.thread_id, "Thread actor idle timeout elapsed");
                 stop_reason = "idle_timeout";
                 break;
@@ -234,15 +252,16 @@ async fn idle_sleep_until(deadline: Option<Instant>) {
 ///
 /// Returns `true` if the actor should exit (thread closed).
 async fn handle_handler_result<H: ThreadHandler>(
-    (snapshot, handler_duration, result): HandlerResult,
+    (invocation, handler_duration, result): HandlerResult,
     a: &ActorCtx<H>,
-    has_pending: &mut bool,
+    pending_run: &mut Option<ThreadTrigger>,
     debounce_deadline: &mut Instant,
 ) -> bool {
     match result {
         Ok(effects) => {
             let effect_count = effects.len();
-            let (should_exit, should_reschedule) = execute_effects(effects, &snapshot, a).await;
+            let (should_exit, should_reschedule) =
+                execute_effects(effects, &invocation.thread, a).await;
             let outcome = if should_exit {
                 "closed"
             } else if should_reschedule {
@@ -255,11 +274,16 @@ async fn handle_handler_result<H: ThreadHandler>(
                 a.metrics.effect("none", "success");
             }
 
-            // Update processed position to the last message
-            if let Some(last_msg) = snapshot.messages.last() {
+            // Mark the invocation's seen cursor as processed. Messages that
+            // arrive during a running handler cancel it or schedule a follow-up
+            // run, so they are handled by a later invocation.
+            if let (Some(last_seen_post_id), Some(last_seen_post_at)) = (
+                invocation.thread.last_seen_post_id.as_deref(),
+                invocation.thread.last_seen_post_at,
+            ) {
                 if let Err(e) = a
                     .store
-                    .update_thread_processed(&a.thread_id, &last_msg.post_id, last_msg.created_at)
+                    .update_thread_processed(&a.thread_id, last_seen_post_id, last_seen_post_at)
                     .await
                 {
                     tracing::error!(
@@ -271,7 +295,7 @@ async fn handle_handler_result<H: ThreadHandler>(
             }
 
             if should_reschedule && !should_exit {
-                *has_pending = true;
+                *pending_run = Some(ThreadTrigger::Reschedule);
                 *debounce_deadline = Instant::now();
             }
 
@@ -304,19 +328,26 @@ async fn handle_control_reaction<H: ThreadHandler>(
         "Processing control reaction"
     );
 
-    let snapshot = match build_thread_snapshot(&a.thread_id, &*a.store, &a.mm_config).await {
-        Ok(s) => s,
+    let thread_record = match a.store.get_thread(&a.thread_id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            tracing::error!(
+                thread_id = %a.thread_id,
+                "Cannot execute control reaction for missing thread record"
+            );
+            return false;
+        }
         Err(e) => {
             tracing::error!(
                 thread_id = %a.thread_id,
                 error = %e,
-                "Failed to build snapshot for control reaction"
+                "Failed to load thread record for control reaction"
             );
             return false;
         }
     };
 
-    let (should_exit, _) = execute_effects(vec![effect.clone()], &snapshot, a).await;
+    let (should_exit, _) = execute_effects(vec![effect.clone()], &thread_record, a).await;
 
     should_exit
 }
@@ -329,7 +360,7 @@ async fn handle_control_reaction<H: ThreadHandler>(
 #[tracing::instrument(level = "debug", skip_all, fields(thread_id = %a.thread_id))]
 async fn execute_effects<H: ThreadHandler>(
     effects: Vec<ThreadEffect>,
-    thread: &Thread,
+    thread: &ThreadRecord,
     a: &ActorCtx<H>,
 ) -> (bool, bool) {
     let mut should_exit = false;
@@ -340,7 +371,7 @@ async fn execute_effects<H: ThreadHandler>(
         let effect_label = thread_effect_label(&effect);
         tracing::info!(
             thread_id = %a.thread_id,
-            root_post_id = %thread.info.root_post_id,
+            root_post_id = %thread.root_post_id,
             effect = effect_label,
             effect_idx,
             total_effects,
@@ -358,9 +389,8 @@ async fn execute_effects<H: ThreadHandler>(
                 } else {
                     0
                 };
-                let mut req =
-                    models::CreatePostRequest::new(thread.info.channel_id.clone(), message);
-                req.root_id = Some(thread.info.root_post_id.clone());
+                let mut req = models::CreatePostRequest::new(thread.channel_id.clone(), message);
+                req.root_id = Some(thread.root_post_id.clone());
                 if metadata != serde_json::Value::Null {
                     req.props = Some(metadata);
                 }
@@ -483,14 +513,14 @@ fn thread_effect_label(effect: &ThreadEffect) -> &'static str {
 }
 
 fn stop_after_critical_effect_failure<H: ThreadHandler>(
-    thread: &Thread,
+    thread: &ThreadRecord,
     a: &ActorCtx<H>,
     effect_type: &'static str,
 ) {
     tracing::info!(
         thread_id = %a.thread_id,
         effect_type,
-        root_post_id = %thread.info.root_post_id,
+        root_post_id = %thread.root_post_id,
         "Thread actor stopped after critical effect failure"
     );
 }

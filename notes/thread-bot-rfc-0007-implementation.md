@@ -351,18 +351,58 @@ cargo clippy -p hello-thread-bot -- -D warnings
 
 All passed after slice 7.
 
+### Implementation slice 8: lazy handler invocation
+
+Files touched:
+
+- `lib/thread-bot/src/types.rs`
+- `lib/thread-bot/src/handler.rs`
+- `lib/thread-bot/src/actor.rs`
+- `lib/thread-bot/src/lib.rs`
+- `lib/thread-bot/src/runtime.rs`
+- `lib/thread-bot/src/testutil.rs`
+- `lib/support-bot/src/handler.rs`
+- `examples/hello_thread_bot/src/main.rs`
+
+Changes:
+
+- Added `ThreadInvocation` and `ThreadTrigger` to the public Layer 3 API.
+- Changed `ThreadHandler::handle(...)` to receive a lightweight
+  `ThreadInvocation` instead of an eagerly built full `Thread`.
+- Actor debounce execution now loads only the persisted `ThreadRecord` before
+  invoking L4; full Mattermost thread snapshots are no longer built by default.
+- Actor effect execution and control-reaction execution now use `ThreadRecord`
+  for channel/root metadata instead of requiring a full snapshot.
+- Successful handler runs advance `last_processed_*` from the invocation's
+  persisted `last_seen_*` cursor.
+- Added trigger variants for `NewMessage`, `Reschedule`, and `Wake`.
+- Updated support-bot routing to check metadata/live control reactions from the
+  lightweight record first, then explicitly call
+  `ctx.build_thread_snapshot(thread_id)` only when it needs message text or LLM
+  transcript context.
+- Updated engineer debug handling and the hello example to build snapshots
+  explicitly where transcript/message count is needed.
+- Updated support-bot handler unit tests to exercise the new invocation path
+  with a small snapshot store and Mattermost API mock.
+
+Verification run:
+
+```bash
+cargo fmt -p thread-bot -p support-bot -p hello-thread-bot
+cargo test -p thread-bot
+cargo test -p support-bot
+cargo clippy -p thread-bot -- -D warnings
+cargo clippy -p support-bot -- -D warnings
+cargo clippy -p hello-thread-bot -- -D warnings
+```
+
+All passed after slice 8.
+
 ## Next tasks
 
 Prefer one small reviewable slice at a time.
 
-1. Add lazy invocation API.
-   - Introduce `ThreadInvocation` and `ThreadTrigger`.
-   - Handler receives lightweight record plus trigger.
-   - Full snapshot is built only via `ctx.build_thread_snapshot(thread_id)`.
-   - Update support-bot user flow to explicitly build snapshot only where
-     LLM context needs transcript.
-
-2. Add thread links and linked effects.
+1. Add thread links and linked effects.
    - Add `thread_links` table to the initial migration.
    - Add store APIs for forward and reverse lookups.
    - Add `EnsureLinkedThread`.
@@ -371,7 +411,7 @@ Prefer one small reviewable slice at a time.
    - Move support engineer thread creation out of `MattermostSupportNotifier`
      raw API calls and into effects.
 
-3. Keep raw-post path removed.
+2. Keep raw-post path removed.
    - `execute_raw_post_effects` has been removed from runtime.
    - `ThreadHandler::handle_raw_post` has been removed.
    - `build_raw_engineer_thread_snapshot` is not present.

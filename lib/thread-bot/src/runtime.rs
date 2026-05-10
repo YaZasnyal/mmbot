@@ -23,14 +23,14 @@
 //!
 //! ```no_run
 //! # use std::sync::Arc;
-//! # use thread_bot::{async_trait, ThreadHandler, ThreadEffect, ThreadBotError, Thread, ThreadContext};
+//! # use thread_bot::{async_trait, ThreadHandler, ThreadEffect, ThreadBotError, Thread, ThreadContext, ThreadInvocation};
 //! # struct MyHandler;
 //! # impl MyHandler { fn new() -> Self { Self } }
 //! # #[async_trait]
 //! # impl ThreadHandler for MyHandler {
 //! #     fn id(&self) -> &'static str { "my" }
 //! #     async fn should_track(&self, _: &Thread, _: &ThreadContext) -> Result<bool, ThreadBotError> { Ok(true) }
-//! #     async fn handle(&self, _: &Thread, _: &ThreadContext) -> Result<Vec<ThreadEffect>, ThreadBotError> { Ok(vec![]) }
+//! #     async fn handle(&self, _: &ThreadInvocation, _: &ThreadContext) -> Result<Vec<ThreadEffect>, ThreadBotError> { Ok(vec![]) }
 //! # }
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! # let pool: thread_bot::sqlx::PgPool = todo!();

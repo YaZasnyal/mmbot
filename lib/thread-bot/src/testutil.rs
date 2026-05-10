@@ -469,7 +469,7 @@ impl ThreadHandler for MockHandler {
 
     async fn handle(
         &self,
-        _thread: &Thread,
+        _invocation: &ThreadInvocation,
         _ctx: &ThreadContext,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
         self.handle_call_count.fetch_add(1, Ordering::SeqCst);

@@ -18,6 +18,29 @@ pub struct ThreadRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Lightweight handler invocation.
+///
+/// Contains the persisted thread record plus the reason the actor invoked the
+/// handler. It intentionally does not include messages or reactions; handlers
+/// that need the transcript can call
+/// [`ThreadContext::build_thread_snapshot`](crate::handler::ThreadContext::build_thread_snapshot).
+#[derive(Debug, Clone)]
+pub struct ThreadInvocation {
+    pub thread: ThreadRecord,
+    pub trigger: ThreadTrigger,
+}
+
+/// Reason a thread handler was invoked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreadTrigger {
+    /// A new non-bot message was saved for this thread.
+    NewMessage { post_id: String },
+    /// Handler requested another run with [`ThreadEffect::Reschedule`](crate::handler::ThreadEffect::Reschedule).
+    Reschedule,
+    /// External wake from [`ThreadBotHandle::wake_thread`](crate::handle::ThreadBotHandle::wake_thread).
+    Wake,
+}
+
 /// Full thread snapshot for handler (expensive to build).
 ///
 /// Contains all messages and reactions in the thread. Each item has an

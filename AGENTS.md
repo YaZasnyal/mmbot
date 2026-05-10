@@ -29,6 +29,8 @@ Unit tests may live beside code, such as `lib/thread-bot/src/actor_tests.rs`, or
 
 Recent history uses both Conventional Commit style (`feat(thread-bot): ...`, `docs: ...`) and short imperative summaries. Prefer Conventional Commits for new work, with a scoped subject when useful. Pull requests should describe the behavior change, list test commands run, link related issues or RFCs, and call out generated API updates, migrations, or required Mattermost/Postgres setup.
 
+Do not run git staging or commit commands unless the user explicitly asks for a git operation in the current turn. In particular, do not run `git add`, `git commit`, or similar commands just because a code slice is complete.
+
 ## Security & Configuration Tips
 
 Do not commit bot tokens, admin passwords, or local Mattermost credentials. Use environment variables such as `MM_BASE_PATH`, `MM_BEARER_TOKEN`, `MATTERMOST_URL`, `MM_ADMIN_USER`, and `MM_ADMIN_PASS`. When changing tests, ensure `just test-env-stop` cleans up containers and volumes.
