@@ -13,7 +13,9 @@ use std::{ops::Sub, sync::Arc};
 use async_trait::async_trait;
 use mattermost_api::{apis::configuration::Configuration, models::CreatePostRequest};
 use mattermost_bot::{Bot, tokio_graceful};
-use thread_bot::{ThreadBotHandle, ThreadEffect, ThreadHandler, ThreadStore, cron_tab};
+use thread_bot::{
+    ThreadBotHandle, ThreadEffect, ThreadHandler, ThreadStore, ThreadTarget, cron_tab,
+};
 
 struct HelloWorldHandler;
 
@@ -55,6 +57,7 @@ impl ThreadHandler for HelloWorldHandler {
 
         if thread.messages.len() < 3 {
             effects.push(ThreadEffect::Reply {
+                target: ThreadTarget::CurrentThread,
                 message: "Processed".to_string(),
                 metadata: serde_json::json!({
                     "handler": self.id(),
@@ -63,6 +66,7 @@ impl ThreadHandler for HelloWorldHandler {
             });
         } else {
             effects.push(ThreadEffect::Reply {
+                target: ThreadTarget::CurrentThread,
                 message: "Finished".to_string(),
                 metadata: serde_json::json!({
                     "handler": self.id(),

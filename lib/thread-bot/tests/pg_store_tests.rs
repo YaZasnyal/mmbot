@@ -299,17 +299,18 @@ async fn upsert_thread_link_creates_and_reads_forward_link() {
     assert_eq!(link.metadata, json!({"created_by": "test"}));
 
     let found = store
-        .get_thread_link("thread_1", "engineer")
+        .get_thread_link("thread_1", "thread_2")
         .await
         .unwrap()
         .expect("link should exist");
+    assert_eq!(found.link_kind, "engineer");
     assert_eq!(found.target_thread_id, "thread_2");
 
     db.cleanup().await;
 }
 
 #[tokio::test]
-async fn upsert_thread_link_updates_existing_kind() {
+async fn upsert_thread_link_updates_existing_target() {
     let db = TestDb::new().await;
     let store = db.store().await;
 
@@ -329,8 +330,8 @@ async fn upsert_thread_link_updates_existing_kind() {
     let updated = store
         .upsert_thread_link(UpsertThreadLink {
             source_thread_id: "thread_1".to_string(),
-            link_kind: "engineer".to_string(),
-            target_thread_id: "thread_3".to_string(),
+            link_kind: "debug".to_string(),
+            target_thread_id: "thread_2".to_string(),
             metadata: json!({"version": 2}),
         })
         .await
@@ -338,12 +339,14 @@ async fn upsert_thread_link_updates_existing_kind() {
 
     assert_eq!(updated.created_at, created.created_at);
     assert!(updated.updated_at >= created.updated_at);
-    assert_eq!(updated.target_thread_id, "thread_3");
+    assert_eq!(updated.link_kind, "debug");
+    assert_eq!(updated.target_thread_id, "thread_2");
     assert_eq!(updated.metadata, json!({"version": 2}));
 
     let links = store.list_thread_links("thread_1").await.unwrap();
     assert_eq!(links.len(), 1);
-    assert_eq!(links[0].target_thread_id, "thread_3");
+    assert_eq!(links[0].link_kind, "debug");
+    assert_eq!(links[0].target_thread_id, "thread_2");
 
     db.cleanup().await;
 }
@@ -356,6 +359,7 @@ async fn list_thread_links_and_reverse_links_are_ordered() {
     store.upsert_thread(make_thread("1")).await.unwrap();
     store.upsert_thread(make_thread("2")).await.unwrap();
     store.upsert_thread(make_thread("3")).await.unwrap();
+    store.upsert_thread(make_thread("4")).await.unwrap();
 
     store
         .upsert_thread_link(UpsertThreadLink {
@@ -377,6 +381,15 @@ async fn list_thread_links_and_reverse_links_are_ordered() {
         .unwrap();
     store
         .upsert_thread_link(UpsertThreadLink {
+            source_thread_id: "thread_1".to_string(),
+            link_kind: "engineer".to_string(),
+            target_thread_id: "thread_4".to_string(),
+            metadata: json!({}),
+        })
+        .await
+        .unwrap();
+    store
+        .upsert_thread_link(UpsertThreadLink {
             source_thread_id: "thread_3".to_string(),
             link_kind: "source".to_string(),
             target_thread_id: "thread_2".to_string(),
@@ -389,9 +402,13 @@ async fn list_thread_links_and_reverse_links_are_ordered() {
     assert_eq!(
         forward
             .iter()
-            .map(|link| link.link_kind.as_str())
+            .map(|link| (link.link_kind.as_str(), link.target_thread_id.as_str()))
             .collect::<Vec<_>>(),
-        vec!["debug", "engineer"]
+        vec![
+            ("debug", "thread_3"),
+            ("engineer", "thread_2"),
+            ("engineer", "thread_4")
+        ]
     );
 
     let reverse = store.list_reverse_thread_links("thread_2").await.unwrap();

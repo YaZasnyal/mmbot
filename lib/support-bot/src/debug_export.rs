@@ -7,7 +7,7 @@ use crate::notifier::{
 };
 use crate::state::SupportThreadStatus;
 use serde_json::json;
-use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect};
+use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadTarget};
 use tracing::{info, warn};
 
 pub(crate) async fn handle_debug_export_html(
@@ -21,6 +21,7 @@ pub(crate) async fn handle_debug_export_html(
             "support-bot: debug-report source thread id missing in engineer thread props"
         );
         return Ok(vec![ThreadEffect::Reply {
+            target: ThreadTarget::CurrentThread,
             message: "Cannot find source support thread for this engineer thread.".to_string(),
             metadata: debug_response_metadata(),
         }]);
@@ -36,6 +37,7 @@ pub(crate) async fn handle_debug_export_html(
             "support-bot: debug-report source thread not found in store"
         );
         return Ok(vec![ThreadEffect::Reply {
+            target: ThreadTarget::CurrentThread,
             message: format!("Source support thread not found: {source_thread_id}"),
             metadata: debug_response_metadata(),
         }]);
@@ -112,6 +114,7 @@ pub(crate) async fn handle_debug_export_html(
     );
 
     Ok(vec![ThreadEffect::Reply {
+        target: ThreadTarget::CurrentThread,
         message: format!(
             "Debug report exported for support thread `{}`.",
             record.thread_id

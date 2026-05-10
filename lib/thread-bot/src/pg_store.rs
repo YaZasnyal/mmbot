@@ -296,8 +296,8 @@ impl ThreadStore for PgThreadStore {
                 created_at, updated_at
             )
             VALUES ($1, $2, $3, $4, $5, $5)
-            ON CONFLICT (source_thread_id, link_kind) DO UPDATE SET
-                target_thread_id = EXCLUDED.target_thread_id,
+            ON CONFLICT (source_thread_id, target_thread_id) DO UPDATE SET
+                link_kind = EXCLUDED.link_kind,
                 metadata = EXCLUDED.metadata,
                 updated_at = EXCLUDED.updated_at
             RETURNING {THREAD_LINK_COLUMNS}
@@ -319,16 +319,16 @@ impl ThreadStore for PgThreadStore {
     async fn get_thread_link(
         &self,
         source_thread_id: &str,
-        link_kind: &str,
+        target_thread_id: &str,
     ) -> Result<Option<ThreadLink>, ThreadBotError> {
         let sql = format!(
             "SELECT {THREAD_LINK_COLUMNS} FROM thread_links \
-             WHERE source_thread_id = $1 AND link_kind = $2"
+             WHERE source_thread_id = $1 AND target_thread_id = $2"
         );
 
         let row: Option<ThreadLinkRow> = sqlx::query_as(&sql)
             .bind(source_thread_id)
-            .bind(link_kind)
+            .bind(target_thread_id)
             .fetch_optional(&self.pool)
             .await?;
 
@@ -341,7 +341,7 @@ impl ThreadStore for PgThreadStore {
     ) -> Result<Vec<ThreadLink>, ThreadBotError> {
         let sql = format!(
             "SELECT {THREAD_LINK_COLUMNS} FROM thread_links \
-             WHERE source_thread_id = $1 ORDER BY link_kind ASC"
+             WHERE source_thread_id = $1 ORDER BY link_kind ASC, target_thread_id ASC"
         );
 
         let rows: Vec<ThreadLinkRow> = sqlx::query_as(&sql)

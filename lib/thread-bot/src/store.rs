@@ -48,11 +48,11 @@ pub trait ThreadStore: Send + Sync + 'static {
         input: UpsertThreadLink,
     ) -> Result<ThreadLink, ThreadBotError>;
 
-    /// Get one forward link by source thread and link kind.
+    /// Get one forward link by source and target thread.
     async fn get_thread_link(
         &self,
         source_thread_id: &str,
-        link_kind: &str,
+        target_thread_id: &str,
     ) -> Result<Option<ThreadLink>, ThreadBotError>;
 
     /// List links originating from a thread.

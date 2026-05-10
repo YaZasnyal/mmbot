@@ -18,7 +18,7 @@ mod testutil;
 // Re-exports for convenience
 pub use error::ThreadBotError;
 pub use handle::ThreadBotHandle;
-pub use handler::{ThreadContext, ThreadEffect, ThreadHandler};
+pub use handler::{ThreadContext, ThreadEffect, ThreadHandler, ThreadTarget};
 pub use metrics::{ThreadBotMetrics, ThreadBotMetricsHandle};
 pub use pg_store::PgThreadStore;
 pub use runtime::{ThreadBotConfig, ThreadBotPlugin};

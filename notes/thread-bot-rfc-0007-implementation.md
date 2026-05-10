@@ -420,11 +420,11 @@ Changes:
   `upsert_thread_link`, `get_thread_link`, and `list_thread_links`.
 - Added `list_reverse_thread_links` for reverse lookup by target thread.
 - Implemented link APIs in PostgreSQL store and in-memory test store.
-- Added pg-store tests for create/read, update-by-link-kind, forward listing,
+- Added pg-store tests for create/read, update-by-target-thread, forward listing,
   and reverse listing.
 - Updated support-bot test stores for the expanded `ThreadStore` trait.
 - This slice intentionally does not add `EnsureLinkedThread`,
-  `ThreadTarget::LinkedThread`, or support-bot notifier migration yet.
+  linked `ThreadTarget` variants, or support-bot notifier migration yet.
 
 Verification run:
 
@@ -445,20 +445,21 @@ Files touched:
 - `lib/thread-bot/src/handler.rs`
 - `lib/thread-bot/src/actor.rs`
 - `lib/thread-bot/src/actor_tests.rs`
+- `lib/support-bot/src/handler.rs`
 
 Changes:
 
 - Added `ThreadEffect::EnsureLinkedThread`.
-- Effect is idempotent for `(current_thread_id, link_kind)`: if a link already
-  exists, execution is a no-op.
-- On first execution, Layer 3 creates a Mattermost root post in the requested
-  channel, tracks the created root as a thread, persists the created root
-  message immediately, and stores the typed thread link.
+- Effect execution creates a Mattermost root post in the requested channel,
+  tracks the created root as a thread, persists the created root message
+  immediately, and stores the typed thread link.
 - Link/thread/message metadata are explicit effect inputs.
+- Duplicate-avoidance policy is left to the plugin. `support-bot` now checks
+  for an existing engineer link before queuing the effect.
 - Added actor regression coverage for creating the linked tracked thread,
   root message, and link.
 - This slice intentionally does not migrate support-bot engineer notification
-  code to the effect yet, and does not add `ThreadTarget::LinkedThread`.
+  code to the effect yet.
 
 Verification run:
 
@@ -473,15 +474,134 @@ cargo check -p hello-thread-bot
 
 All passed after slice 10.
 
+### Implementation slice 11: linked reply targets
+
+Files touched:
+
+- `lib/thread-bot/src/handler.rs`
+- `lib/thread-bot/src/lib.rs`
+- `lib/thread-bot/src/actor.rs`
+- `lib/thread-bot/src/actor_tests.rs`
+
+Changes:
+
+- Added public `ThreadTarget` with `CurrentThread`,
+  `Thread { thread_id }`, and `LinkedThreads { link_kind }`.
+- Changed `ThreadEffect::Reply` to include `target`, so current-thread and
+  linked-thread replies use one effect shape.
+- Actor resolves explicit thread targets by `thread_id`, and resolves
+  `LinkedThreads` through `thread_links` to post to every matching linked
+  tracked thread.
+- Actor now persists created bot replies immediately after Mattermost
+  `create_post`.
+- Added actor coverage for immediate current-thread reply persistence,
+  explicit-thread reply persistence, and linked-thread reply persistence.
+
+Verification run:
+
+```bash
+cargo fmt -p thread-bot
+cargo test -p thread-bot
+cargo test -p support-bot
+cargo clippy -p thread-bot -- -D warnings
+```
+
+All passed after slice 11. `cargo check -p support-bot` also passed during
+implementation.
+
+### Implementation slice 12: support-bot linked engineer effects
+
+Files touched:
+
+- `lib/support-bot/src/handler.rs`
+- `lib/support-bot/src/user_thread_run.rs`
+- `lib/support-bot/src/workflow.rs`
+- `lib/support-bot/src/notifier.rs`
+
+Changes:
+
+- Added `support_engineer` as the support-bot engineer link kind.
+- User workflow now checks for an engineer link before LLM work when the
+  configured engineer target is a Mattermost channel.
+- If the link is absent, support-bot returns
+  `EnsureLinkedThread { link_kind: "support_engineer", ... }` plus
+  `Reschedule`, so creation is executed by Layer 3 and the workflow resumes
+  after the link exists.
+- Bot/user mirrors, `notify_engineer`, tool-loop-limit engineer notifications,
+  and finish status updates now queue `Reply { target:
+  LinkedThreads { link_kind: "support_engineer" }, ... }` effects instead of
+  calling Mattermost directly.
+- `MattermostSupportNotifier` still exists for debug report attachment upload
+  and legacy notifier tests, but the normal user workflow no longer uses it to
+  create or write engineer threads.
+
+Verification run:
+
+```bash
+cargo fmt -p thread-bot -p support-bot
+cargo test -p thread-bot
+cargo test -p support-bot
+cargo clippy -p thread-bot -- -D warnings
+cargo clippy -p support-bot -- -D warnings
+cargo check -p hello-thread-bot
+```
+
+All passed after slice 12.
+
+### Implementation slice 13: explicit and broadcast thread targets
+
+Files touched:
+
+- `lib/thread-bot/src/handler.rs`
+- `lib/thread-bot/src/store.rs`
+- `lib/thread-bot/src/pg_store.rs`
+- `lib/thread-bot/src/testutil.rs`
+- `lib/thread-bot/src/actor.rs`
+- `lib/thread-bot/src/actor_tests.rs`
+- `lib/thread-bot/tests/pg_store_tests.rs`
+- `lib/support-bot/src/handler.rs`
+- `lib/support-bot/src/user_thread_run.rs`
+- `lib/support-bot/src/workflow.rs`
+- `lib/support-bot/src/testutil.rs`
+
+Changes:
+
+- Changed `thread_links` primary key from `(source_thread_id, link_kind)` to
+  `(source_thread_id, target_thread_id)`, so `link_kind` is classification,
+  not uniqueness policy.
+- Changed `get_thread_link` to read by source and target thread id.
+- Kept `list_thread_links` as the plugin-level API for choosing any grouping
+  policy by metadata or `link_kind`.
+- Replaced single `LinkedThread { link_kind }` reply targeting with:
+  `Thread { thread_id }` for one explicit tracked thread and
+  `LinkedThreads { link_kind }` for broadcasting to every linked target of
+  that kind.
+- Updated support-bot engineer mirrors/notifications to broadcast via
+  `LinkedThreads { link_kind: "support_engineer" }`.
+- Added actor coverage for explicit thread-id replies.
+
+Verification run:
+
+```bash
+cargo fmt -p thread-bot -p support-bot -p hello-thread-bot
+cargo test -p thread-bot
+cargo test -p support-bot
+cargo clippy -p thread-bot -- -D warnings
+cargo clippy -p support-bot -- -D warnings
+cargo check -p hello-thread-bot
+```
+
+All passed after slice 13.
+
 ## Next tasks
 
 Prefer one small reviewable slice at a time.
 
-1. Add linked thread targets and support-bot migration.
-   - Add `ThreadTarget::LinkedThread`.
-   - Persist created bot replies immediately after Mattermost `create_post`.
-   - Move support engineer thread creation out of `MattermostSupportNotifier`
-     raw API calls and into effects.
+1. Clean up support-bot legacy engineer-thread state.
+   - `SupportThreadState.engineer_thread` remains as compatibility metadata.
+   - Prefer normalized `thread_links` for new behavior.
+   - Decide whether to keep, migrate, or remove the metadata field in a later
+     compatibility-breaking slice.
 
 2. Keep raw-post path removed.
    - `execute_raw_post_effects` has been removed from runtime.

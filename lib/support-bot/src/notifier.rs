@@ -496,13 +496,17 @@ fn engineer_thread_root_request(
 ) -> models::CreatePostRequest {
     let mut request = models::CreatePostRequest::new(
         channel_id.to_string(),
-        format!(
-            "New support request\n\nSource: {source_link}\n\n{}",
-            quote_for_mattermost(source_message(thread))
-        ),
+        engineer_thread_root_message(thread, source_link),
     );
     request.props = Some(support_post_props("engineer_thread_root", thread));
     request
+}
+
+pub(crate) fn engineer_thread_root_message(thread: &Thread, source_link: String) -> String {
+    format!(
+        "New support request\n\nSource: {source_link}\n\n{}",
+        quote_for_mattermost(source_message(thread))
+    )
 }
 
 fn source_message(thread: &Thread) -> &str {
@@ -527,7 +531,7 @@ fn engineer_thread_reply_request(
     request
 }
 
-fn status_update_message(
+pub(crate) fn status_update_message(
     thread: &Thread,
     status: &SupportThreadStatus,
     summary: Option<&str>,
@@ -561,7 +565,7 @@ fn non_empty_trimmed(value: &str) -> Option<&str> {
     }
 }
 
-fn source_post_link(config: &Configuration, post_id: &str) -> String {
+pub(crate) fn source_post_link(config: &Configuration, post_id: &str) -> String {
     format!(
         "{}/_redirect/pl/{}",
         config.base_path.trim_end_matches('/'),
@@ -569,7 +573,7 @@ fn source_post_link(config: &Configuration, post_id: &str) -> String {
     )
 }
 
-fn quote_for_mattermost(message: &str) -> String {
+pub(crate) fn quote_for_mattermost(message: &str) -> String {
     let (message, truncated) = truncate_chars(message, MIRRORED_MESSAGE_MAX_CHARS);
     let fence = markdown_fence_for(&message);
     let truncation_marker = if truncated {
@@ -604,7 +608,7 @@ fn markdown_fence_for(message: &str) -> String {
     "`".repeat((longest_run + 1).max(3))
 }
 
-fn support_post_props(kind: &str, thread: &Thread) -> serde_json::Value {
+pub(crate) fn support_post_props(kind: &str, thread: &Thread) -> serde_json::Value {
     serde_json::json!({
         "support_bot": {
             "kind": kind,

@@ -50,7 +50,7 @@ impl ThreadStore for PanicStore {
     async fn get_thread_link(
         &self,
         _source_thread_id: &str,
-        _link_kind: &str,
+        _target_thread_id: &str,
     ) -> Result<Option<ThreadLink>, ThreadBotError> {
         panic!("store should not be used")
     }

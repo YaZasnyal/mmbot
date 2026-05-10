@@ -25,13 +25,13 @@ CREATE TABLE thread_links (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (source_thread_id, link_kind)
+    PRIMARY KEY (source_thread_id, target_thread_id)
 );
 
 CREATE INDEX idx_thread_links_target_thread_id
     ON thread_links(target_thread_id);
-CREATE INDEX idx_thread_links_link_kind
-    ON thread_links(link_kind);
+CREATE INDEX idx_thread_links_source_link_kind
+    ON thread_links(source_thread_id, link_kind);
 
 CREATE TABLE thread_messages (
     post_id TEXT PRIMARY KEY,

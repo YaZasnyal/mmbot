@@ -6,6 +6,17 @@ use async_trait::async_trait;
 use mattermost_bot::{chrono, cron_tab};
 use std::sync::Arc;
 
+/// Target thread for effects that can address another tracked thread.
+#[derive(Debug, Clone)]
+pub enum ThreadTarget {
+    /// The thread currently being handled.
+    CurrentThread,
+    /// A specific tracked thread.
+    Thread { thread_id: String },
+    /// All threads linked from the current thread by `link_kind`.
+    LinkedThreads { link_kind: String },
+}
+
 /// Context provided to thread handlers
 #[derive(Clone)]
 pub struct ThreadContext {
@@ -32,8 +43,9 @@ impl ThreadContext {
 pub enum ThreadEffect {
     /// No operation
     Noop,
-    /// Reply to the thread
+    /// Reply to a target thread.
     Reply {
+        target: ThreadTarget,
         message: String,
         metadata: serde_json::Value,
     },
@@ -50,11 +62,10 @@ pub enum ThreadEffect {
         post_id: String,
         metadata: serde_json::Value,
     },
-    /// Ensure a typed linked root thread exists.
+    /// Create a typed linked root thread.
     ///
-    /// If `(current_thread_id, link_kind)` already exists in storage, this is a
-    /// no-op. Otherwise Layer 3 creates a root post in `channel_id`, tracks it
-    /// as a thread, stores the created root message, and records the link.
+    /// Layer 3 creates a root post in `channel_id`, tracks it as a thread,
+    /// stores the created root message, and records the link.
     EnsureLinkedThread {
         link_kind: String,
         channel_id: String,

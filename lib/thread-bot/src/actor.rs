@@ -20,7 +20,7 @@ use mattermost_api::apis::posts_api;
 use mattermost_api::models;
 
 use crate::error::ThreadBotError;
-use crate::handler::{ThreadContext, ThreadEffect, ThreadHandler};
+use crate::handler::{ThreadContext, ThreadEffect, ThreadHandler, ThreadTarget};
 use crate::metrics::ThreadBotMetricsHandle;
 use crate::store::ThreadStore;
 use crate::types::*;
@@ -382,41 +382,52 @@ async fn execute_effects<H: ThreadHandler>(
                 a.metrics.effect(effect_label, "success");
             }
 
-            ThreadEffect::Reply { message, metadata } => {
-                let message_bytes = message.len();
-                let metadata_bytes = if metadata != serde_json::Value::Null {
-                    metadata.to_string().len()
-                } else {
-                    0
-                };
-                let mut req = models::CreatePostRequest::new(thread.channel_id.clone(), message);
-                req.root_id = Some(thread.root_post_id.clone());
-                if metadata != serde_json::Value::Null {
-                    req.props = Some(metadata);
-                }
-
-                match posts_api::create_post(&a.mm_config, req, None).await {
-                    Ok(created) => {
-                        a.metrics.effect(effect_label, "success");
-                        tracing::debug!(
-                            thread_id = %a.thread_id,
-                            post_id = %created.id,
-                            message_bytes,
-                            metadata_bytes,
-                            "Posted reply"
-                        );
-                        // Bot reply is saved to DB when the WebSocket Posted
-                        // event arrives back in handle_thread_reply.
-                    }
-                    Err(e) => {
+            ThreadEffect::Reply {
+                target,
+                message,
+                metadata,
+            } => {
+                let target_threads = match resolve_thread_target(thread, a, target).await {
+                    Ok(target_threads) => target_threads,
+                    Err(error) => {
                         a.metrics.effect(effect_label, "error");
                         tracing::error!(
                             thread_id = %a.thread_id,
-                            error = %e,
-                            "Failed to post reply"
+                            error = %error,
+                            "Failed to resolve reply target"
                         );
+                        stop_after_critical_effect_failure(thread, a, "reply");
+                        should_exit = true;
+                        break;
+                    }
+                };
+
+                let mut posted_all = true;
+                for target_thread in target_threads {
+                    match post_reply_to_thread(&target_thread, a, message.clone(), metadata.clone())
+                        .await
+                    {
+                        Ok(created_post_id) => {
+                            tracing::info!(
+                                thread_id = %a.thread_id,
+                                target_thread_id = %target_thread.thread_id,
+                                post_id = %created_post_id,
+                                "Posted targeted reply"
+                            );
+                        }
+                        Err(error) => {
+                            posted_all = false;
+                            tracing::error!(
+                                thread_id = %a.thread_id,
+                                target_thread_id = %target_thread.thread_id,
+                                error = %error,
+                                "Failed to post targeted reply"
+                            );
+                        }
                     }
                 }
+                a.metrics
+                    .effect(effect_label, if posted_all { "success" } else { "error" });
             }
 
             ThreadEffect::UpdateMessage {
@@ -564,24 +575,103 @@ struct EnsureLinkedThreadRequest {
     link_metadata: serde_json::Value,
 }
 
+async fn resolve_thread_target<H: ThreadHandler>(
+    current_thread: &ThreadRecord,
+    a: &ActorCtx<H>,
+    target: ThreadTarget,
+) -> Result<Vec<ThreadRecord>, ThreadBotError> {
+    match target {
+        ThreadTarget::CurrentThread => Ok(vec![current_thread.clone()]),
+        ThreadTarget::Thread { thread_id } => {
+            let thread = a
+                .store
+                .get_thread(&thread_id)
+                .await?
+                .ok_or_else(|| ThreadBotError::ThreadNotFound(thread_id))?;
+            Ok(vec![thread])
+        }
+        ThreadTarget::LinkedThreads { link_kind } => {
+            let links = a.store.list_thread_links(&current_thread.thread_id).await?;
+            let linked_thread_ids = links
+                .into_iter()
+                .filter(|link| link.link_kind == link_kind)
+                .map(|link| link.target_thread_id)
+                .collect::<Vec<_>>();
+            if linked_thread_ids.is_empty() {
+                return Err(ThreadBotError::InvalidState(format!(
+                    "linked threads not found: source_thread_id={}, link_kind={}",
+                    current_thread.thread_id, link_kind
+                )));
+            }
+
+            let mut threads = Vec::with_capacity(linked_thread_ids.len());
+            for thread_id in linked_thread_ids {
+                let thread = a
+                    .store
+                    .get_thread(&thread_id)
+                    .await?
+                    .ok_or_else(|| ThreadBotError::ThreadNotFound(thread_id.clone()))?;
+                threads.push(thread);
+            }
+            Ok(threads)
+        }
+    }
+}
+
+async fn post_reply_to_thread<H: ThreadHandler>(
+    target_thread: &ThreadRecord,
+    a: &ActorCtx<H>,
+    message: String,
+    metadata: serde_json::Value,
+) -> Result<String, ThreadBotError> {
+    let mut req = models::CreatePostRequest::new(target_thread.channel_id.clone(), message);
+    req.root_id = Some(target_thread.root_post_id.clone());
+    if metadata != serde_json::Value::Null {
+        req.props = Some(metadata.clone());
+    }
+
+    let created = posts_api::create_post(&a.mm_config, req, None)
+        .await
+        .map_err(ThreadBotError::mattermost_api)?;
+    let created_at = created
+        .create_at
+        .map(ms_to_datetime)
+        .unwrap_or_else(Utc::now);
+    let user_id = created
+        .user_id
+        .clone()
+        .or_else(|| a.ctx.bot_user_id.clone())
+        .unwrap_or_default();
+    let post_id = created.id;
+    a.store
+        .upsert_message(UpsertThreadMessage {
+            post_id: post_id.clone(),
+            thread_id: target_thread.thread_id.clone(),
+            user_id,
+            is_bot_message: true,
+            root_id: created
+                .root_id
+                .clone()
+                .or_else(|| Some(target_thread.root_post_id.clone())),
+            parent_post_id: created
+                .root_id
+                .clone()
+                .or_else(|| Some(target_thread.root_post_id.clone())),
+            metadata,
+            post_created_at: created_at,
+            post_updated_at: created.update_at.map(ms_to_datetime),
+            post_deleted_at: created.delete_at.and_then(nonzero_ms_to_datetime),
+        })
+        .await?;
+
+    Ok(post_id)
+}
+
 async fn ensure_linked_thread<H: ThreadHandler>(
     source_thread: &ThreadRecord,
     a: &ActorCtx<H>,
     request: EnsureLinkedThreadRequest,
 ) -> Result<(), ThreadBotError> {
-    if a.store
-        .get_thread_link(&source_thread.thread_id, &request.link_kind)
-        .await?
-        .is_some()
-    {
-        tracing::debug!(
-            thread_id = %source_thread.thread_id,
-            link_kind = %request.link_kind,
-            "Linked thread already exists"
-        );
-        return Ok(());
-    }
-
     let mut create_request =
         models::CreatePostRequest::new(request.channel_id.clone(), request.message);
     if request.metadata != serde_json::Value::Null {

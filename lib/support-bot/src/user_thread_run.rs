@@ -1,10 +1,12 @@
 use crate::config::EngineerNotificationTarget;
 use crate::conversation::{store_state, with_trace_metadata};
 use crate::llm::{ChatMessage, ChatRole};
-use crate::state::{EngineerThreadRef, SupportThreadState, SupportThreadStatus};
+use crate::notifier::{quote_for_mattermost, support_post_props};
+use crate::state::{SupportThreadState, SupportThreadStatus};
 use crate::tools::ToolCall;
-use crate::workflow::engineer_notifier;
-use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadMessage};
+use thread_bot::{
+    Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadMessage, ThreadTarget,
+};
 use tracing::{info, warn};
 
 pub(crate) struct UserThreadRun {
@@ -70,20 +72,24 @@ impl UserThreadRun {
     pub(crate) async fn reply(
         &mut self,
         target: &EngineerNotificationTarget,
-        ctx: &ThreadContext,
+        _ctx: &ThreadContext,
         thread: &Thread,
         message: String,
         metadata: serde_json::Value,
     ) -> Result<(), ThreadBotError> {
         self.effects.push(ThreadEffect::Reply {
+            target: ThreadTarget::CurrentThread,
             message: message.clone(),
             metadata,
         });
-        if let Some(engineer_thread) = engineer_notifier(ctx, target)
-            .mirror_bot_message(thread, self.state.engineer_thread.as_ref(), message)
-            .await?
-        {
-            self.state.engineer_thread = Some(engineer_thread);
+        if matches!(target, EngineerNotificationTarget::MattermostChannel { .. }) {
+            self.effects.push(ThreadEffect::Reply {
+                target: ThreadTarget::LinkedThreads {
+                    link_kind: crate::handler::ENGINEER_LINK_KIND.to_string(),
+                },
+                message: format!("**Bot message**\n\n{}", quote_for_mattermost(&message)),
+                metadata: support_post_props("bot_message", thread),
+            });
         }
         Ok(())
     }
@@ -99,25 +105,24 @@ impl UserThreadRun {
             return Ok(());
         }
 
-        if let Some(engineer_thread) = engineer_notifier(ctx, target)
-            .mirror_user_message(thread, self.state.engineer_thread.as_ref(), message)
-            .await?
-        {
-            self.state.engineer_thread = Some(engineer_thread);
+        if matches!(target, EngineerNotificationTarget::MattermostChannel { .. }) {
+            self.effects.push(ThreadEffect::Reply {
+                target: ThreadTarget::LinkedThreads {
+                    link_kind: crate::handler::ENGINEER_LINK_KIND.to_string(),
+                },
+                message: format!(
+                    "**User message** ([source]({}))\n\n{}",
+                    crate::notifier::source_post_link(&ctx.config, &message.post_id),
+                    quote_for_mattermost(&message.message)
+                ),
+                metadata: support_post_props("user_message", thread),
+            });
         }
         Ok(())
     }
 
     pub(crate) fn push_effect(&mut self, effect: ThreadEffect) {
         self.effects.push(effect);
-    }
-
-    pub(crate) fn engineer_thread(&self) -> Option<&EngineerThreadRef> {
-        self.state.engineer_thread.as_ref()
-    }
-
-    pub(crate) fn set_engineer_thread(&mut self, engineer_thread: EngineerThreadRef) {
-        self.state.engineer_thread = Some(engineer_thread);
     }
 
     pub(crate) fn finish_request(&mut self, summary: Option<String>) {

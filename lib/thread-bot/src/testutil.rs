@@ -166,10 +166,13 @@ impl ThreadStore for MockStore {
     ) -> Result<ThreadLink, ThreadBotError> {
         let mut state = self.state.write().await;
         let now = Utc::now();
-        let key = (input.source_thread_id.clone(), input.link_kind.clone());
+        let key = (
+            input.source_thread_id.clone(),
+            input.target_thread_id.clone(),
+        );
         let link = if let Some(existing) = state.links.get(&key) {
             ThreadLink {
-                target_thread_id: input.target_thread_id,
+                link_kind: input.link_kind,
                 metadata: input.metadata,
                 updated_at: now,
                 ..existing.clone()
@@ -191,14 +194,14 @@ impl ThreadStore for MockStore {
     async fn get_thread_link(
         &self,
         source_thread_id: &str,
-        link_kind: &str,
+        target_thread_id: &str,
     ) -> Result<Option<ThreadLink>, ThreadBotError> {
         Ok(self
             .state
             .read()
             .await
             .links
-            .get(&(source_thread_id.to_string(), link_kind.to_string()))
+            .get(&(source_thread_id.to_string(), target_thread_id.to_string()))
             .cloned())
     }
 
@@ -215,7 +218,11 @@ impl ThreadStore for MockStore {
             .filter(|link| link.source_thread_id == source_thread_id)
             .cloned()
             .collect::<Vec<_>>();
-        links.sort_by(|left, right| left.link_kind.cmp(&right.link_kind));
+        links.sort_by(|left, right| {
+            left.link_kind
+                .cmp(&right.link_kind)
+                .then_with(|| left.target_thread_id.cmp(&right.target_thread_id))
+        });
         Ok(links)
     }
 

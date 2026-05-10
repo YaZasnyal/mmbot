@@ -9,7 +9,7 @@ use crate::actor::{
     build_thread_snapshot, get_root_post_id, is_root_post, ms_to_datetime, post_to_thread_message,
     ThreadCommand,
 };
-use crate::handler::ThreadEffect;
+use crate::handler::{ThreadEffect, ThreadTarget};
 use crate::store::ThreadStore;
 use crate::testutil::{
     make_mm_post, setup_mm_mock, spawn_test_actor, spawn_test_actor_with_idle_timeout, MockHandler,
@@ -189,6 +189,7 @@ async fn wait_actor_closed(tx: &tokio::sync::mpsc::Sender<ThreadCommand>) {
 #[tokio::test]
 async fn actor_basic_handler_flow() {
     let handler = MockHandler::new().with_default_effects(vec![ThreadEffect::Reply {
+        target: ThreadTarget::CurrentThread,
         message: "response".into(),
         metadata: serde_json::Value::Null,
     }]);
@@ -204,6 +205,13 @@ async fn actor_basic_handler_flow() {
 
     let thread = store.thread_snapshot("thread1").await.unwrap();
     assert!(thread.last_processed_post_id.is_some());
+    let reply = store
+        .message_snapshot("reply_post_id")
+        .await
+        .expect("bot reply should be persisted immediately");
+    assert_eq!(reply.thread_id, "thread1");
+    assert!(reply.is_bot_message);
+    assert_eq!(reply.metadata, serde_json::Value::Null);
 
     drop(tx);
 }
@@ -595,6 +603,7 @@ async fn actor_control_reaction_executes_metadata_effect() {
 async fn actor_multiple_effects_in_one_return() {
     let handler = MockHandler::new().with_default_effects(vec![
         ThreadEffect::Reply {
+            target: ThreadTarget::CurrentThread,
             message: "thinking...".into(),
             metadata: serde_json::Value::Null,
         },
@@ -640,9 +649,11 @@ async fn actor_ensure_linked_thread_creates_tracked_thread_and_link() {
     assert_eq!(handler.call_count(), 1);
 
     let link = store
-        .get_thread_link("thread1", "engineer")
+        .list_thread_links("thread1")
         .await
         .unwrap()
+        .into_iter()
+        .find(|link| link.link_kind == "engineer")
         .expect("link should be stored");
     assert_eq!(link.target_thread_id, "reply_post_id");
     assert_eq!(link.metadata, serde_json::json!({"source": "test"}));
@@ -671,6 +682,95 @@ async fn actor_ensure_linked_thread_creates_tracked_thread_and_link() {
         root_message.metadata,
         serde_json::json!({"kind": "engineer_root"})
     );
+
+    drop(tx);
+}
+
+#[tokio::test]
+async fn actor_reply_to_linked_threads_uses_stored_links() {
+    let handler = MockHandler::new().with_default_effects(vec![ThreadEffect::Reply {
+        target: ThreadTarget::LinkedThreads {
+            link_kind: "engineer".into(),
+        },
+        message: "linked reply".into(),
+        metadata: serde_json::json!({"kind": "linked_reply"}),
+    }]);
+
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+    let (tx, store, handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
+    store
+        .upsert_thread(UpsertThread {
+            thread_id: "engineer-thread".into(),
+            root_post_id: "engineer-root".into(),
+            channel_id: "engineer-channel".into(),
+            creator_user_id: "bot_user".into(),
+            thread_kind: Some("support_engineer".into()),
+            metadata: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+    store
+        .upsert_thread_link(UpsertThreadLink {
+            source_thread_id: "thread1".into(),
+            link_kind: "engineer".into(),
+            target_thread_id: "engineer-thread".into(),
+            metadata: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    settle().await;
+
+    assert_eq!(handler.call_count(), 1);
+    let reply = store
+        .message_snapshot("reply_post_id")
+        .await
+        .expect("linked reply should be persisted");
+    assert_eq!(reply.thread_id, "engineer-thread");
+    assert_eq!(reply.root_id.as_deref(), Some("engineer-root"));
+    assert_eq!(reply.metadata, serde_json::json!({"kind": "linked_reply"}));
+
+    drop(tx);
+}
+
+#[tokio::test]
+async fn actor_reply_to_thread_uses_explicit_thread_id() {
+    let handler = MockHandler::new().with_default_effects(vec![ThreadEffect::Reply {
+        target: ThreadTarget::Thread {
+            thread_id: "engineer-thread".into(),
+        },
+        message: "direct reply".into(),
+        metadata: serde_json::json!({"kind": "direct_reply"}),
+    }]);
+
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+    let (tx, store, handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
+    store
+        .upsert_thread(UpsertThread {
+            thread_id: "engineer-thread".into(),
+            root_post_id: "engineer-root".into(),
+            channel_id: "engineer-channel".into(),
+            creator_user_id: "bot_user".into(),
+            thread_kind: Some("support_engineer".into()),
+            metadata: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    settle().await;
+
+    assert_eq!(handler.call_count(), 1);
+    let reply = store
+        .message_snapshot("reply_post_id")
+        .await
+        .expect("direct reply should be persisted");
+    assert_eq!(reply.thread_id, "engineer-thread");
+    assert_eq!(reply.root_id.as_deref(), Some("engineer-root"));
+    assert_eq!(reply.metadata, serde_json::json!({"kind": "direct_reply"}));
 
     drop(tx);
 }

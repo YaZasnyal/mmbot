@@ -1,4 +1,4 @@
-use crate::config::SupportBotConfig;
+use crate::config::{EngineerNotificationTarget, SupportBotConfig};
 use crate::conversation::{
     build_llm_messages, load_state, result_to_message, store_state, truncate_utf8, STATE_KEY,
 };
@@ -6,9 +6,9 @@ use crate::debug::{DebugCommand, DebugCommandHandler};
 use crate::debug_export::handle_debug_export_html;
 use crate::llm::{LlmClient, LlmRequest};
 use crate::metrics::SupportBotMetricsHandle;
-use crate::notifier::MattermostSupportNotifier;
+use crate::notifier::{engineer_thread_root_message, source_post_link, support_post_props};
 use crate::output::sanitize_user_visible_message;
-use crate::state::SupportThreadStatus;
+use crate::state::{EngineerThreadRef, SupportThreadStatus};
 use crate::tools::ToolCall;
 use crate::tools::{ToolContext, ToolExecutionOutcome, ToolRegistry, ToolResult};
 use crate::user_thread_run::StopAfterTools;
@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use thread_bot::{
     ReactionAction, ReactionChange, Thread, ThreadBotError, ThreadContext, ThreadEffect,
-    ThreadHandler, ThreadInvocation, ThreadMessage, ThreadRecord, ThreadTrigger,
+    ThreadHandler, ThreadInvocation, ThreadMessage, ThreadRecord, ThreadTarget, ThreadTrigger,
 };
 use tracing::{debug, info, warn, Instrument, Span};
 
@@ -35,6 +35,8 @@ pub struct SupportBotHandler {
     system_prompt: String,
     metrics: SupportBotMetricsHandle,
 }
+
+pub(crate) const ENGINEER_LINK_KIND: &str = "support_engineer";
 
 struct ToolCallBatch {
     assistant_content: Option<String>,
@@ -149,6 +151,7 @@ impl SupportBotHandler {
 
         self.metrics.record_reply("engineer", "success");
         Ok(vec![ThreadEffect::Reply {
+            target: ThreadTarget::CurrentThread,
             message: response.message,
             metadata: json!({
                 STATE_KEY: {
@@ -197,13 +200,26 @@ impl SupportBotHandler {
         };
         info!("support-bot: handling user thread message");
 
-        if let Some(engineer_thread) = self
-            .engineer_notifier(ctx)
-            .ensure_engineer_thread(&thread, state.engineer_thread.as_ref())
-            .await?
-        {
-            state.engineer_thread = Some(engineer_thread);
+        match &self.config.engineer_notifications.target {
+            EngineerNotificationTarget::SameThread => {}
+            EngineerNotificationTarget::MattermostChannel { channel_id } => {
+                if let Some(engineer_thread) = state.engineer_thread.clone() {
+                    state.engineer_thread = Some(engineer_thread);
+                } else if let Some(effects) = self
+                    .ensure_engineer_thread_effects(ctx, &thread, channel_id)
+                    .await?
+                {
+                    info!("support-bot: queuing linked engineer thread creation");
+                    return Ok(effects);
+                } else if let Some(engineer_thread) = self
+                    .linked_engineer_thread(ctx, &thread.info.thread_id)
+                    .await?
+                {
+                    state.engineer_thread = Some(engineer_thread);
+                }
+            }
         }
+
         let messages = build_llm_messages(
             &self.system_prompt,
             &thread,
@@ -348,22 +364,23 @@ impl SupportBotHandler {
             .to_string()
             + "I've notified the engineering team and stopped this thread for now.";
 
-        if let Ok(Some(engineer_thread)) = self
-            .engineer_notifier(ctx)
-            .notify_engineer(
-                &thread,
-                run.engineer_thread(),
-                tool_loop_limit_engineer_message(
+        if matches!(
+            self.config.engineer_notifications.target,
+            EngineerNotificationTarget::MattermostChannel { .. }
+        ) {
+            run.push_effect(ThreadEffect::Reply {
+                target: ThreadTarget::LinkedThreads {
+                    link_kind: ENGINEER_LINK_KIND.to_string(),
+                },
+                message: tool_loop_limit_engineer_message(
                     &thread,
                     trigger_message,
                     self.config.limits.max_tool_rounds,
                     self.config.limits.max_tool_calls_per_round,
                     run.trace_summary(),
                 ),
-            )
-            .await
-        {
-            run.set_engineer_thread(engineer_thread);
+                metadata: support_post_props("engineer_notification", &thread),
+            });
         }
 
         run.reply(
@@ -516,11 +533,72 @@ impl SupportBotHandler {
         Ok(())
     }
 
-    fn engineer_notifier(&self, ctx: &ThreadContext) -> MattermostSupportNotifier {
-        MattermostSupportNotifier::new(
-            ctx.config.clone(),
-            self.config.engineer_notifications.target.clone(),
-        )
+    async fn linked_engineer_thread(
+        &self,
+        ctx: &ThreadContext,
+        source_thread_id: &str,
+    ) -> Result<Option<EngineerThreadRef>, ThreadBotError> {
+        let Some(link) = ctx
+            .store
+            .list_thread_links(source_thread_id)
+            .await?
+            .into_iter()
+            .find(|link| link.link_kind == ENGINEER_LINK_KIND)
+        else {
+            return Ok(None);
+        };
+        let Some(record) = ctx.store.get_thread(&link.target_thread_id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(EngineerThreadRef {
+            channel_id: record.channel_id,
+            root_post_id: record.root_post_id,
+        }))
+    }
+
+    async fn ensure_engineer_thread_effects(
+        &self,
+        ctx: &ThreadContext,
+        thread: &Thread,
+        channel_id: &str,
+    ) -> Result<Option<Vec<ThreadEffect>>, ThreadBotError> {
+        let has_engineer_link = ctx
+            .store
+            .list_thread_links(&thread.info.thread_id)
+            .await?
+            .into_iter()
+            .any(|link| link.link_kind == ENGINEER_LINK_KIND);
+
+        if has_engineer_link {
+            return Ok(None);
+        }
+
+        Ok(Some(vec![
+            ThreadEffect::EnsureLinkedThread {
+                link_kind: ENGINEER_LINK_KIND.to_string(),
+                channel_id: channel_id.to_string(),
+                thread_kind: Some("support_engineer".to_string()),
+                message: engineer_thread_root_message(
+                    thread,
+                    source_post_link(&ctx.config, &thread.info.root_post_id),
+                ),
+                metadata: support_post_props("engineer_thread_root", thread),
+                thread_metadata: json!({
+                    STATE_KEY: {
+                        "kind": "engineer_thread",
+                        "source_thread_id": thread.info.thread_id,
+                        "source_root_post_id": thread.info.root_post_id,
+                        "source_channel_id": thread.info.channel_id
+                    }
+                }),
+                link_metadata: json!({
+                    STATE_KEY: {
+                        "kind": "engineer_thread_link"
+                    }
+                }),
+            },
+            ThreadEffect::Reschedule,
+        ]))
     }
 
     async fn live_control_reaction_effect(
@@ -1016,7 +1094,7 @@ mod tests {
         async fn get_thread_link(
             &self,
             _source_thread_id: &str,
-            _link_kind: &str,
+            _target_thread_id: &str,
         ) -> Result<Option<ThreadLink>, ThreadBotError> {
             panic!("store should not get thread links")
         }
@@ -1619,7 +1697,9 @@ mod tests {
         assert!(effects.iter().any(|effect| {
             matches!(
                 effect,
-                ThreadEffect::Reply { message, metadata }
+                ThreadEffect::Reply {
+                    message, metadata, ..
+                }
                     if message == "need help"
                         && metadata["support_bot"]["kind"] == "engineer_notification"
             )
@@ -1661,7 +1741,9 @@ mod tests {
         assert!(effects.iter().any(|effect| {
             matches!(
                 effect,
-                ThreadEffect::Reply { message, metadata }
+                ThreadEffect::Reply {
+                    message, metadata, ..
+                }
                     if message.contains("internal issue")
                         && metadata["support_bot"]["kind"] == "tool_loop_limit"
             )
@@ -1843,7 +1925,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finish_request_persists_finished_state_when_status_notification_fails() {
+    async fn finish_request_persists_finished_state_and_queues_status_notification() {
         let call = ToolCall {
             id: "call-1".to_string(),
             name: "finish_request".to_string(),
@@ -1907,7 +1989,18 @@ mod tests {
             .contains("notification_status"));
         assert!(trace_meta[STATE_KEY][TRACE_KEY]
             .to_string()
-            .contains("failed"));
+            .contains("queued"));
+        assert!(effects.iter().any(|effect| {
+            matches!(
+                effect,
+                ThreadEffect::Reply {
+                target: ThreadTarget::LinkedThreads { link_kind },
+                    metadata,
+                    ..
+                } if link_kind == ENGINEER_LINK_KIND
+                    && metadata[STATE_KEY]["kind"] == "status_update"
+            )
+        }));
     }
 
     #[test]
