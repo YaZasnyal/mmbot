@@ -1,6 +1,6 @@
 # RFC 0007 implementation handoff
 
-Updated: 2026-05-09
+Updated: 2026-05-10
 
 ## Goal
 
@@ -621,11 +621,62 @@ cargo test -p support-bot
 
 All passed after slice 14.
 
+### Implementation slice 15: metadata effect targets
+
+Files touched:
+
+- `lib/thread-bot/src/handler.rs`
+- `lib/thread-bot/src/lib.rs`
+- `lib/thread-bot/src/actor.rs`
+- `lib/thread-bot/src/actor_tests.rs`
+- `lib/thread-bot/src/testutil.rs`
+- `lib/support-bot/src/handler.rs`
+- `lib/support-bot/src/user_thread_run.rs`
+- `lib/support-bot/src/tests/handler.rs`
+- `examples/hello_thread_bot/src/main.rs`
+
+Changes:
+
+- Added public `ThreadMetadataTarget` with `CurrentThread`, `ThreadId`, and
+  `RootPostId`.
+- Changed `ThreadEffect::SetThreadMetadata` to carry an explicit metadata
+  target.
+- Actor effect execution now resolves metadata targets and writes metadata to
+  the selected tracked thread.
+- Existing support-bot and hello-thread-bot call sites now explicitly use
+  `ThreadMetadataTarget::CurrentThread`.
+- Fixed the in-memory test store's `get_thread_by_post(...)` root-post lookup
+  to match PostgreSQL behavior when `thread_id != root_post_id`.
+- Added actor coverage for setting metadata by explicit thread id and by root
+  post id.
+
+Verification run:
+
+```bash
+cargo fmt -p thread-bot -p support-bot -p hello-thread-bot
+cargo test -p thread-bot actor_set_thread_metadata_effect -- --nocapture
+cargo test -p support-bot --no-run
+cargo check -p hello-thread-bot
+cargo test -p thread-bot
+cargo test -p support-bot
+cargo clippy -p thread-bot -- -D warnings
+cargo clippy -p support-bot -- -D warnings
+cargo clippy -p hello-thread-bot -- -D warnings
+```
+
+All passed after slice 15.
+
 ## Next tasks
 
 Prefer one small reviewable slice at a time.
 
-1. Keep raw-post path removed.
+1. Replace the temporary `should_track(...) -> bool` plus `thread_kind(...)`
+   compatibility hook with a single tracking decision API that can return
+   `Ignore` or `Track { thread_kind, metadata }`.
+2. Decide whether to move `EnsureLinkedThread` duplicate avoidance into Layer 3
+   by making `(source_thread_id, link_kind)` lookup/no-op semantics part of the
+   effect executor, or keep the current plugin-owned policy.
+3. Keep raw-post path removed.
    - `execute_raw_post_effects` has been removed from runtime.
    - `ThreadHandler::handle_raw_post` has been removed.
    - `build_raw_engineer_thread_snapshot` is not present.

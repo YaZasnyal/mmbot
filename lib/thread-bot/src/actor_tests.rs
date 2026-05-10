@@ -9,7 +9,7 @@ use crate::actor::{
     build_thread_snapshot, get_root_post_id, is_root_post, ms_to_datetime, post_to_thread_message,
     ThreadCommand,
 };
-use crate::handler::{ThreadEffect, ThreadTarget};
+use crate::handler::{ThreadEffect, ThreadMetadataTarget, ThreadTarget};
 use crate::store::ThreadStore;
 use crate::testutil::{
     make_mm_post, setup_mm_mock, spawn_test_actor, spawn_test_actor_with_idle_timeout, MockHandler,
@@ -480,6 +480,7 @@ async fn actor_bot_message_does_not_trigger_handler() {
 #[tokio::test]
 async fn actor_set_thread_metadata_effect() {
     let handler = MockHandler::new().with_default_effects(vec![ThreadEffect::SetThreadMetadata {
+        target: ThreadMetadataTarget::CurrentThread,
         metadata: serde_json::json!({"llm_model": "gpt-4"}),
     }]);
 
@@ -497,6 +498,62 @@ async fn actor_set_thread_metadata_effect() {
 }
 
 #[tokio::test]
+async fn actor_set_thread_metadata_effect_supports_explicit_targets() {
+    let handler = MockHandler::new().with_default_effects(vec![
+        ThreadEffect::SetThreadMetadata {
+            target: ThreadMetadataTarget::ThreadId("target-thread".into()),
+            metadata: serde_json::json!({"target": "thread_id"}),
+        },
+        ThreadEffect::SetThreadMetadata {
+            target: ThreadMetadataTarget::RootPostId("target-root".into()),
+            metadata: serde_json::json!({"target": "root_post_id"}),
+        },
+    ]);
+
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+    let (tx, store, _handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
+    store
+        .upsert_thread(UpsertThread {
+            thread_id: "target-thread".into(),
+            root_post_id: "target-thread".into(),
+            channel_id: "target-channel".into(),
+            creator_user_id: "bot_user".into(),
+            thread_kind: Some("target".into()),
+            metadata: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+    store
+        .upsert_thread(UpsertThread {
+            thread_id: "root-target-thread".into(),
+            root_post_id: "target-root".into(),
+            channel_id: "target-channel".into(),
+            creator_user_id: "bot_user".into(),
+            thread_kind: Some("target".into()),
+            metadata: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    settle().await;
+
+    let target_by_id = store.thread_snapshot("target-thread").await.unwrap();
+    assert_eq!(
+        target_by_id.metadata,
+        serde_json::json!({"target": "thread_id"})
+    );
+    let target_by_root = store.thread_snapshot("root-target-thread").await.unwrap();
+    assert_eq!(
+        target_by_root.metadata,
+        serde_json::json!({"target": "root_post_id"})
+    );
+
+    drop(tx);
+}
+
+#[tokio::test]
 async fn actor_stops_thread_when_critical_metadata_effect_fails() {
     let handler = MockHandler::new().with_default_effects(vec![
         ThreadEffect::SetMessageMetadata {
@@ -504,6 +561,7 @@ async fn actor_stops_thread_when_critical_metadata_effect_fails() {
             metadata: serde_json::json!({"trace": []}),
         },
         ThreadEffect::SetThreadMetadata {
+            target: ThreadMetadataTarget::CurrentThread,
             metadata: serde_json::json!({"should_not": "run"}),
         },
     ]);
@@ -540,6 +598,7 @@ async fn actor_control_reaction_interrupts_handler() {
 
     tx.send(ThreadCommand::ControlReaction {
         effect: ThreadEffect::SetThreadMetadata {
+            target: ThreadMetadataTarget::CurrentThread,
             metadata: serde_json::json!({
                 "support_bot": {
                     "status": "finished"
@@ -575,6 +634,7 @@ async fn actor_control_reaction_executes_metadata_effect() {
 
     tx.send(ThreadCommand::ControlReaction {
         effect: ThreadEffect::SetThreadMetadata {
+            target: ThreadMetadataTarget::CurrentThread,
             metadata: serde_json::json!({
                 "support_bot": {
                     "status": "finished"
@@ -608,6 +668,7 @@ async fn actor_multiple_effects_in_one_return() {
             metadata: serde_json::Value::Null,
         },
         ThreadEffect::SetThreadMetadata {
+            target: ThreadMetadataTarget::CurrentThread,
             metadata: serde_json::json!({"step": 1}),
         },
     ]);

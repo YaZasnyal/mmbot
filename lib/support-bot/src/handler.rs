@@ -22,7 +22,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use thread_bot::{
     ReactionAction, ReactionChange, Thread, ThreadBotError, ThreadContext, ThreadEffect,
-    ThreadHandler, ThreadInvocation, ThreadMessage, ThreadRecord, ThreadTarget, ThreadTrigger,
+    ThreadHandler, ThreadInvocation, ThreadMessage, ThreadMetadataTarget, ThreadRecord,
+    ThreadTarget, ThreadTrigger,
 };
 use tracing::{debug, info, warn, Instrument, Span};
 
@@ -652,7 +653,10 @@ impl SupportBotHandler {
         state.status = status;
 
         match store_state(metadata, &state) {
-            Ok(metadata) => Some(ThreadEffect::SetThreadMetadata { metadata }),
+            Ok(metadata) => Some(ThreadEffect::SetThreadMetadata {
+                target: ThreadMetadataTarget::CurrentThread,
+                metadata,
+            }),
             Err(error) => {
                 warn!(
                     thread_id = %thread_id,

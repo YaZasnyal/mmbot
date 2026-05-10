@@ -922,7 +922,7 @@ async fn tool_loop_limit_replies_with_generic_error_and_stops_thread() {
     let state_meta = effects
         .iter()
         .find_map(|effect| match effect {
-            ThreadEffect::SetThreadMetadata { metadata } => Some(metadata),
+            ThreadEffect::SetThreadMetadata { metadata, .. } => Some(metadata),
             _ => None,
         })
         .expect("state metadata must exist");
@@ -1011,7 +1011,7 @@ fn control_reactions_update_support_status_metadata() {
             },
         )
         .expect("white_check_mark should update support status");
-    let ThreadEffect::SetThreadMetadata { metadata } = resolved else {
+    let ThreadEffect::SetThreadMetadata { metadata, .. } = resolved else {
         panic!("expected SetThreadMetadata");
     };
     assert_eq!(metadata[STATE_KEY]["status"], "finished");
@@ -1032,7 +1032,7 @@ fn control_reactions_update_support_status_metadata() {
             },
         )
         .expect("stop_sign should update support status");
-    let ThreadEffect::SetThreadMetadata { metadata } = stopped else {
+    let ThreadEffect::SetThreadMetadata { metadata, .. } = stopped else {
         panic!("expected SetThreadMetadata");
     };
     assert_eq!(metadata[STATE_KEY]["status"], "stopped");
@@ -1084,7 +1084,7 @@ async fn finish_request_persists_finished_state_without_mark_resolved() {
     let state_meta = effects
         .iter()
         .find_map(|effect| match effect {
-            ThreadEffect::SetThreadMetadata { metadata } => Some(metadata),
+            ThreadEffect::SetThreadMetadata { metadata, .. } => Some(metadata),
             _ => None,
         })
         .expect("state metadata must exist");
@@ -1143,7 +1143,7 @@ async fn finish_request_persists_finished_state_and_queues_status_notification()
     let state_meta = effects
         .iter()
         .find_map(|effect| match effect {
-            ThreadEffect::SetThreadMetadata { metadata } => Some(metadata),
+            ThreadEffect::SetThreadMetadata { metadata, .. } => Some(metadata),
             _ => None,
         })
         .expect("state metadata must exist");

@@ -117,7 +117,11 @@ impl ThreadStore for MockStore {
         let state = self.state.read().await;
 
         // Check root posts first
-        if let Some(thread) = state.threads.get(post_id) {
+        if let Some(thread) = state
+            .threads
+            .values()
+            .find(|thread| thread.root_post_id == post_id)
+        {
             return Ok(Some(thread.clone()));
         }
 

@@ -5,7 +5,8 @@ use crate::notifier::{quote_for_mattermost, support_post_props};
 use crate::state::{SupportThreadState, SupportThreadStatus};
 use crate::tools::ToolCall;
 use thread_bot::{
-    Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadMessage, ThreadTarget,
+    Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadMessage, ThreadMetadataTarget,
+    ThreadTarget,
 };
 use tracing::{info, warn};
 
@@ -189,6 +190,7 @@ impl UserThreadRun {
             "support-bot: queuing thread metadata persistence"
         );
         self.effects.push(ThreadEffect::SetThreadMetadata {
+            target: ThreadMetadataTarget::CurrentThread,
             metadata: thread_metadata,
         });
         if self.stop_after_tools == StopAfterTools::FinishRequest && self.trace.is_empty() {

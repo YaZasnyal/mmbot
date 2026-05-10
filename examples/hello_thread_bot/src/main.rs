@@ -14,7 +14,8 @@ use async_trait::async_trait;
 use mattermost_api::{apis::configuration::Configuration, models::CreatePostRequest};
 use mattermost_bot::{Bot, tokio_graceful};
 use thread_bot::{
-    ThreadBotHandle, ThreadEffect, ThreadHandler, ThreadStore, ThreadTarget, cron_tab,
+    ThreadBotHandle, ThreadEffect, ThreadHandler, ThreadMetadataTarget, ThreadStore, ThreadTarget,
+    cron_tab,
 };
 
 struct HelloWorldHandler;
@@ -74,6 +75,7 @@ impl ThreadHandler for HelloWorldHandler {
                 }),
             });
             effects.push(ThreadEffect::SetThreadMetadata {
+                target: ThreadMetadataTarget::CurrentThread,
                 metadata: serde_json::json!({
                     "hello_thread_bot": {
                         "status": "finished"

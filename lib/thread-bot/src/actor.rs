@@ -20,7 +20,9 @@ use mattermost_api::apis::posts_api;
 use mattermost_api::models;
 
 use crate::error::ThreadBotError;
-use crate::handler::{ThreadContext, ThreadEffect, ThreadHandler, ThreadTarget};
+use crate::handler::{
+    ThreadContext, ThreadEffect, ThreadHandler, ThreadMetadataTarget, ThreadTarget,
+};
 use crate::metrics::ThreadBotMetricsHandle;
 use crate::store::ThreadStore;
 use crate::types::*;
@@ -454,14 +456,33 @@ async fn execute_effects<H: ThreadHandler>(
                 }
             }
 
-            ThreadEffect::SetThreadMetadata { metadata } => {
+            ThreadEffect::SetThreadMetadata { target, metadata } => {
+                let target_thread = match resolve_thread_metadata_target(thread, a, target).await {
+                    Ok(target_thread) => target_thread,
+                    Err(error) => {
+                        a.metrics.effect(effect_label, "error");
+                        tracing::error!(
+                            thread_id = %a.thread_id,
+                            error = %error,
+                            "Failed to resolve thread metadata target"
+                        );
+                        stop_after_critical_effect_failure(thread, a, "set_thread_metadata");
+                        should_exit = true;
+                        break;
+                    }
+                };
                 tracing::info!(
                     thread_id = %a.thread_id,
+                    target_thread_id = %target_thread.thread_id,
                     metadata_key = "thread",
                     metadata_bytes = metadata.to_string().len(),
                     "Persisting thread metadata"
                 );
-                if let Err(e) = a.store.set_thread_metadata(&a.thread_id, metadata).await {
+                if let Err(e) = a
+                    .store
+                    .set_thread_metadata(&target_thread.thread_id, metadata)
+                    .await
+                {
                     a.metrics.effect(effect_label, "error");
                     tracing::error!(
                         thread_id = %a.thread_id,
@@ -615,6 +636,26 @@ async fn resolve_thread_target<H: ThreadHandler>(
             }
             Ok(threads)
         }
+    }
+}
+
+async fn resolve_thread_metadata_target<H: ThreadHandler>(
+    current_thread: &ThreadRecord,
+    a: &ActorCtx<H>,
+    target: ThreadMetadataTarget,
+) -> Result<ThreadRecord, ThreadBotError> {
+    match target {
+        ThreadMetadataTarget::CurrentThread => Ok(current_thread.clone()),
+        ThreadMetadataTarget::ThreadId(thread_id) => a
+            .store
+            .get_thread(&thread_id)
+            .await?
+            .ok_or(ThreadBotError::ThreadNotFound(thread_id)),
+        ThreadMetadataTarget::RootPostId(root_post_id) => a
+            .store
+            .get_thread_by_post(&root_post_id)
+            .await?
+            .ok_or(ThreadBotError::ThreadNotFound(root_post_id)),
     }
 }
 

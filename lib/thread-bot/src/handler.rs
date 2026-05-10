@@ -17,6 +17,18 @@ pub enum ThreadTarget {
     LinkedThreads { link_kind: String },
 }
 
+/// Target thread for metadata effects.
+#[derive(Debug, Clone, Default)]
+pub enum ThreadMetadataTarget {
+    /// The thread currently being handled.
+    #[default]
+    CurrentThread,
+    /// A specific tracked thread.
+    ThreadId(String),
+    /// A tracked thread identified by its root post id.
+    RootPostId(String),
+}
+
 /// Context provided to thread handlers
 #[derive(Clone)]
 pub struct ThreadContext {
@@ -56,7 +68,10 @@ pub enum ThreadEffect {
         metadata: Option<serde_json::Value>,
     },
     /// Set thread-level metadata
-    SetThreadMetadata { metadata: serde_json::Value },
+    SetThreadMetadata {
+        target: ThreadMetadataTarget,
+        metadata: serde_json::Value,
+    },
     /// Set message-level metadata in DB (full replacement)
     SetMessageMetadata {
         post_id: String,
