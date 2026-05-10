@@ -491,6 +491,47 @@ async fn execute_effects<H: ThreadHandler>(
                 }
             }
 
+            ThreadEffect::EnsureLinkedThread {
+                link_kind,
+                channel_id,
+                thread_kind,
+                message,
+                metadata,
+                thread_metadata,
+                link_metadata,
+            } => {
+                let result = ensure_linked_thread(
+                    thread,
+                    a,
+                    EnsureLinkedThreadRequest {
+                        link_kind,
+                        channel_id,
+                        thread_kind,
+                        message,
+                        metadata,
+                        thread_metadata,
+                        link_metadata,
+                    },
+                )
+                .await;
+                match result {
+                    Ok(()) => {
+                        a.metrics.effect(effect_label, "success");
+                    }
+                    Err(error) => {
+                        a.metrics.effect(effect_label, "error");
+                        tracing::error!(
+                            thread_id = %a.thread_id,
+                            error = %error,
+                            "Critical linked thread effect failed"
+                        );
+                        stop_after_critical_effect_failure(thread, a, "ensure_linked_thread");
+                        should_exit = true;
+                        break;
+                    }
+                }
+            }
+
             ThreadEffect::Reschedule => {
                 a.metrics.effect(effect_label, "success");
                 should_reschedule = true;
@@ -508,7 +549,98 @@ fn thread_effect_label(effect: &ThreadEffect) -> &'static str {
         ThreadEffect::UpdateMessage { .. } => "update_message",
         ThreadEffect::SetThreadMetadata { .. } => "set_thread_metadata",
         ThreadEffect::SetMessageMetadata { .. } => "set_message_metadata",
+        ThreadEffect::EnsureLinkedThread { .. } => "ensure_linked_thread",
         ThreadEffect::Reschedule => "reschedule",
+    }
+}
+
+struct EnsureLinkedThreadRequest {
+    link_kind: String,
+    channel_id: String,
+    thread_kind: Option<String>,
+    message: String,
+    metadata: serde_json::Value,
+    thread_metadata: serde_json::Value,
+    link_metadata: serde_json::Value,
+}
+
+async fn ensure_linked_thread<H: ThreadHandler>(
+    source_thread: &ThreadRecord,
+    a: &ActorCtx<H>,
+    request: EnsureLinkedThreadRequest,
+) -> Result<(), ThreadBotError> {
+    if a.store
+        .get_thread_link(&source_thread.thread_id, &request.link_kind)
+        .await?
+        .is_some()
+    {
+        tracing::debug!(
+            thread_id = %source_thread.thread_id,
+            link_kind = %request.link_kind,
+            "Linked thread already exists"
+        );
+        return Ok(());
+    }
+
+    let mut create_request =
+        models::CreatePostRequest::new(request.channel_id.clone(), request.message);
+    if request.metadata != serde_json::Value::Null {
+        create_request.props = Some(request.metadata.clone());
+    }
+    let created = posts_api::create_post(&a.mm_config, create_request, None)
+        .await
+        .map_err(ThreadBotError::mattermost_api)?;
+    let created_at = created
+        .create_at
+        .map(ms_to_datetime)
+        .unwrap_or_else(Utc::now);
+    let created_user_id = created
+        .user_id
+        .clone()
+        .or_else(|| a.ctx.bot_user_id.clone())
+        .unwrap_or_default();
+
+    a.store
+        .upsert_thread(UpsertThread {
+            thread_id: created.id.clone(),
+            root_post_id: created.id.clone(),
+            channel_id: request.channel_id,
+            creator_user_id: created_user_id.clone(),
+            thread_kind: request.thread_kind,
+            metadata: request.thread_metadata,
+        })
+        .await?;
+    a.store
+        .upsert_message(UpsertThreadMessage {
+            post_id: created.id.clone(),
+            thread_id: created.id.clone(),
+            user_id: created_user_id,
+            is_bot_message: true,
+            root_id: None,
+            parent_post_id: None,
+            metadata: request.metadata,
+            post_created_at: created_at,
+            post_updated_at: created.update_at.map(ms_to_datetime),
+            post_deleted_at: created.delete_at.and_then(nonzero_ms_to_datetime),
+        })
+        .await?;
+    a.store
+        .upsert_thread_link(UpsertThreadLink {
+            source_thread_id: source_thread.thread_id.clone(),
+            link_kind: request.link_kind,
+            target_thread_id: created.id,
+            metadata: request.link_metadata,
+        })
+        .await?;
+
+    Ok(())
+}
+
+fn nonzero_ms_to_datetime(ms: i64) -> Option<DateTime<Utc>> {
+    if ms == 0 {
+        None
+    } else {
+        Some(ms_to_datetime(ms))
     }
 }
 

@@ -438,12 +438,46 @@ cargo clippy -p support-bot -- -D warnings
 
 All passed after slice 9.
 
+### Implementation slice 10: `EnsureLinkedThread` effect
+
+Files touched:
+
+- `lib/thread-bot/src/handler.rs`
+- `lib/thread-bot/src/actor.rs`
+- `lib/thread-bot/src/actor_tests.rs`
+
+Changes:
+
+- Added `ThreadEffect::EnsureLinkedThread`.
+- Effect is idempotent for `(current_thread_id, link_kind)`: if a link already
+  exists, execution is a no-op.
+- On first execution, Layer 3 creates a Mattermost root post in the requested
+  channel, tracks the created root as a thread, persists the created root
+  message immediately, and stores the typed thread link.
+- Link/thread/message metadata are explicit effect inputs.
+- Added actor regression coverage for creating the linked tracked thread,
+  root message, and link.
+- This slice intentionally does not migrate support-bot engineer notification
+  code to the effect yet, and does not add `ThreadTarget::LinkedThread`.
+
+Verification run:
+
+```bash
+cargo fmt -p thread-bot
+cargo test -p thread-bot
+cargo test -p support-bot
+cargo clippy -p thread-bot -- -D warnings
+cargo clippy -p support-bot -- -D warnings
+cargo check -p hello-thread-bot
+```
+
+All passed after slice 10.
+
 ## Next tasks
 
 Prefer one small reviewable slice at a time.
 
-1. Add linked thread effects.
-   - Add `EnsureLinkedThread`.
+1. Add linked thread targets and support-bot migration.
    - Add `ThreadTarget::LinkedThread`.
    - Persist created bot replies immediately after Mattermost `create_post`.
    - Move support engineer thread creation out of `MattermostSupportNotifier`

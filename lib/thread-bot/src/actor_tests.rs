@@ -619,6 +619,63 @@ async fn actor_multiple_effects_in_one_return() {
 }
 
 #[tokio::test]
+async fn actor_ensure_linked_thread_creates_tracked_thread_and_link() {
+    let handler = MockHandler::new().with_default_effects(vec![ThreadEffect::EnsureLinkedThread {
+        link_kind: "engineer".into(),
+        channel_id: "engineer_channel".into(),
+        thread_kind: Some("support_engineer".into()),
+        message: "Engineer thread".into(),
+        metadata: serde_json::json!({"kind": "engineer_root"}),
+        thread_metadata: serde_json::json!({"status": "open"}),
+        link_metadata: serde_json::json!({"source": "test"}),
+    }]);
+
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+    let (tx, store, handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    settle().await;
+
+    assert_eq!(handler.call_count(), 1);
+
+    let link = store
+        .get_thread_link("thread1", "engineer")
+        .await
+        .unwrap()
+        .expect("link should be stored");
+    assert_eq!(link.target_thread_id, "reply_post_id");
+    assert_eq!(link.metadata, serde_json::json!({"source": "test"}));
+
+    let linked_thread = store
+        .thread_snapshot("reply_post_id")
+        .await
+        .expect("linked thread should be tracked");
+    assert_eq!(linked_thread.channel_id, "engineer_channel");
+    assert_eq!(
+        linked_thread.thread_kind.as_deref(),
+        Some("support_engineer")
+    );
+    assert_eq!(
+        linked_thread.metadata,
+        serde_json::json!({"status": "open"})
+    );
+
+    let root_message = store
+        .message_snapshot("reply_post_id")
+        .await
+        .expect("linked root message should be stored");
+    assert_eq!(root_message.thread_id, "reply_post_id");
+    assert!(root_message.is_bot_message);
+    assert_eq!(
+        root_message.metadata,
+        serde_json::json!({"kind": "engineer_root"})
+    );
+
+    drop(tx);
+}
+
+#[tokio::test]
 async fn actor_seen_position_updated_on_message() {
     let handler = MockHandler::new();
     let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));

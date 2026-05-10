@@ -50,6 +50,20 @@ pub enum ThreadEffect {
         post_id: String,
         metadata: serde_json::Value,
     },
+    /// Ensure a typed linked root thread exists.
+    ///
+    /// If `(current_thread_id, link_kind)` already exists in storage, this is a
+    /// no-op. Otherwise Layer 3 creates a root post in `channel_id`, tracks it
+    /// as a thread, stores the created root message, and records the link.
+    EnsureLinkedThread {
+        link_kind: String,
+        channel_id: String,
+        thread_kind: Option<String>,
+        message: String,
+        metadata: serde_json::Value,
+        thread_metadata: serde_json::Value,
+        link_metadata: serde_json::Value,
+    },
     /// Reschedule handler run after applying effects
     ///
     /// Useful for:
