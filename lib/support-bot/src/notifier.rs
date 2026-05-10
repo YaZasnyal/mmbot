@@ -628,6 +628,7 @@ mod tests {
                 root_post_id: "root-1".to_string(),
                 channel_id: "users".to_string(),
                 creator_user_id: "user-1".to_string(),
+                thread_kind: Some("support_user".to_string()),
                 metadata: serde_json::json!({}),
                 last_seen_post_id: None,
                 last_seen_post_at: None,

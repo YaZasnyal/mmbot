@@ -621,6 +621,14 @@ impl ThreadHandler for SupportBotHandler {
         ))
     }
 
+    fn thread_kind(&self, thread: &Thread) -> Option<String> {
+        match self.route(&thread.info.channel_id) {
+            SupportRoute::User => Some("support_user".to_string()),
+            SupportRoute::Engineer => Some("support_engineer".to_string()),
+            SupportRoute::Ignored => None,
+        }
+    }
+
     async fn handle(
         &self,
         thread: &Thread,
@@ -863,6 +871,7 @@ mod tests {
                 root_post_id: "post-1".to_string(),
                 channel_id: channel_id.to_string(),
                 creator_user_id: "user-1".to_string(),
+                thread_kind: Some("support_user".to_string()),
                 metadata: json!({}),
                 last_seen_post_id: None,
                 last_seen_post_at: None,
@@ -895,6 +904,7 @@ mod tests {
             root_post_id: "post-1".to_string(),
             channel_id: channel_id.to_string(),
             creator_user_id: "user-1".to_string(),
+            thread_kind: Some("support_user".to_string()),
             metadata,
             last_seen_post_id: None,
             last_seen_post_at: None,

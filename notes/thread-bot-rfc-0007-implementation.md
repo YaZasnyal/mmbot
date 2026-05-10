@@ -302,23 +302,67 @@ All passed after slice 6. `fmt --check` initially requested mechanical wrapping
 in `thread-bot` and `support-bot`; `cargo fmt -p thread-bot -p support-bot -p
 hello-thread-bot` was applied and checks were rerun.
 
+### Implementation slice 7: add `thread_kind`
+
+Files touched:
+
+- `lib/thread-bot/migrations/20260408_001_initial.sql`
+- `lib/thread-bot/src/types.rs`
+- `lib/thread-bot/src/handler.rs`
+- `lib/thread-bot/src/runtime.rs`
+- `lib/thread-bot/src/pg_store.rs`
+- `lib/thread-bot/src/testutil.rs`
+- `lib/thread-bot/src/actor_tests.rs`
+- `lib/thread-bot/tests/common/mod.rs`
+- `lib/thread-bot/tests/pg_store_tests.rs`
+- `lib/support-bot/src/handler.rs`
+- `lib/support-bot/src/notifier.rs`
+- `examples/hello_thread_bot/src/main.rs`
+
+Changes:
+
+- Added nullable `threads.thread_kind` to the initial migration and indexed it.
+- Added `thread_kind: Option<String>` to `ThreadRecord`, `ThreadInfo`, and
+  `UpsertThread`.
+- Updated PostgreSQL and mock store upsert/select paths to persist and return
+  `thread_kind`.
+- Added `ThreadHandler::thread_kind(...)` as a temporary compatibility hook
+  while `should_track() -> bool` still exists; Layer 3 stores the value but
+  does not interpret it.
+- `support-bot` now classifies tracked user threads as `support_user`;
+  engineer/debug thread linkage still waits for the linked-thread effects
+  slice.
+- `hello_thread_bot` now classifies tracked threads as `hello_world`.
+- Updated pg-store tests/helpers and support-bot test fixtures for the new
+  field.
+
+Verification run:
+
+```bash
+cargo fmt -p thread-bot -p support-bot -p hello-thread-bot
+cargo fmt -p thread-bot -p support-bot -p hello-thread-bot --check
+cargo test -p thread-bot
+cargo test -p support-bot
+cargo check -p hello-thread-bot
+cargo clippy -p thread-bot -- -D warnings
+cargo clippy -p support-bot -- -D warnings
+cargo clippy -p hello-thread-bot -- -D warnings
+```
+
+All passed after slice 7.
+
 ## Next tasks
 
 Prefer one small reviewable slice at a time.
 
-1. Add `thread_kind`.
-   - Update existing initial migration, not a forward migration.
-   - Add `thread_kind` to record/input types and store queries.
-   - Replace RFC-era `kind` wording in implementation with `thread_kind`.
-
-2. Add lazy invocation API.
+1. Add lazy invocation API.
    - Introduce `ThreadInvocation` and `ThreadTrigger`.
    - Handler receives lightweight record plus trigger.
    - Full snapshot is built only via `ctx.build_thread_snapshot(thread_id)`.
    - Update support-bot user flow to explicitly build snapshot only where
      LLM context needs transcript.
 
-3. Add thread links and linked effects.
+2. Add thread links and linked effects.
    - Add `thread_links` table to the initial migration.
    - Add store APIs for forward and reverse lookups.
    - Add `EnsureLinkedThread`.
@@ -327,7 +371,7 @@ Prefer one small reviewable slice at a time.
    - Move support engineer thread creation out of `MattermostSupportNotifier`
      raw API calls and into effects.
 
-4. Keep raw-post path removed.
+3. Keep raw-post path removed.
    - `execute_raw_post_effects` has been removed from runtime.
    - `ThreadHandler::handle_raw_post` has been removed.
    - `build_raw_engineer_thread_snapshot` is not present.

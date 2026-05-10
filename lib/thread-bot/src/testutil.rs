@@ -78,6 +78,7 @@ impl ThreadStore for MockStore {
 
         let record = if let Some(existing) = state.threads.get(&input.thread_id) {
             ThreadRecord {
+                thread_kind: input.thread_kind,
                 metadata: input.metadata,
                 updated_at: now,
                 ..existing.clone()
@@ -88,6 +89,7 @@ impl ThreadStore for MockStore {
                 root_post_id: input.root_post_id,
                 channel_id: input.channel_id,
                 creator_user_id: input.creator_user_id,
+                thread_kind: input.thread_kind,
                 metadata: input.metadata,
                 last_seen_post_id: None,
                 last_seen_post_at: None,
@@ -613,6 +615,7 @@ pub async fn spawn_test_actor_with_idle_timeout(
             root_post_id: thread_id.to_string(),
             channel_id: "test_channel".to_string(),
             creator_user_id: "user_1".to_string(),
+            thread_kind: None,
             metadata: serde_json::Value::Null,
         })
         .await

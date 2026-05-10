@@ -133,6 +133,7 @@ async fn build_thread_snapshot_orders_messages_and_merges_metadata() {
             root_post_id: "thread1".to_string(),
             channel_id: "test_channel".to_string(),
             creator_user_id: "user_1".to_string(),
+            thread_kind: None,
             metadata: serde_json::Value::Null,
         })
         .await

@@ -8,6 +8,7 @@ pub struct ThreadRecord {
     pub root_post_id: String,
     pub channel_id: String,
     pub creator_user_id: String,
+    pub thread_kind: Option<String>,
     pub metadata: serde_json::Value,
     pub last_seen_post_id: Option<String>,
     pub last_seen_post_at: Option<DateTime<Utc>>,
@@ -40,6 +41,7 @@ pub struct ThreadInfo {
     pub root_post_id: String,
     pub channel_id: String,
     pub creator_user_id: String,
+    pub thread_kind: Option<String>,
     pub metadata: serde_json::Value,
     pub last_seen_post_id: Option<String>,
     pub last_seen_post_at: Option<DateTime<Utc>>,
@@ -56,6 +58,7 @@ impl From<ThreadRecord> for ThreadInfo {
             root_post_id: record.root_post_id,
             channel_id: record.channel_id,
             creator_user_id: record.creator_user_id,
+            thread_kind: record.thread_kind,
             metadata: record.metadata,
             last_seen_post_id: record.last_seen_post_id,
             last_seen_post_at: record.last_seen_post_at,
@@ -138,6 +141,7 @@ pub struct UpsertThread {
     pub root_post_id: String,
     pub channel_id: String,
     pub creator_user_id: String,
+    pub thread_kind: Option<String>,
     pub metadata: serde_json::Value,
 }
 

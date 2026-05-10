@@ -103,6 +103,7 @@ pub fn make_thread(suffix: &str) -> UpsertThread {
         root_post_id: format!("root_post_{}", suffix),
         channel_id: format!("channel_{}", suffix),
         creator_user_id: format!("user_{}", suffix),
+        thread_kind: Some("test_thread".to_string()),
         metadata: json!({}),
     }
 }

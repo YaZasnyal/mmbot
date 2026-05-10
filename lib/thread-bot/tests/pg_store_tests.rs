@@ -30,6 +30,7 @@ async fn upsert_thread_creates_new() {
     assert_eq!(record.root_post_id, "root_post_1");
     assert_eq!(record.channel_id, "channel_1");
     assert_eq!(record.creator_user_id, "user_1");
+    assert_eq!(record.thread_kind.as_deref(), Some("test_thread"));
     assert_eq!(record.metadata, json!({}));
     assert!(record.last_seen_post_id.is_none());
     assert!(record.last_processed_post_id.is_none());
@@ -52,11 +53,13 @@ async fn upsert_thread_updates_existing() {
         root_post_id: "root_post_1".to_string(),
         channel_id: "channel_1".to_string(),
         creator_user_id: "user_1".to_string(),
+        thread_kind: Some("updated_thread".to_string()),
         metadata: json!({"key": "value"}),
     };
     let updated = store.upsert_thread(updated_input).await.unwrap();
 
     assert_eq!(updated.thread_id, "thread_1");
+    assert_eq!(updated.thread_kind.as_deref(), Some("updated_thread"));
     assert_eq!(updated.metadata, json!({"key": "value"}));
     // created_at should not change
     assert_eq!(updated.created_at, created.created_at);
@@ -805,6 +808,7 @@ async fn multiple_threads_in_same_channel() {
         root_post_id: "root_a".to_string(),
         channel_id: "shared_channel".to_string(),
         creator_user_id: "user_1".to_string(),
+        thread_kind: Some("test_thread".to_string()),
         metadata: json!({}),
     };
     let t2 = UpsertThread {
@@ -812,6 +816,7 @@ async fn multiple_threads_in_same_channel() {
         root_post_id: "root_b".to_string(),
         channel_id: "shared_channel".to_string(),
         creator_user_id: "user_2".to_string(),
+        thread_kind: Some("test_thread".to_string()),
         metadata: json!({}),
     };
     store.upsert_thread(t1).await.unwrap();
@@ -874,6 +879,7 @@ async fn metadata_supports_complex_json() {
         root_post_id: "root_json".to_string(),
         channel_id: "ch_1".to_string(),
         creator_user_id: "user_1".to_string(),
+        thread_kind: None,
         metadata: json!({
             "tags": ["urgent", "bug"],
             "assignee": {"name": "Alice", "id": 42},

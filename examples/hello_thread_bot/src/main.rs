@@ -31,6 +31,10 @@ impl ThreadHandler for HelloWorldHandler {
         Ok(true)
     }
 
+    fn thread_kind(&self, _thread: &thread_bot::Thread) -> Option<String> {
+        Some("hello_world".to_string())
+    }
+
     async fn handle(
         &self,
         thread: &thread_bot::Thread,

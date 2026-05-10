@@ -75,6 +75,15 @@ pub trait ThreadHandler: Send + Sync + 'static {
         ctx: &ThreadContext,
     ) -> Result<bool, ThreadBotError>;
 
+    /// Optional free-string classifier stored on newly tracked threads.
+    ///
+    /// Layer 3 stores and indexes this value, but does not interpret it.
+    /// Future tracking-decision APIs will let handlers return this together
+    /// with initial metadata.
+    fn thread_kind(&self, _thread: &Thread) -> Option<String> {
+        None
+    }
+
     /// Main thread processing logic
     ///
     /// Called after debounce with full thread snapshot from Mattermost API.

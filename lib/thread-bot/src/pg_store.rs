@@ -48,6 +48,7 @@ struct ThreadRow {
     root_post_id: String,
     channel_id: String,
     creator_user_id: String,
+    thread_kind: Option<String>,
     metadata: serde_json::Value,
     last_seen_post_id: Option<String>,
     last_seen_post_at: Option<DateTime<Utc>>,
@@ -64,6 +65,7 @@ impl From<ThreadRow> for ThreadRecord {
             root_post_id: row.root_post_id,
             channel_id: row.channel_id,
             creator_user_id: row.creator_user_id,
+            thread_kind: row.thread_kind,
             metadata: row.metadata,
             last_seen_post_id: row.last_seen_post_id,
             last_seen_post_at: row.last_seen_post_at,
@@ -133,7 +135,7 @@ impl From<ReactionRow> for ThreadReaction {
 }
 
 const THREAD_COLUMNS: &str = r#"
-    thread_id, root_post_id, channel_id, creator_user_id, metadata,
+    thread_id, root_post_id, channel_id, creator_user_id, thread_kind, metadata,
     last_seen_post_id, last_seen_post_at,
     last_processed_post_id, last_processed_post_at,
     created_at, updated_at
@@ -152,9 +154,13 @@ impl ThreadStore for PgThreadStore {
 
         let sql = format!(
             r#"
-            INSERT INTO threads (thread_id, root_post_id, channel_id, creator_user_id, metadata, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $6)
+            INSERT INTO threads (
+                thread_id, root_post_id, channel_id, creator_user_id,
+                thread_kind, metadata, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
             ON CONFLICT (thread_id) DO UPDATE SET
+                thread_kind = EXCLUDED.thread_kind,
                 metadata = EXCLUDED.metadata,
                 updated_at = EXCLUDED.updated_at
             RETURNING {THREAD_COLUMNS}
@@ -166,6 +172,7 @@ impl ThreadStore for PgThreadStore {
             .bind(&input.root_post_id)
             .bind(&input.channel_id)
             .bind(&input.creator_user_id)
+            .bind(&input.thread_kind)
             .bind(&input.metadata)
             .bind(now)
             .fetch_one(&self.pool)
