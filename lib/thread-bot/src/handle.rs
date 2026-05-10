@@ -1,7 +1,7 @@
 //! [`ThreadBotHandle`] — facade for accessing thread-bot from cron jobs.
 //!
 //! Provides read access to thread data via [`ThreadStore`] and controlled
-//! write access via actor commands (`Wake`, `Close`).
+//! write access via actor commands (`Wake`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,7 +13,6 @@ use mattermost_api::apis::configuration::Configuration;
 
 use crate::actor::{build_thread_snapshot, ThreadCommand};
 use crate::error::ThreadBotError;
-use crate::handler::ThreadCloseReason;
 use crate::store::ThreadStore;
 use crate::types::*;
 
@@ -47,18 +46,15 @@ impl ThreadBotHandle {
 
     // ── Read operations (delegate to ThreadStore) ────────────────────────
 
-    /// List threads by status, optionally filtered by `updated_at` range.
+    /// List tracked threads, optionally filtered by `updated_at` range.
     ///
     /// Pass `None` for time bounds to skip filtering.
     pub async fn list_threads(
         &self,
-        statuses: &[ThreadStatus],
         updated_after: Option<DateTime<Utc>>,
         updated_before: Option<DateTime<Utc>>,
     ) -> Result<Vec<ThreadRecord>, ThreadBotError> {
-        self.store
-            .list_threads_by_status(statuses, updated_after, updated_before)
-            .await
+        self.store.list_threads(updated_after, updated_before).await
     }
 
     /// Get a single thread record (metadata + cursors, no messages).
@@ -107,7 +103,7 @@ impl ThreadBotHandle {
     /// handler runs again after the current invocation completes.
     ///
     /// Returns `Ok(true)` if the command was sent, `Ok(false)` if no
-    /// actor exists (thread may be closed or not yet reconciled).
+    /// actor exists.
     pub async fn wake_thread(&self, thread_id: &str) -> Result<bool, ThreadBotError> {
         let actors = self.actors.lock().await;
         if let Some(tx) = actors.get(thread_id) {
@@ -121,58 +117,6 @@ impl ThreadBotHandle {
             "wake_thread: no actor found"
         );
         Ok(false)
-    }
-
-    /// Close thread as Resolved via its actor.
-    ///
-    /// If actor exists: sends `Close` command (actor calls `on_thread_closed`,
-    /// updates DB, shuts down). If no actor: direct DB status update
-    /// (`on_thread_closed` is **not** called).
-    pub async fn resolve_thread(&self, thread_id: &str) -> Result<(), ThreadBotError> {
-        self.close_thread_impl(thread_id, ThreadCloseReason::ResolvedExternally)
-            .await
-    }
-
-    /// Close thread as Stopped via its actor.
-    ///
-    /// Same semantics as [`resolve_thread`](Self::resolve_thread) but
-    /// with `Stopped` status and `StoppedExternally` reason.
-    pub async fn stop_thread(&self, thread_id: &str) -> Result<(), ThreadBotError> {
-        self.close_thread_impl(thread_id, ThreadCloseReason::StoppedExternally)
-            .await
-    }
-
-    async fn close_thread_impl(
-        &self,
-        thread_id: &str,
-        reason: ThreadCloseReason,
-    ) -> Result<(), ThreadBotError> {
-        // Try sending to actor first
-        {
-            let actors = self.actors.lock().await;
-            if let Some(tx) = actors.get(thread_id) {
-                if !tx.is_closed() {
-                    let _ = tx.send(ThreadCommand::Close { reason }).await;
-                    return Ok(());
-                }
-            }
-        }
-
-        // No actor — direct DB update
-        let target_status = match reason {
-            ThreadCloseReason::ResolvedExternally => ThreadStatus::Resolved,
-            _ => ThreadStatus::Stopped,
-        };
-
-        tracing::warn!(
-            thread_id = %thread_id,
-            reason = ?reason,
-            "Closing thread without actor — on_thread_closed will NOT be called"
-        );
-
-        self.store
-            .update_thread_status(thread_id, target_status)
-            .await
     }
 
     // ── Direct store writes ─────────────────────────────────────────────

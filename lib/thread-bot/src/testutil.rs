@@ -20,7 +20,7 @@ use mattermost_api::models;
 
 use crate::actor::{ActorCtx, ThreadCommand};
 use crate::error::ThreadBotError;
-use crate::handler::{ThreadCloseReason, ThreadContext, ThreadEffect, ThreadHandler};
+use crate::handler::{ThreadContext, ThreadEffect, ThreadHandler};
 use crate::store::ThreadStore;
 use crate::types::*;
 
@@ -78,7 +78,6 @@ impl ThreadStore for MockStore {
 
         let record = if let Some(existing) = state.threads.get(&input.thread_id) {
             ThreadRecord {
-                status: input.status,
                 metadata: input.metadata,
                 updated_at: now,
                 ..existing.clone()
@@ -89,7 +88,6 @@ impl ThreadStore for MockStore {
                 root_post_id: input.root_post_id,
                 channel_id: input.channel_id,
                 creator_user_id: input.creator_user_id,
-                status: input.status,
                 metadata: input.metadata,
                 last_seen_post_id: None,
                 last_seen_post_at: None,
@@ -127,9 +125,8 @@ impl ThreadStore for MockStore {
         Ok(None)
     }
 
-    async fn list_threads_by_status(
+    async fn list_threads(
         &self,
-        statuses: &[ThreadStatus],
         updated_after: Option<DateTime<Utc>>,
         updated_before: Option<DateTime<Utc>>,
     ) -> Result<Vec<ThreadRecord>, ThreadBotError> {
@@ -137,27 +134,10 @@ impl ThreadStore for MockStore {
         Ok(state
             .threads
             .values()
-            .filter(|t| statuses.contains(&t.status))
             .filter(|t| updated_after.is_none_or(|after| t.updated_at > after))
             .filter(|t| updated_before.is_none_or(|before| t.updated_at < before))
             .cloned()
             .collect())
-    }
-
-    async fn update_thread_status(
-        &self,
-        thread_id: &str,
-        status: ThreadStatus,
-    ) -> Result<(), ThreadBotError> {
-        let mut state = self.state.write().await;
-        match state.threads.get_mut(thread_id) {
-            Some(thread) => {
-                thread.status = status;
-                thread.updated_at = Utc::now();
-                Ok(())
-            }
-            None => Err(ThreadBotError::ThreadNotFound(thread_id.to_string())),
-        }
     }
 
     async fn set_thread_metadata(
@@ -408,8 +388,6 @@ pub struct MockHandler {
 
     /// Number of times `handle()` was called.
     pub handle_call_count: AtomicUsize,
-    /// Reasons passed to `on_thread_closed()`.
-    pub closed_reasons: Mutex<Vec<ThreadCloseReason>>,
     /// Whether `should_track()` returns true.
     should_track_result: bool,
 }
@@ -426,7 +404,6 @@ impl MockHandler {
             handle_entered_tx: tx,
             handle_entered_rx: Mutex::new(rx),
             handle_call_count: AtomicUsize::new(0),
-            closed_reasons: Mutex::new(Vec::new()),
             should_track_result: true,
         }
     }
@@ -512,16 +489,6 @@ impl ThreadHandler for MockHandler {
         } else {
             Ok(self.default_effects.clone())
         }
-    }
-
-    async fn on_thread_closed(
-        &self,
-        _thread: &Thread,
-        reason: ThreadCloseReason,
-        _ctx: &ThreadContext,
-    ) -> Result<(), ThreadBotError> {
-        self.closed_reasons.lock().await.push(reason);
-        Ok(())
     }
 }
 
@@ -646,7 +613,6 @@ pub async fn spawn_test_actor_with_idle_timeout(
             root_post_id: thread_id.to_string(),
             channel_id: "test_channel".to_string(),
             creator_user_id: "user_1".to_string(),
-            status: ThreadStatus::New,
             metadata: serde_json::Value::Null,
         })
         .await

@@ -21,8 +21,8 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Instant;
 use thread_bot::{
-    ReactionAction, ReactionChange, Thread, ThreadBotError, ThreadCloseReason, ThreadContext,
-    ThreadEffect, ThreadHandler, ThreadMessage, ThreadRecord,
+    ReactionAction, ReactionChange, Thread, ThreadBotError, ThreadContext, ThreadEffect,
+    ThreadHandler, ThreadMessage, ThreadRecord,
 };
 use tracing::{debug, info, warn, Instrument, Span};
 
@@ -325,7 +325,7 @@ impl SupportBotHandler {
                 }
                 StopAfterTools::FinishRequest => {
                     info!("support-bot: finishing request after finish_request action");
-                    return run.into_resolved_effects(thread, trigger_message);
+                    return run.into_effects(thread, trigger_message);
                 }
             }
         }
@@ -365,7 +365,8 @@ impl SupportBotHandler {
         )
         .await?;
         self.metrics.record_reply("user", "success");
-        run.into_stopped_effects(thread, trigger_message)
+        run.stop_request(Some("tool loop limit reached".to_string()));
+        run.into_effects(thread, trigger_message)
     }
 
     #[tracing::instrument(
@@ -661,52 +662,6 @@ impl ThreadHandler for SupportBotHandler {
             change,
         )
     }
-
-    async fn on_thread_closed(
-        &self,
-        thread: &Thread,
-        reason: ThreadCloseReason,
-        ctx: &ThreadContext,
-    ) -> Result<(), ThreadBotError> {
-        if !matches!(self.route(&thread.info.channel_id), SupportRoute::User) {
-            return Ok(());
-        }
-
-        let metadata = match ctx.store.get_thread(&thread.info.thread_id).await? {
-            Some(record) => record.metadata,
-            None => thread.info.metadata.clone(),
-        };
-
-        let current_thread = load_state(&metadata)
-            .map(|state| state.engineer_thread)
-            .unwrap_or_else(|error| {
-                warn!(
-                    thread_id = %thread.info.thread_id,
-                    error = %error,
-                    "support-bot: failed to load state while closing thread"
-                );
-                None
-            });
-
-        let result = self
-            .engineer_notifier(ctx)
-            .notify_engineer(
-                thread,
-                current_thread.as_ref(),
-                format!(
-                    "**Support thread closed**\n\nreason: `{reason:?}`\nsource: {}",
-                    thread.info.thread_id
-                ),
-            )
-            .await
-            .map(|_| ())
-            .map_err(ThreadBotError::from);
-        self.metrics.record_thread_close(
-            thread_close_reason_label(reason),
-            if result.is_ok() { "success" } else { "error" },
-        );
-        result
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -723,17 +678,6 @@ impl SupportRoute {
             SupportRoute::Engineer => "engineer",
             SupportRoute::Ignored => "ignored",
         }
-    }
-}
-
-fn thread_close_reason_label(reason: ThreadCloseReason) -> &'static str {
-    match reason {
-        ThreadCloseReason::ResolvedByReaction => "resolved_by_reaction",
-        ThreadCloseReason::StoppedByReaction => "stopped_by_reaction",
-        ThreadCloseReason::ResolvedByHandler => "resolved_by_handler",
-        ThreadCloseReason::StoppedByHandler => "stopped_by_handler",
-        ThreadCloseReason::ResolvedExternally => "resolved_externally",
-        ThreadCloseReason::StoppedExternally => "stopped_externally",
     }
 }
 
@@ -798,7 +742,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::Duration;
-    use thread_bot::{ThreadInfo, ThreadMessage, ThreadRecord, ThreadStatus};
+    use thread_bot::{ThreadInfo, ThreadMessage, ThreadRecord};
 
     struct StaticLlm;
 
@@ -919,7 +863,6 @@ mod tests {
                 root_post_id: "post-1".to_string(),
                 channel_id: channel_id.to_string(),
                 creator_user_id: "user-1".to_string(),
-                status: ThreadStatus::Active,
                 metadata: json!({}),
                 last_seen_post_id: None,
                 last_seen_post_at: None,
@@ -952,7 +895,6 @@ mod tests {
             root_post_id: "post-1".to_string(),
             channel_id: channel_id.to_string(),
             creator_user_id: "user-1".to_string(),
-            status: ThreadStatus::Active,
             metadata,
             last_seen_post_id: None,
             last_seen_post_at: None,
@@ -1416,9 +1358,14 @@ mod tests {
                         && metadata["support_bot"]["kind"] == "tool_loop_limit"
             )
         }));
-        assert!(effects
+        let state_meta = effects
             .iter()
-            .any(|effect| matches!(effect, ThreadEffect::MarkStopped)));
+            .find_map(|effect| match effect {
+                ThreadEffect::SetThreadMetadata { metadata } => Some(metadata),
+                _ => None,
+            })
+            .expect("state metadata must exist");
+        assert_eq!(state_meta[STATE_KEY]["status"], "stopped");
     }
 
     #[tokio::test]
@@ -1531,7 +1478,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finish_request_persists_finished_state_before_mark_resolved() {
+    async fn finish_request_persists_finished_state_without_mark_resolved() {
         let call = ToolCall {
             id: "call-1".to_string(),
             name: "finish_request".to_string(),
@@ -1570,16 +1517,10 @@ mod tests {
 
         assert_eq!(llm.requests().len(), 1);
 
-        let set_idx = effects
+        effects
             .iter()
             .position(|effect| matches!(effect, ThreadEffect::SetThreadMetadata { .. }))
             .expect("SetThreadMetadata must be emitted");
-        let resolved_idx = effects
-            .iter()
-            .position(|effect| matches!(effect, ThreadEffect::MarkResolved))
-            .expect("MarkResolved must be emitted");
-        assert!(set_idx < resolved_idx);
-
         let state_meta = effects
             .iter()
             .find_map(|effect| match effect {
@@ -1639,9 +1580,6 @@ mod tests {
 
         let effects = handler.handle(&thread, &ctx).await.unwrap();
 
-        assert!(effects
-            .iter()
-            .any(|effect| matches!(effect, ThreadEffect::MarkResolved)));
         let state_meta = effects
             .iter()
             .find_map(|effect| match effect {

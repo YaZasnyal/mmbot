@@ -2,7 +2,7 @@ use crate::error::ThreadBotError;
 use crate::store::ThreadStore;
 use crate::types::{
     AppendReaction, ChannelCheckpoint, ReactionAction, ThreadMessageRecord, ThreadReaction,
-    ThreadRecord, ThreadStatus, UpsertThread, UpsertThreadMessage,
+    ThreadRecord, UpsertThread, UpsertThreadMessage,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -21,27 +21,6 @@ impl PgThreadStore {
             .await
             .map_err(|e| ThreadBotError::Internal(Box::new(e)))?;
         Ok(Self { pool })
-    }
-}
-
-// Helper: parse ThreadStatus from DB string
-fn parse_status(s: &str) -> ThreadStatus {
-    match s {
-        "new" => ThreadStatus::New,
-        "active" => ThreadStatus::Active,
-        "resolved" => ThreadStatus::Resolved,
-        "stopped" => ThreadStatus::Stopped,
-        _ => ThreadStatus::Active,
-    }
-}
-
-// Helper: ThreadStatus to DB string
-fn status_str(status: &ThreadStatus) -> &'static str {
-    match status {
-        ThreadStatus::New => "new",
-        ThreadStatus::Active => "active",
-        ThreadStatus::Resolved => "resolved",
-        ThreadStatus::Stopped => "stopped",
     }
 }
 
@@ -69,7 +48,6 @@ struct ThreadRow {
     root_post_id: String,
     channel_id: String,
     creator_user_id: String,
-    status: String,
     metadata: serde_json::Value,
     last_seen_post_id: Option<String>,
     last_seen_post_at: Option<DateTime<Utc>>,
@@ -86,7 +64,6 @@ impl From<ThreadRow> for ThreadRecord {
             root_post_id: row.root_post_id,
             channel_id: row.channel_id,
             creator_user_id: row.creator_user_id,
-            status: parse_status(&row.status),
             metadata: row.metadata,
             last_seen_post_id: row.last_seen_post_id,
             last_seen_post_at: row.last_seen_post_at,
@@ -156,8 +133,8 @@ impl From<ReactionRow> for ThreadReaction {
 }
 
 const THREAD_COLUMNS: &str = r#"
-    thread_id, root_post_id, channel_id, creator_user_id, status,
-    metadata, last_seen_post_id, last_seen_post_at,
+    thread_id, root_post_id, channel_id, creator_user_id, metadata,
+    last_seen_post_id, last_seen_post_at,
     last_processed_post_id, last_processed_post_at,
     created_at, updated_at
 "#;
@@ -172,14 +149,12 @@ const MESSAGE_COLUMNS: &str = r#"
 impl ThreadStore for PgThreadStore {
     async fn upsert_thread(&self, input: UpsertThread) -> Result<ThreadRecord, ThreadBotError> {
         let now = Utc::now();
-        let status = status_str(&input.status);
 
         let sql = format!(
             r#"
-            INSERT INTO threads (thread_id, root_post_id, channel_id, creator_user_id, status, metadata, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+            INSERT INTO threads (thread_id, root_post_id, channel_id, creator_user_id, metadata, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $6)
             ON CONFLICT (thread_id) DO UPDATE SET
-                status = EXCLUDED.status,
                 metadata = EXCLUDED.metadata,
                 updated_at = EXCLUDED.updated_at
             RETURNING {THREAD_COLUMNS}
@@ -191,7 +166,6 @@ impl ThreadStore for PgThreadStore {
             .bind(&input.root_post_id)
             .bind(&input.channel_id)
             .bind(&input.creator_user_id)
-            .bind(status)
             .bind(&input.metadata)
             .bind(now)
             .fetch_one(&self.pool)
@@ -234,52 +208,25 @@ impl ThreadStore for PgThreadStore {
         Ok(row.map(Into::into))
     }
 
-    async fn list_threads_by_status(
+    async fn list_threads(
         &self,
-        statuses: &[ThreadStatus],
         updated_after: Option<DateTime<Utc>>,
         updated_before: Option<DateTime<Utc>>,
     ) -> Result<Vec<ThreadRecord>, ThreadBotError> {
-        let status_strings: Vec<&str> = statuses.iter().map(status_str).collect();
-
         let sql = format!(
             "SELECT {THREAD_COLUMNS} FROM threads \
-             WHERE status = ANY($1) \
-             AND ($2::timestamptz IS NULL OR updated_at > $2) \
-             AND ($3::timestamptz IS NULL OR updated_at < $3) \
+             WHERE ($1::timestamptz IS NULL OR updated_at > $1) \
+             AND ($2::timestamptz IS NULL OR updated_at < $2) \
              ORDER BY updated_at DESC"
         );
 
         let rows: Vec<ThreadRow> = sqlx::query_as(&sql)
-            .bind(&status_strings)
             .bind(updated_after)
             .bind(updated_before)
             .fetch_all(&self.pool)
             .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
-    }
-
-    async fn update_thread_status(
-        &self,
-        thread_id: &str,
-        status: ThreadStatus,
-    ) -> Result<(), ThreadBotError> {
-        let status = status_str(&status);
-        let now = Utc::now();
-
-        let result =
-            sqlx::query("UPDATE threads SET status = $2, updated_at = $3 WHERE thread_id = $1")
-                .bind(thread_id)
-                .bind(status)
-                .bind(now)
-                .execute(&self.pool)
-                .await?;
-
-        if result.rows_affected() == 0 {
-            return Err(ThreadBotError::ThreadNotFound(thread_id.to_string()));
-        }
-        Ok(())
     }
 
     async fn set_thread_metadata(

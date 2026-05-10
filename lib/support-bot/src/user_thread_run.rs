@@ -126,6 +126,11 @@ impl UserThreadRun {
         self.stop_after_tools = StopAfterTools::FinishRequest;
     }
 
+    pub(crate) fn stop_request(&mut self, summary: Option<String>) {
+        self.state.status = SupportThreadStatus::Stopped;
+        self.state.finished_summary = summary;
+    }
+
     pub(crate) fn status(&self) -> &SupportThreadStatus {
         &self.state.status
     }
@@ -150,36 +155,6 @@ impl UserThreadRun {
         trigger_message: &ThreadMessage,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
         self.persist_trace_and_state(thread, trigger_message)?;
-        Ok(self.effects)
-    }
-
-    pub(crate) fn into_resolved_effects(
-        mut self,
-        thread: &Thread,
-        trigger_message: &ThreadMessage,
-    ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
-        self.persist_trace_and_state(thread, trigger_message)?;
-        info!(
-            thread_id = %thread.info.thread_id,
-            post_id = %trigger_message.post_id,
-            "support-bot: emitting MarkResolved after metadata persistence effects"
-        );
-        self.effects.push(ThreadEffect::MarkResolved);
-        Ok(self.effects)
-    }
-
-    pub(crate) fn into_stopped_effects(
-        mut self,
-        thread: &Thread,
-        trigger_message: &ThreadMessage,
-    ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
-        self.persist_trace_and_state(thread, trigger_message)?;
-        info!(
-            thread_id = %thread.info.thread_id,
-            post_id = %trigger_message.post_id,
-            "support-bot: emitting MarkStopped after metadata persistence effects"
-        );
-        self.effects.push(ThreadEffect::MarkStopped);
         Ok(self.effects)
     }
 

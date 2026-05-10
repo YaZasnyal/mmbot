@@ -619,7 +619,7 @@ fn support_post_props(kind: &str, thread: &Thread) -> serde_json::Value {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use thread_bot::{ThreadInfo, ThreadMessage, ThreadStatus};
+    use thread_bot::{ThreadInfo, ThreadMessage};
 
     fn thread() -> Thread {
         Thread {
@@ -628,7 +628,6 @@ mod tests {
                 root_post_id: "root-1".to_string(),
                 channel_id: "users".to_string(),
                 creator_user_id: "user-1".to_string(),
-                status: ThreadStatus::Active,
                 metadata: serde_json::json!({}),
                 last_seen_post_id: None,
                 last_seen_post_at: None,

@@ -3,7 +3,6 @@ CREATE TABLE threads (
     root_post_id TEXT NOT NULL UNIQUE,
     channel_id TEXT NOT NULL,
     creator_user_id TEXT NOT NULL,
-    status TEXT NOT NULL,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     last_seen_post_id TEXT,
     last_seen_post_at TIMESTAMPTZ,
@@ -14,7 +13,6 @@ CREATE TABLE threads (
 );
 
 CREATE INDEX idx_threads_channel_id ON threads(channel_id);
-CREATE INDEX idx_threads_status ON threads(status);
 CREATE INDEX idx_threads_updated_at ON threads(updated_at DESC);
 CREATE INDEX idx_threads_metadata_gin ON threads USING GIN(metadata);
 

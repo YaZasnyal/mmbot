@@ -11,8 +11,7 @@ use chrono::Utc;
 use common::{make_message, make_thread, TestDb};
 use serde_json::json;
 use thread_bot::{
-    AppendReaction, ReactionAction, ThreadBotError, ThreadStatus, ThreadStore, UpsertThread,
-    UpsertThreadMessage,
+    AppendReaction, ReactionAction, ThreadBotError, ThreadStore, UpsertThread, UpsertThreadMessage,
 };
 
 // ---------------------------------------------------------------------------
@@ -31,7 +30,6 @@ async fn upsert_thread_creates_new() {
     assert_eq!(record.root_post_id, "root_post_1");
     assert_eq!(record.channel_id, "channel_1");
     assert_eq!(record.creator_user_id, "user_1");
-    assert_eq!(record.status, ThreadStatus::New);
     assert_eq!(record.metadata, json!({}));
     assert!(record.last_seen_post_id.is_none());
     assert!(record.last_processed_post_id.is_none());
@@ -48,19 +46,17 @@ async fn upsert_thread_updates_existing() {
     let input = make_thread("1");
     let created = store.upsert_thread(input).await.unwrap();
 
-    // Upsert with changed status and metadata
+    // Upsert with changed metadata
     let updated_input = UpsertThread {
         thread_id: "thread_1".to_string(),
         root_post_id: "root_post_1".to_string(),
         channel_id: "channel_1".to_string(),
         creator_user_id: "user_1".to_string(),
-        status: ThreadStatus::Active,
         metadata: json!({"key": "value"}),
     };
     let updated = store.upsert_thread(updated_input).await.unwrap();
 
     assert_eq!(updated.thread_id, "thread_1");
-    assert_eq!(updated.status, ThreadStatus::Active);
     assert_eq!(updated.metadata, json!({"key": "value"}));
     // created_at should not change
     assert_eq!(updated.created_at, created.created_at);
@@ -155,82 +151,16 @@ async fn get_thread_by_post_not_found() {
 }
 
 #[tokio::test]
-async fn list_threads_by_status_filters_correctly() {
+async fn list_threads_returns_tracked_threads() {
     let db = TestDb::new().await;
     let store = db.store().await;
 
-    // Create threads with different statuses
-    let mut t1 = make_thread("1");
-    t1.status = ThreadStatus::New;
-    store.upsert_thread(t1).await.unwrap();
+    store.upsert_thread(make_thread("1")).await.unwrap();
+    store.upsert_thread(make_thread("2")).await.unwrap();
 
-    let mut t2 = make_thread("2");
-    t2.status = ThreadStatus::Active;
-    store.upsert_thread(t2).await.unwrap();
+    let threads = store.list_threads(None, None).await.unwrap();
 
-    let mut t3 = make_thread("3");
-    t3.status = ThreadStatus::Resolved;
-    store.upsert_thread(t3).await.unwrap();
-
-    let mut t4 = make_thread("4");
-    t4.status = ThreadStatus::Stopped;
-    store.upsert_thread(t4).await.unwrap();
-
-    // Filter by single status
-    let active = store
-        .list_threads_by_status(&[ThreadStatus::Active], None, None)
-        .await
-        .unwrap();
-    assert_eq!(active.len(), 1);
-    assert_eq!(active[0].thread_id, "thread_2");
-
-    // Filter by multiple statuses
-    let open = store
-        .list_threads_by_status(&[ThreadStatus::New, ThreadStatus::Active], None, None)
-        .await
-        .unwrap();
-    assert_eq!(open.len(), 2);
-
-    // Empty filter returns nothing
-    let empty = store.list_threads_by_status(&[], None, None).await.unwrap();
-    assert_eq!(empty.len(), 0);
-
-    db.cleanup().await;
-}
-
-#[tokio::test]
-async fn update_thread_status_success() {
-    let db = TestDb::new().await;
-    let store = db.store().await;
-
-    let input = make_thread("1");
-    store.upsert_thread(input).await.unwrap();
-
-    store
-        .update_thread_status("thread_1", ThreadStatus::Active)
-        .await
-        .unwrap();
-
-    let found = store.get_thread("thread_1").await.unwrap().unwrap();
-    assert_eq!(found.status, ThreadStatus::Active);
-
-    db.cleanup().await;
-}
-
-#[tokio::test]
-async fn update_thread_status_not_found() {
-    let db = TestDb::new().await;
-    let store = db.store().await;
-
-    let result = store
-        .update_thread_status("nonexistent", ThreadStatus::Active)
-        .await;
-
-    assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err(),
-        ThreadBotError::ThreadNotFound(_)
-    ));
+    assert_eq!(threads.len(), 2);
 
     db.cleanup().await;
 }
@@ -727,18 +657,11 @@ async fn full_thread_lifecycle() {
     let db = TestDb::new().await;
     let store = db.store().await;
 
-    // 1. Create thread (new)
+    // 1. Create thread
     let thread = make_thread("lifecycle");
-    let record = store.upsert_thread(thread).await.unwrap();
-    assert_eq!(record.status, ThreadStatus::New);
+    store.upsert_thread(thread).await.unwrap();
 
-    // 2. Activate
-    store
-        .update_thread_status("thread_lifecycle", ThreadStatus::Active)
-        .await
-        .unwrap();
-
-    // 3. Add root message
+    // 2. Add root message
     let root_msg = UpsertThreadMessage {
         post_id: "root_post_lifecycle".to_string(),
         thread_id: "thread_lifecycle".to_string(),
@@ -753,7 +676,7 @@ async fn full_thread_lifecycle() {
     };
     store.upsert_message(root_msg).await.unwrap();
 
-    // 4. Bot replies
+    // 3. Bot replies
     let bot_msg = UpsertThreadMessage {
         post_id: "bot_reply_1".to_string(),
         thread_id: "thread_lifecycle".to_string(),
@@ -768,7 +691,7 @@ async fn full_thread_lifecycle() {
     };
     store.upsert_message(bot_msg).await.unwrap();
 
-    // 5. Update seen / processed
+    // 4. Update seen / processed
     let now = Utc::now();
     store
         .update_thread_seen("thread_lifecycle", "bot_reply_1", now)
@@ -779,7 +702,7 @@ async fn full_thread_lifecycle() {
         .await
         .unwrap();
 
-    // 6. User reacts with ✅
+    // 5. User reacts with ✅
     store
         .append_reaction(AppendReaction {
             thread_id: Some("thread_lifecycle".to_string()),
@@ -791,15 +714,8 @@ async fn full_thread_lifecycle() {
         .await
         .unwrap();
 
-    // 7. Resolve thread
-    store
-        .update_thread_status("thread_lifecycle", ThreadStatus::Resolved)
-        .await
-        .unwrap();
-
     // Verify final state
     let final_thread = store.get_thread("thread_lifecycle").await.unwrap().unwrap();
-    assert_eq!(final_thread.status, ThreadStatus::Resolved);
     assert_eq!(
         final_thread.last_seen_post_id.as_deref(),
         Some("bot_reply_1")
@@ -889,7 +805,6 @@ async fn multiple_threads_in_same_channel() {
         root_post_id: "root_a".to_string(),
         channel_id: "shared_channel".to_string(),
         creator_user_id: "user_1".to_string(),
-        status: ThreadStatus::Active,
         metadata: json!({}),
     };
     let t2 = UpsertThread {
@@ -897,7 +812,6 @@ async fn multiple_threads_in_same_channel() {
         root_post_id: "root_b".to_string(),
         channel_id: "shared_channel".to_string(),
         creator_user_id: "user_2".to_string(),
-        status: ThreadStatus::Active,
         metadata: json!({}),
     };
     store.upsert_thread(t1).await.unwrap();
@@ -960,7 +874,6 @@ async fn metadata_supports_complex_json() {
         root_post_id: "root_json".to_string(),
         channel_id: "ch_1".to_string(),
         creator_user_id: "user_1".to_string(),
-        status: ThreadStatus::New,
         metadata: json!({
             "tags": ["urgent", "bug"],
             "assignee": {"name": "Alice", "id": 42},

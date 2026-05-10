@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use thread_bot::{
     AppendReaction, ChannelCheckpoint, ThreadBotError, ThreadMessageRecord, ThreadReaction,
-    ThreadRecord, ThreadStatus, ThreadStore, UpsertThread, UpsertThreadMessage,
+    ThreadRecord, ThreadStore, UpsertThread, UpsertThreadMessage,
 };
 
 pub struct PanicStore;
@@ -24,20 +24,11 @@ impl ThreadStore for PanicStore {
         panic!("store should not be used")
     }
 
-    async fn list_threads_by_status(
+    async fn list_threads(
         &self,
-        _statuses: &[ThreadStatus],
         _updated_after: Option<DateTime<Utc>>,
         _updated_before: Option<DateTime<Utc>>,
     ) -> Result<Vec<ThreadRecord>, ThreadBotError> {
-        panic!("store should not be used")
-    }
-
-    async fn update_thread_status(
-        &self,
-        _thread_id: &str,
-        _status: ThreadStatus,
-    ) -> Result<(), ThreadBotError> {
         panic!("store should not be used")
     }
 

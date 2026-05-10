@@ -9,7 +9,7 @@ use crate::actor::{
     build_thread_snapshot, get_root_post_id, is_root_post, ms_to_datetime, post_to_thread_message,
     ThreadCommand,
 };
-use crate::handler::{ThreadCloseReason, ThreadEffect};
+use crate::handler::ThreadEffect;
 use crate::store::ThreadStore;
 use crate::testutil::{
     make_mm_post, setup_mm_mock, spawn_test_actor, spawn_test_actor_with_idle_timeout, MockHandler,
@@ -133,7 +133,6 @@ async fn build_thread_snapshot_orders_messages_and_merges_metadata() {
             root_post_id: "thread1".to_string(),
             channel_id: "test_channel".to_string(),
             creator_user_id: "user_1".to_string(),
-            status: ThreadStatus::Active,
             metadata: serde_json::Value::Null,
         })
         .await
@@ -203,7 +202,6 @@ async fn actor_basic_handler_flow() {
     assert_eq!(handler.call_count(), 1);
 
     let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Active));
     assert!(thread.last_processed_post_id.is_some());
 
     drop(tx);
@@ -396,90 +394,6 @@ async fn actor_idle_timeout_does_not_fire_while_handler_runs() {
 }
 
 #[tokio::test]
-async fn actor_control_reaction_resolved() {
-    let handler = MockHandler::new();
-    let post = make_mm_post("thread1", "user_1", "root", None);
-    let (tx, store, handler, _server) =
-        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
-
-    tx.send(ThreadCommand::ControlReaction {
-        effect: ThreadEffect::MarkResolved,
-        change: ReactionChange {
-            post_id: "thread1".into(),
-            user_id: "user_2".into(),
-            emoji_name: "white_check_mark".into(),
-            action: ReactionAction::Added,
-            created_at: Utc::now(),
-        },
-    })
-    .await
-    .unwrap();
-
-    settle().await;
-
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Resolved));
-
-    let reasons = handler.closed_reasons.lock().await;
-    assert_eq!(reasons.len(), 1);
-    assert_eq!(reasons[0], ThreadCloseReason::ResolvedByReaction);
-
-    assert!(tx.is_closed());
-}
-
-#[tokio::test]
-async fn actor_control_reaction_stopped() {
-    let handler = MockHandler::new();
-    let post = make_mm_post("thread1", "user_1", "root", None);
-    let (tx, store, handler, _server) =
-        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
-
-    tx.send(ThreadCommand::ControlReaction {
-        effect: ThreadEffect::MarkStopped,
-        change: ReactionChange {
-            post_id: "thread1".into(),
-            user_id: "user_2".into(),
-            emoji_name: "stop_sign".into(),
-            action: ReactionAction::Added,
-            created_at: Utc::now(),
-        },
-    })
-    .await
-    .unwrap();
-
-    settle().await;
-
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Stopped));
-
-    let reasons = handler.closed_reasons.lock().await;
-    assert_eq!(reasons.len(), 1);
-    assert_eq!(reasons[0], ThreadCloseReason::StoppedByReaction);
-
-    assert!(tx.is_closed());
-}
-
-#[tokio::test]
-async fn actor_handler_returns_mark_resolved() {
-    let handler = MockHandler::new().with_default_effects(vec![ThreadEffect::MarkResolved]);
-
-    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
-    let (tx, store, handler, _server) =
-        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
-
-    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
-    settle().await;
-
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Resolved));
-
-    let reasons = handler.closed_reasons.lock().await;
-    assert_eq!(reasons[0], ThreadCloseReason::ResolvedByHandler);
-
-    assert!(tx.is_closed());
-}
-
-#[tokio::test]
 async fn actor_reschedule_runs_handler_again() {
     let handler = MockHandler::new().with_effects_queue(vec![
         vec![ThreadEffect::Noop, ThreadEffect::Reschedule],
@@ -496,25 +410,6 @@ async fn actor_reschedule_runs_handler_again() {
     handler.wait_handle_entered().await; // reschedule
 
     assert_eq!(handler.call_count(), 2);
-
-    drop(tx);
-}
-
-#[tokio::test]
-async fn actor_new_to_active_transition() {
-    let handler = MockHandler::new();
-    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
-    let (tx, store, _handler, _server) =
-        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
-
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::New));
-
-    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
-    settle().await;
-
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Active));
 
     drop(tx);
 }
@@ -605,18 +500,15 @@ async fn actor_stops_thread_when_critical_metadata_effect_fails() {
     ]);
 
     let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
-    let (tx, store, handler, _server) =
+    let (tx, store, _handler, _server) =
         spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
 
     tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
     settle().await;
 
     let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Stopped));
     assert_eq!(thread.metadata, serde_json::Value::Null);
 
-    let reasons = handler.closed_reasons.lock().await;
-    assert_eq!(reasons.as_slice(), [ThreadCloseReason::StoppedByHandler]);
     assert!(tx.is_closed());
 }
 
@@ -638,7 +530,13 @@ async fn actor_control_reaction_interrupts_handler() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     tx.send(ThreadCommand::ControlReaction {
-        effect: ThreadEffect::MarkResolved,
+        effect: ThreadEffect::SetThreadMetadata {
+            metadata: serde_json::json!({
+                "support_bot": {
+                    "status": "finished"
+                }
+            }),
+        },
         change: ReactionChange {
             post_id: "thread1".into(),
             user_id: "user_2".into(),
@@ -653,9 +551,9 @@ async fn actor_control_reaction_interrupts_handler() {
     settle().await;
 
     let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Resolved));
+    assert_eq!(thread.metadata["support_bot"]["status"], "finished");
 
-    assert!(tx.is_closed());
+    assert!(!tx.is_closed());
 }
 
 #[tokio::test]

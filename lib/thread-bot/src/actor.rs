@@ -20,7 +20,7 @@ use mattermost_api::apis::posts_api;
 use mattermost_api::models;
 
 use crate::error::ThreadBotError;
-use crate::handler::{ThreadCloseReason, ThreadContext, ThreadEffect, ThreadHandler};
+use crate::handler::{ThreadContext, ThreadEffect, ThreadHandler};
 use crate::metrics::ThreadBotMetricsHandle;
 use crate::store::ThreadStore;
 use crate::types::*;
@@ -45,11 +45,6 @@ pub(crate) enum ThreadCommand {
     /// External wake — triggers a handler re-run without cancelling
     /// a currently running handler. Sent from [`ThreadBotHandle::wake_thread`].
     Wake,
-
-    /// External close — closes the thread from outside the actor
-    /// (e.g. cron job). Sent from [`ThreadBotHandle::resolve_thread`]
-    /// or [`ThreadBotHandle::stop_thread`].
-    Close { reason: ThreadCloseReason },
 }
 
 /// Shared context passed to the per-thread actor.
@@ -66,13 +61,6 @@ pub(crate) struct ActorCtx<H: ThreadHandler> {
 }
 
 // ─── Private types ───────────────────────────────────────────────────────────
-
-/// Tracks whether a close effect originated from a reaction or the handler.
-#[derive(Clone, Copy)]
-enum CloseSource {
-    Reaction,
-    Handler,
-}
 
 /// Output of the boxed handler future: snapshot is returned alongside the
 /// measured handler duration and result so it can be used for post-processing.
@@ -169,59 +157,6 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                         tracing::debug!(thread_id = %a.thread_id, "Thread woken by external trigger");
                     }
 
-                    Some(ThreadCommand::Close { reason }) => {
-                        a.metrics.actor_command("close", "received");
-                        tracing::info!(
-                            thread_id = %a.thread_id,
-                            reason = ?reason,
-                            "Thread closed by external trigger"
-                        );
-
-                        // Running handler (if any) will be dropped when we break.
-
-                        let target_status = match reason {
-                            ThreadCloseReason::ResolvedExternally => ThreadStatus::Resolved,
-                            _ => ThreadStatus::Stopped,
-                        };
-
-                        if let Err(e) = a.store
-                            .update_thread_status(&a.thread_id, target_status)
-                            .await
-                        {
-                            tracing::error!(
-                                thread_id = %a.thread_id,
-                                error = %e,
-                                "Failed to update thread status on external close"
-                            );
-                        }
-
-                        match build_thread_snapshot(&a.thread_id, &*a.store, &a.mm_config).await {
-                            Ok(snapshot) => {
-                                if let Err(e) = a.handler
-                                    .on_thread_closed(&snapshot, reason, &a.ctx)
-                                    .await
-                                {
-                                    tracing::error!(
-                                        thread_id = %a.thread_id,
-                                        reason = ?reason,
-                                        error = %e,
-                                        "on_thread_closed failed"
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    thread_id = %a.thread_id,
-                                    error = %e,
-                                    "Failed to build snapshot for on_thread_closed"
-                                );
-                            }
-                        }
-
-                        stop_reason = thread_close_reason_label(reason);
-                        break;
-                    }
-
                     None => {
                         tracing::info!(thread_id = %a.thread_id, "Thread actor channel closed");
                         break;
@@ -307,8 +242,7 @@ async fn handle_handler_result<H: ThreadHandler>(
     match result {
         Ok(effects) => {
             let effect_count = effects.len();
-            let (should_exit, should_reschedule) =
-                execute_effects(effects, &snapshot, a, CloseSource::Handler).await;
+            let (should_exit, should_reschedule) = execute_effects(effects, &snapshot, a).await;
             let outcome = if should_exit {
                 "closed"
             } else if should_reschedule {
@@ -332,21 +266,6 @@ async fn handle_handler_result<H: ThreadHandler>(
                         thread_id = %a.thread_id,
                         error = %e,
                         "Failed to update thread processed position"
-                    );
-                }
-            }
-
-            // Transition New → Active after first successful handler run
-            if matches!(snapshot.info.status, ThreadStatus::New) && !should_exit {
-                if let Err(e) = a
-                    .store
-                    .update_thread_status(&a.thread_id, ThreadStatus::Active)
-                    .await
-                {
-                    tracing::error!(
-                        thread_id = %a.thread_id,
-                        error = %e,
-                        "Failed to update thread status to Active"
                     );
                 }
             }
@@ -397,8 +316,7 @@ async fn handle_control_reaction<H: ThreadHandler>(
         }
     };
 
-    let (should_exit, _) =
-        execute_effects(vec![effect.clone()], &snapshot, a, CloseSource::Reaction).await;
+    let (should_exit, _) = execute_effects(vec![effect.clone()], &snapshot, a).await;
 
     should_exit
 }
@@ -413,7 +331,6 @@ async fn execute_effects<H: ThreadHandler>(
     effects: Vec<ThreadEffect>,
     thread: &Thread,
     a: &ActorCtx<H>,
-    close_source: CloseSource,
 ) -> (bool, bool) {
     let mut should_exit = false;
     let mut should_reschedule = false;
@@ -511,7 +428,7 @@ async fn execute_effects<H: ThreadHandler>(
                         error = %e,
                         "Critical thread effect failed"
                     );
-                    stop_after_critical_effect_failure(thread, a, "set_thread_metadata").await;
+                    stop_after_critical_effect_failure(thread, a, "set_thread_metadata");
                     should_exit = true;
                     break;
                 } else {
@@ -536,7 +453,7 @@ async fn execute_effects<H: ThreadHandler>(
                         error = %e,
                         "Critical thread effect failed"
                     );
-                    stop_after_critical_effect_failure(thread, a, "set_message_metadata").await;
+                    stop_after_critical_effect_failure(thread, a, "set_message_metadata");
                     should_exit = true;
                     break;
                 } else {
@@ -547,90 +464,6 @@ async fn execute_effects<H: ThreadHandler>(
             ThreadEffect::Reschedule => {
                 a.metrics.effect(effect_label, "success");
                 should_reschedule = true;
-            }
-
-            ThreadEffect::MarkResolved => {
-                if effect_idx < total_effects.saturating_sub(1) {
-                    tracing::warn!(
-                        thread_id = %a.thread_id,
-                        effect_idx,
-                        total_effects,
-                        "MarkResolved executed before final effect in batch"
-                    );
-                }
-                let reason = match close_source {
-                    CloseSource::Reaction => ThreadCloseReason::ResolvedByReaction,
-                    CloseSource::Handler => ThreadCloseReason::ResolvedByHandler,
-                };
-
-                if let Err(e) = a
-                    .store
-                    .update_thread_status(&a.thread_id, ThreadStatus::Resolved)
-                    .await
-                {
-                    a.metrics.effect(effect_label, "error");
-                    tracing::error!(
-                        thread_id = %a.thread_id,
-                        error = %e,
-                        "Failed to update thread status to Resolved"
-                    );
-                } else {
-                    a.metrics.effect(effect_label, "success");
-                }
-
-                if let Err(e) = a.handler.on_thread_closed(thread, reason, &a.ctx).await {
-                    tracing::error!(
-                        thread_id = %a.thread_id,
-                        reason = ?reason,
-                        error = %e,
-                        "on_thread_closed failed"
-                    );
-                }
-
-                tracing::info!(thread_id = %a.thread_id, reason = ?reason, "Thread closed");
-                should_exit = true;
-            }
-
-            ThreadEffect::MarkStopped => {
-                if effect_idx < total_effects.saturating_sub(1) {
-                    tracing::warn!(
-                        thread_id = %a.thread_id,
-                        effect_idx,
-                        total_effects,
-                        "MarkStopped executed before final effect in batch"
-                    );
-                }
-                let reason = match close_source {
-                    CloseSource::Reaction => ThreadCloseReason::StoppedByReaction,
-                    CloseSource::Handler => ThreadCloseReason::StoppedByHandler,
-                };
-
-                if let Err(e) = a
-                    .store
-                    .update_thread_status(&a.thread_id, ThreadStatus::Stopped)
-                    .await
-                {
-                    a.metrics.effect(effect_label, "error");
-                    tracing::error!(
-                        thread_id = %a.thread_id,
-                        error = %e,
-                        "Failed to update thread status to Stopped"
-                    );
-                } else {
-                    a.metrics.effect(effect_label, "success");
-                }
-
-                if let Err(e) = a.handler.on_thread_closed(thread, reason, &a.ctx).await {
-                    tracing::error!(
-                        thread_id = %a.thread_id,
-                        reason = ?reason,
-                        error = %e,
-                        "on_thread_closed failed"
-                    );
-                }
-
-                tracing::info!(thread_id = %a.thread_id, reason = ?reason, "Thread closed");
-                should_exit = true;
             }
         }
     }
@@ -646,60 +479,19 @@ fn thread_effect_label(effect: &ThreadEffect) -> &'static str {
         ThreadEffect::SetThreadMetadata { .. } => "set_thread_metadata",
         ThreadEffect::SetMessageMetadata { .. } => "set_message_metadata",
         ThreadEffect::Reschedule => "reschedule",
-        ThreadEffect::MarkResolved => "mark_resolved",
-        ThreadEffect::MarkStopped => "mark_stopped",
     }
 }
 
-fn thread_close_reason_label(reason: ThreadCloseReason) -> &'static str {
-    match reason {
-        ThreadCloseReason::ResolvedByReaction => "resolved_by_reaction",
-        ThreadCloseReason::StoppedByReaction => "stopped_by_reaction",
-        ThreadCloseReason::ResolvedByHandler => "resolved_by_handler",
-        ThreadCloseReason::StoppedByHandler => "stopped_by_handler",
-        ThreadCloseReason::ResolvedExternally => "resolved_externally",
-        ThreadCloseReason::StoppedExternally => "stopped_externally",
-    }
-}
-
-async fn stop_after_critical_effect_failure<H: ThreadHandler>(
+fn stop_after_critical_effect_failure<H: ThreadHandler>(
     thread: &Thread,
     a: &ActorCtx<H>,
     effect_type: &'static str,
 ) {
-    if let Err(e) = a
-        .store
-        .update_thread_status(&a.thread_id, ThreadStatus::Stopped)
-        .await
-    {
-        tracing::error!(
-            thread_id = %a.thread_id,
-            effect_type,
-            error = %e,
-            "Failed to stop thread after critical effect failure"
-        );
-        return;
-    }
-
-    if let Err(e) = a
-        .handler
-        .on_thread_closed(thread, ThreadCloseReason::StoppedByHandler, &a.ctx)
-        .await
-    {
-        tracing::error!(
-            thread_id = %a.thread_id,
-            effect_type,
-            reason = ?ThreadCloseReason::StoppedByHandler,
-            error = %e,
-            "on_thread_closed failed after critical effect failure"
-        );
-    }
-
     tracing::info!(
         thread_id = %a.thread_id,
         effect_type,
-        reason = ?ThreadCloseReason::StoppedByHandler,
-        "Thread stopped after critical effect failure"
+        root_post_id = %thread.info.root_post_id,
+        "Thread actor stopped after critical effect failure"
     );
 }
 

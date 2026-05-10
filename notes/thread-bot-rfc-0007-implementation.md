@@ -212,30 +212,113 @@ cargo clippy -p support-bot -- -D warnings
 
 All passed after slice 4.
 
+### Implementation slice 5: remove support-bot close effects
+
+Files touched:
+
+- `lib/support-bot/src/user_thread_run.rs`
+- `lib/support-bot/src/handler.rs`
+
+Changes:
+
+- Removed support-bot `MarkResolved` emission from the `finish_request` path.
+- Removed support-bot `MarkStopped` emission from the tool-loop-limit path.
+- Tool-loop-limit now sets `support_bot.status = "stopped"` in thread
+  metadata before persisting final state.
+- Finish remains metadata-only: `finish_request` sets
+  `support_bot.status = "finished"` and the handler persists that state.
+- Updated support-bot tests to assert metadata lifecycle state instead of L3
+  close effects.
+
+Verification run:
+
+```bash
+cargo fmt -p support-bot --check
+cargo test -p support-bot
+cargo clippy -p support-bot -- -D warnings
+```
+
+All passed after slice 5.
+
+### Implementation slice 6: remove L3 business lifecycle
+
+Files touched:
+
+- `lib/thread-bot/migrations/20260408_001_initial.sql`
+- `lib/thread-bot/src/actor.rs`
+- `lib/thread-bot/src/actor_tests.rs`
+- `lib/thread-bot/src/handle.rs`
+- `lib/thread-bot/src/handler.rs`
+- `lib/thread-bot/src/lib.rs`
+- `lib/thread-bot/src/pg_store.rs`
+- `lib/thread-bot/src/runtime.rs`
+- `lib/thread-bot/src/store.rs`
+- `lib/thread-bot/src/testutil.rs`
+- `lib/thread-bot/src/types.rs`
+- `lib/thread-bot/tests/common/mod.rs`
+- `lib/thread-bot/tests/pg_store_tests.rs`
+- `lib/support-bot/src/debug_export.rs`
+- `lib/support-bot/src/handler.rs`
+- `lib/support-bot/src/notifier.rs`
+- `lib/support-bot/src/testutil.rs`
+- `examples/hello_thread_bot/src/main.rs`
+- `lib/support-bot/README.md`
+
+Changes:
+
+- Removed `ThreadStatus` from Layer 3 records, snapshots, upsert inputs,
+  store rows, and the initial migration.
+- Removed status-oriented store/handle APIs:
+  `list_threads_by_status`, `update_thread_status`, `resolve_thread`, and
+  `stop_thread`.
+- Added status-free `ThreadStore::list_threads(...)` and
+  `ThreadBotHandle::list_threads(...)`.
+- Removed `ThreadEffect::MarkResolved`, `ThreadEffect::MarkStopped`,
+  `ThreadCloseReason`, and `ThreadHandler::on_thread_closed`.
+- Removed actor lifecycle transitions and close-effect execution; actors now
+  stop only for channel shutdown, critical effect failure, or idle teardown.
+- Updated support-bot debug/export/test helpers for status-free Layer 3
+  records.
+- Updated `hello_thread_bot` to store example lifecycle under metadata instead
+  of calling L3 close APIs.
+- Updated pg-store and actor tests to assert persisted tracking/progress and
+  metadata instead of L3 lifecycle state.
+
+Verification run:
+
+```bash
+cargo fmt -p thread-bot --check
+cargo fmt -p support-bot --check
+cargo fmt -p hello-thread-bot --check
+cargo test -p thread-bot
+cargo test -p support-bot
+cargo check -p hello-thread-bot
+cargo clippy -p thread-bot -- -D warnings
+cargo clippy -p support-bot -- -D warnings
+cargo clippy -p hello-thread-bot -- -D warnings
+```
+
+All passed after slice 6. `fmt --check` initially requested mechanical wrapping
+in `thread-bot` and `support-bot`; `cargo fmt -p thread-bot -p support-bot -p
+hello-thread-bot` was applied and checks were rerun.
+
 ## Next tasks
 
 Prefer one small reviewable slice at a time.
 
-1. Continue removing L3 business lifecycle.
-   - Remove remaining support-bot `MarkResolved`/`MarkStopped` emissions from
-     finish and tool-loop-limit paths once equivalent metadata-only effects
-     are in place.
-   - Eventually remove `ThreadStatus`, `MarkResolved`, `MarkStopped`, and
-     `on_thread_closed` from Layer 3.
-
-2. Add `thread_kind`.
+1. Add `thread_kind`.
    - Update existing initial migration, not a forward migration.
    - Add `thread_kind` to record/input types and store queries.
    - Replace RFC-era `kind` wording in implementation with `thread_kind`.
 
-3. Add lazy invocation API.
+2. Add lazy invocation API.
    - Introduce `ThreadInvocation` and `ThreadTrigger`.
    - Handler receives lightweight record plus trigger.
    - Full snapshot is built only via `ctx.build_thread_snapshot(thread_id)`.
    - Update support-bot user flow to explicitly build snapshot only where
      LLM context needs transcript.
 
-4. Add thread links and linked effects.
+3. Add thread links and linked effects.
    - Add `thread_links` table to the initial migration.
    - Add store APIs for forward and reverse lookups.
    - Add `EnsureLinkedThread`.
@@ -244,7 +327,7 @@ Prefer one small reviewable slice at a time.
    - Move support engineer thread creation out of `MattermostSupportNotifier`
      raw API calls and into effects.
 
-5. Keep raw-post path removed.
+4. Keep raw-post path removed.
    - `execute_raw_post_effects` has been removed from runtime.
    - `ThreadHandler::handle_raw_post` has been removed.
    - `build_raw_engineer_thread_snapshot` is not present.

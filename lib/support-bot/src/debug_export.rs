@@ -7,7 +7,7 @@ use crate::notifier::{
 };
 use crate::state::SupportThreadStatus;
 use serde_json::json;
-use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadStatus};
+use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect};
 use tracing::{info, warn};
 
 pub(crate) async fn handle_debug_export_html(
@@ -74,7 +74,7 @@ pub(crate) async fn handle_debug_export_html(
             })
         })
         .collect::<Vec<_>>();
-    let summary = build_report_summary(record.status, &record.metadata, &traces_by_post);
+    let summary = build_report_summary(&record.metadata, &traces_by_post);
 
     let html = render_thread_html_report(
         &record.thread_id,
@@ -150,7 +150,6 @@ fn report_post_from_thread_message(message: &thread_bot::ThreadMessage) -> Suppo
 }
 
 fn build_report_summary(
-    thread_status: ThreadStatus,
     thread_metadata: &serde_json::Value,
     traces: &[SupportReportTrace],
 ) -> SupportReportSummary {
@@ -163,10 +162,7 @@ fn build_report_summary(
         Ok(state) => serde_json::to_string_pretty(&state).unwrap_or_else(|_| "{}".to_string()),
         Err(error) => format!("failed to decode support state: {error}"),
     };
-    let thread_status = serde_json::to_value(thread_status)
-        .ok()
-        .and_then(|value| value.as_str().map(ToString::to_string))
-        .unwrap_or_else(|| format!("{thread_status:?}"));
+    let thread_status = "tracked".to_string();
 
     let mut tool_calls = Vec::new();
     let mut tool_errors = 0;

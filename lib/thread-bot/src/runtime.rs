@@ -263,7 +263,6 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
                 root_post_id: thread_id.clone(),
                 channel_id: channel_id.clone(),
                 creator_user_id: user_id.clone(),
-                status: ThreadStatus::New,
                 metadata: serde_json::Value::Null,
                 last_seen_post_id: None,
                 last_seen_post_at: None,
@@ -312,7 +311,6 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             root_post_id: thread_id.clone(),
             channel_id: channel_id.clone(),
             creator_user_id: user_id,
-            status: ThreadStatus::New,
             metadata: serde_json::Value::Null,
         };
 

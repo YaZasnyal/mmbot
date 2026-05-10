@@ -1,20 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Thread status in the lifecycle
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ThreadStatus {
-    /// Transient state: thread is tracked but first handler run hasn't completed
-    New,
-    /// Thread is actively tracked and processed
-    Active,
-    /// Thread was resolved (e.g., by ✅ reaction)
-    Resolved,
-    /// Thread was stopped (e.g., by 🛑 reaction)
-    Stopped,
-}
-
 /// Lightweight thread record from database (without messages)
 #[derive(Debug, Clone)]
 pub struct ThreadRecord {
@@ -22,7 +8,6 @@ pub struct ThreadRecord {
     pub root_post_id: String,
     pub channel_id: String,
     pub creator_user_id: String,
-    pub status: ThreadStatus,
     pub metadata: serde_json::Value,
     pub last_seen_post_id: Option<String>,
     pub last_seen_post_at: Option<DateTime<Utc>>,
@@ -55,7 +40,6 @@ pub struct ThreadInfo {
     pub root_post_id: String,
     pub channel_id: String,
     pub creator_user_id: String,
-    pub status: ThreadStatus,
     pub metadata: serde_json::Value,
     pub last_seen_post_id: Option<String>,
     pub last_seen_post_at: Option<DateTime<Utc>>,
@@ -72,7 +56,6 @@ impl From<ThreadRecord> for ThreadInfo {
             root_post_id: record.root_post_id,
             channel_id: record.channel_id,
             creator_user_id: record.creator_user_id,
-            status: record.status,
             metadata: record.metadata,
             last_seen_post_id: record.last_seen_post_id,
             last_seen_post_at: record.last_seen_post_at,
@@ -155,7 +138,6 @@ pub struct UpsertThread {
     pub root_post_id: String,
     pub channel_id: String,
     pub creator_user_id: String,
-    pub status: ThreadStatus,
     pub metadata: serde_json::Value,
 }
 
