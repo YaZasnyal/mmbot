@@ -3,9 +3,10 @@ use crate::config::{
     DebugCommandConfig, EngineerNotificationConfig, InstructionConfig, LlmConfig, SupportBotLimits,
     SupportRouteConfig, ToolConfig,
 };
-use crate::conversation::{build_llm_messages, store_state, STATE_KEY, TRACE_KEY};
+use crate::conversation::{build_llm_messages, STATE_KEY, TRACE_KEY};
 use crate::debug::DebugResponse;
 use crate::llm::{ChatMessage, ChatRole, LlmRequest, LlmResponse};
+use crate::metadata::store_thread_state as store_state;
 use crate::state::{SupportThreadState, SupportThreadStatus};
 use crate::testutil::PanicStore;
 use crate::tools::{

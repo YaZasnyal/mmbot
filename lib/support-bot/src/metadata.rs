@@ -8,7 +8,7 @@ pub(crate) const SUPPORT_METADATA_KEY: &str = "support_bot";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum SupportPostKind {
+pub(crate) enum SupportMetadataKind {
     AssistantResponse,
     BotMessage,
     DebugResponse,
@@ -23,8 +23,8 @@ pub(crate) enum SupportPostKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct SupportPostMetadata {
-    pub kind: SupportPostKind,
+pub(crate) struct SupportMetadata {
+    pub kind: SupportMetadataKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_thread_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -39,8 +39,8 @@ pub(crate) struct SupportPostMetadata {
     pub reason: Option<String>,
 }
 
-impl SupportPostMetadata {
-    pub(crate) fn new(kind: SupportPostKind) -> Self {
+impl SupportMetadata {
+    pub(crate) fn new(kind: SupportMetadataKind) -> Self {
         Self {
             kind,
             source_thread_id: None,
@@ -52,7 +52,7 @@ impl SupportPostMetadata {
         }
     }
 
-    pub(crate) fn for_source_thread(kind: SupportPostKind, thread: &Thread) -> Self {
+    pub(crate) fn for_source_thread(kind: SupportMetadataKind, thread: &Thread) -> Self {
         Self {
             source_thread_id: Some(thread.info.thread_id.clone()),
             source_root_post_id: Some(thread.info.root_post_id.clone()),
@@ -65,7 +65,7 @@ impl SupportPostMetadata {
         Self {
             tool_call_id: Some(call_id.to_string()),
             action: Some(action.into()),
-            ..Self::new(SupportPostKind::ToolAction)
+            ..Self::new(SupportMetadataKind::ToolAction)
         }
     }
 
@@ -73,7 +73,7 @@ impl SupportPostMetadata {
         Self {
             source_thread_id: Some(source_thread_id.into()),
             reason: Some("engineer_request".to_string()),
-            ..Self::new(SupportPostKind::ThreadHtmlReport)
+            ..Self::new(SupportMetadataKind::ThreadHtmlReport)
         }
     }
 }

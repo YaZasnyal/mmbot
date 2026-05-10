@@ -1,5 +1,5 @@
 use crate::handler::ENGINEER_LINK_KIND;
-use crate::metadata::{metadata_value, SupportPostKind, SupportPostMetadata};
+use crate::metadata::{metadata_value, SupportMetadataKind, SupportMetadata};
 use crate::notifier::{status_update_message, support_post_props};
 use crate::output::sanitize_user_visible_message;
 use crate::tools::{SupportAction, ToolResult};
@@ -31,7 +31,7 @@ pub(crate) fn apply_action(
             run.reply(
                 thread,
                 message,
-                metadata_value(&SupportPostMetadata::tool_action(
+                metadata_value(&SupportMetadata::tool_action(
                     call_id,
                     "send_user_message",
                 ))?,
@@ -46,7 +46,7 @@ pub(crate) fn apply_action(
                     link_kind: ENGINEER_LINK_KIND.to_string(),
                 },
                 message: message.clone(),
-                metadata: support_post_props(SupportPostKind::EngineerNotification, thread),
+                metadata: support_post_props(SupportMetadataKind::EngineerNotification, thread),
             });
 
             ToolResult {
@@ -66,7 +66,7 @@ pub(crate) fn apply_action(
                     link_kind: ENGINEER_LINK_KIND.to_string(),
                 },
                 message: status_update_message(thread, run.status(), run.finished_summary()),
-                metadata: support_post_props(SupportPostKind::StatusUpdate, thread),
+                metadata: support_post_props(SupportMetadataKind::StatusUpdate, thread),
             });
             finished_result(call_id, summary, "queued", None)
         }

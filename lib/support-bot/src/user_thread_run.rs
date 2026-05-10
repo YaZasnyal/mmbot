@@ -1,6 +1,5 @@
-use crate::conversation::{store_state, with_trace_metadata};
 use crate::llm::{ChatMessage, ChatRole};
-use crate::metadata::SupportPostKind;
+use crate::metadata::{store_message_trace, store_thread_state, SupportMetadataKind};
 use crate::notifier::{quote_for_mattermost, support_post_props};
 use crate::state::{SupportThreadState, SupportThreadStatus};
 use crate::tools::ToolCall;
@@ -80,7 +79,7 @@ impl UserThreadRun {
                 link_kind: crate::handler::ENGINEER_LINK_KIND.to_string(),
             },
             message: format!("**Bot message**\n\n{}", quote_for_mattermost(&message)),
-            metadata: support_post_props(SupportPostKind::BotMessage, thread),
+            metadata: support_post_props(SupportMetadataKind::BotMessage, thread),
         });
     }
 
@@ -103,7 +102,7 @@ impl UserThreadRun {
                 source_link,
                 quote_for_mattermost(&message.message)
             ),
-            metadata: support_post_props(SupportPostKind::UserMessage, thread),
+            metadata: support_post_props(SupportMetadataKind::UserMessage, thread),
         });
     }
 
@@ -154,7 +153,7 @@ impl UserThreadRun {
         thread: &Thread,
         trigger_message: &ThreadMessage,
     ) -> Result<(), ThreadBotError> {
-        let trace_metadata = with_trace_metadata(&trigger_message.metadata, &self.trace)?;
+        let trace_metadata = store_message_trace(&trigger_message.metadata, &self.trace)?;
         info!(
             thread_id = %thread.info.thread_id,
             post_id = %trigger_message.post_id,
@@ -167,7 +166,7 @@ impl UserThreadRun {
             post_id: trigger_message.post_id.clone(),
             metadata: trace_metadata,
         });
-        let thread_metadata = store_state(&thread.info.metadata, &self.state)?;
+        let thread_metadata = store_thread_state(&thread.info.metadata, &self.state)?;
         info!(
             thread_id = %thread.info.thread_id,
             metadata_key = "support_bot",

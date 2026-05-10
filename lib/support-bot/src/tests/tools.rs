@@ -1,5 +1,13 @@
 use super::*;
 
+fn workflow_tool(name: &str) -> WorkflowTool {
+    let spec = WORKFLOW_TOOL_SPECS
+        .iter()
+        .find(|spec| spec.name == name)
+        .expect("workflow tool spec should exist");
+    WorkflowTool::new(spec)
+}
+
 #[test]
 fn registers_default_workflow_tools() {
     let mut registry = ToolRegistry::new();
@@ -19,7 +27,7 @@ fn registers_default_workflow_tools() {
 
 #[tokio::test]
 async fn workflow_tool_returns_support_action() {
-    let tool = WorkflowTool::send_user_message();
+    let tool = workflow_tool("send_user_message");
     let outcome = tool
         .call(
             ToolContext::without_thread(),
@@ -42,7 +50,7 @@ async fn workflow_tool_returns_support_action() {
 
 #[tokio::test]
 async fn workflow_tool_rejects_empty_required_string() {
-    let tool = WorkflowTool::send_user_message();
+    let tool = workflow_tool("send_user_message");
     let error = tool
         .call(
             ToolContext::without_thread(),
@@ -62,7 +70,7 @@ async fn workflow_tool_rejects_empty_required_string() {
 
 #[tokio::test]
 async fn workflow_tool_rejects_wrong_argument_type() {
-    let tool = WorkflowTool::notify_engineer();
+    let tool = workflow_tool("notify_engineer");
     let error = tool
         .call(
             ToolContext::without_thread(),
@@ -82,7 +90,7 @@ async fn workflow_tool_rejects_wrong_argument_type() {
 
 #[tokio::test]
 async fn workflow_tool_rejects_extra_fields() {
-    let tool = WorkflowTool::finish_request();
+    let tool = workflow_tool("finish_request");
     let error = tool
         .call(
             ToolContext::without_thread(),

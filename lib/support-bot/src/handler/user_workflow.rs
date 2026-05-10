@@ -1,7 +1,7 @@
-use crate::conversation::{
-    build_llm_messages, load_state, result_to_message, truncate_utf8,
+use crate::conversation::{build_llm_messages, result_to_message, truncate_utf8};
+use crate::metadata::{
+    load_thread_state, metadata_value, SupportMetadata, SupportMetadataKind,
 };
-use crate::metadata::{metadata_value, SupportPostKind, SupportPostMetadata};
 use crate::notifier::{source_post_link, support_post_props};
 use crate::output::sanitize_user_visible_message;
 use crate::state::SupportThreadStatus;
@@ -43,7 +43,7 @@ impl SupportBotHandler {
         };
         Span::current().record("post_id", tracing::field::display(trigger_post_id));
 
-        let state = load_state(&record.metadata)?;
+        let state = load_thread_state(&record.metadata)?;
         if !matches!(state.status, SupportThreadStatus::Active) {
             info!(
                 status = ?state.status,
@@ -146,8 +146,8 @@ impl SupportBotHandler {
                     run.reply(
                         &thread,
                         content,
-                        metadata_value(&SupportPostMetadata::new(
-                            SupportPostKind::AssistantResponse,
+                        metadata_value(&SupportMetadata::new(
+                            SupportMetadataKind::AssistantResponse,
                         ))?,
                     );
                     self.metrics.record_reply("user", "success");
@@ -223,13 +223,13 @@ impl SupportBotHandler {
                 self.config.limits.max_tool_calls_per_round,
                 run.trace_summary(),
             ),
-            metadata: support_post_props(SupportPostKind::EngineerNotification, &thread),
+            metadata: support_post_props(SupportMetadataKind::EngineerNotification, &thread),
         });
 
         run.reply(
             &thread,
             failure_message,
-            metadata_value(&SupportPostMetadata::new(SupportPostKind::ToolLoopLimit))?,
+            metadata_value(&SupportMetadata::new(SupportMetadataKind::ToolLoopLimit))?,
         );
         self.metrics.record_reply("user", "success");
         run.stop_request(Some("tool loop limit reached".to_string()));

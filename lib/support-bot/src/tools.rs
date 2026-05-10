@@ -118,105 +118,109 @@ impl ToolRegistry {
 }
 
 pub fn register_default_workflow_tools(registry: &mut ToolRegistry) -> Result<()> {
-    registry.register(WorkflowTool::send_user_message())?;
-    registry.register(WorkflowTool::notify_engineer())?;
-    registry.register(WorkflowTool::finish_request())?;
+    for spec in WORKFLOW_TOOL_SPECS {
+        registry.register(WorkflowTool::new(spec))?;
+    }
     Ok(())
 }
 pub use crate::remote_mcp::register_remote_mcp_tools;
 
 struct WorkflowTool {
-    name: &'static str,
-    description: &'static str,
-    kind: WorkflowToolKind,
+    spec: &'static WorkflowToolSpec,
 }
 
 impl WorkflowTool {
-    fn send_user_message() -> Self {
-        Self {
-            name: "send_user_message",
-            description: "Send a message to the user in the support thread.",
-            kind: WorkflowToolKind::SendUserMessage,
-        }
-    }
-
-    fn notify_engineer() -> Self {
-        Self {
-            name: "notify_engineer",
-            description: "Send diagnostic context or a question to the engineer channel.",
-            kind: WorkflowToolKind::NotifyEngineer,
-        }
-    }
-
-    fn finish_request() -> Self {
-        Self {
-            name: "finish_request",
-            description: "Mark the support request as finished.",
-            kind: WorkflowToolKind::FinishRequest,
-        }
+    fn new(spec: &'static WorkflowToolSpec) -> Self {
+        Self { spec }
     }
 }
 
-#[derive(Clone, Copy)]
-enum WorkflowToolKind {
-    SendUserMessage,
-    NotifyEngineer,
-    FinishRequest,
+struct WorkflowToolSpec {
+    name: &'static str,
+    description: &'static str,
+    input_schema: fn() -> serde_json::Value,
 }
+
+const WORKFLOW_TOOL_SPECS: &[WorkflowToolSpec] = &[
+    WorkflowToolSpec {
+        name: "send_user_message",
+        description: "Send a message to the user in the support thread.",
+        input_schema: workflow_message_schema,
+    },
+    WorkflowToolSpec {
+        name: "notify_engineer",
+        description: "Send diagnostic context or a question to the engineer channel.",
+        input_schema: workflow_message_schema,
+    },
+    WorkflowToolSpec {
+        name: "finish_request",
+        description: "Mark the support request as finished.",
+        input_schema: finish_request_schema,
+    },
+];
 
 #[async_trait]
 impl SupportTool for WorkflowTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: self.name.to_string(),
-            description: self.description.to_string(),
-            input_schema: match self.kind {
-                WorkflowToolKind::SendUserMessage | WorkflowToolKind::NotifyEngineer => {
-                    serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "message": { "type": "string" }
-                        },
-                        "required": ["message"],
-                        "additionalProperties": false
-                    })
-                }
-                WorkflowToolKind::FinishRequest => serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "summary": { "type": "string" }
-                    },
-                    "additionalProperties": false
-                }),
-            },
+            name: self.spec.name.to_string(),
+            description: self.spec.description.to_string(),
+            input_schema: (self.spec.input_schema)(),
             kind: ToolKind::Workflow,
         }
     }
 
     async fn call(&self, _ctx: ToolContext, call: ToolCall) -> Result<ToolExecutionOutcome> {
-        let action = match self.kind {
-            WorkflowToolKind::SendUserMessage => {
+        let action = match call.name.as_str() {
+            "send_user_message" => {
                 let args: WorkflowMessageArgs = parse_workflow_args(call.arguments)?;
                 SupportAction::SendUserMessage {
                     message: non_empty_string(args.message, "message")?,
                 }
             }
-            WorkflowToolKind::NotifyEngineer => {
+            "notify_engineer" => {
                 let args: WorkflowMessageArgs = parse_workflow_args(call.arguments)?;
                 SupportAction::NotifyEngineer {
                     message: non_empty_string(args.message, "message")?,
                 }
             }
-            WorkflowToolKind::FinishRequest => {
+            "finish_request" => {
                 let args: FinishRequestArgs = parse_workflow_args(call.arguments)?;
                 SupportAction::FinishRequest {
                     summary: args.summary.and_then(non_empty_optional_string),
                 }
             }
+            _ => {
+                return Err(SupportBotError::Tool(format!(
+                    "unsupported workflow tool: {}",
+                    call.name
+                )));
+            }
         };
 
         Ok(ToolExecutionOutcome::Action(action))
     }
+}
+
+fn workflow_message_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "message": { "type": "string" }
+        },
+        "required": ["message"],
+        "additionalProperties": false
+    })
+}
+
+fn finish_request_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "summary": { "type": "string" }
+        },
+        "additionalProperties": false
+    })
 }
 
 #[derive(Debug, Deserialize)]

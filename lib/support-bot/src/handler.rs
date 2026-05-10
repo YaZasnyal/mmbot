@@ -1,9 +1,10 @@
 use crate::config::SupportBotConfig;
-use crate::conversation::{load_state, store_state};
 use crate::debug::{DebugCommand, DebugCommandHandler};
 use crate::debug_export::handle_debug_export_html;
 use crate::llm::LlmClient;
-use crate::metadata::{metadata_value, SupportPostKind, SupportPostMetadata};
+use crate::metadata::{
+    load_thread_state, metadata_value, store_thread_state, SupportMetadata, SupportMetadataKind,
+};
 use crate::metrics::SupportBotMetricsHandle;
 use crate::notifier::{engineer_thread_root_message, source_post_link, support_post_props};
 use crate::state::SupportThreadStatus;
@@ -137,7 +138,7 @@ impl SupportBotHandler {
         Ok(vec![ThreadEffect::Reply {
             target: ThreadTarget::CurrentThread,
             message: response.message,
-            metadata: metadata_value(&SupportPostMetadata::new(SupportPostKind::DebugResponse))?,
+            metadata: metadata_value(&SupportMetadata::new(SupportMetadataKind::DebugResponse))?,
         }])
     }
 
@@ -167,9 +168,9 @@ impl SupportBotHandler {
                     thread,
                     source_post_link(&ctx.config, &thread.info.root_post_id),
                 ),
-                metadata: support_post_props(SupportPostKind::EngineerThreadRoot, thread),
-                thread_metadata: metadata_value(&SupportPostMetadata::for_source_thread(
-                    SupportPostKind::EngineerThread,
+                metadata: support_post_props(SupportMetadataKind::EngineerThreadRoot, thread),
+                thread_metadata: metadata_value(&SupportMetadata::for_source_thread(
+                    SupportMetadataKind::EngineerThread,
                     thread,
                 ))?,
             },
@@ -242,7 +243,7 @@ impl SupportBotHandler {
             _ => return None,
         };
 
-        let mut state = match load_state(metadata) {
+        let mut state = match load_thread_state(metadata) {
             Ok(state) => state,
             Err(error) => {
                 warn!(
@@ -259,7 +260,7 @@ impl SupportBotHandler {
         }
         state.status = status;
 
-        match store_state(metadata, &state) {
+        match store_thread_state(metadata, &state) {
             Ok(metadata) => Some(ThreadEffect::SetThreadMetadata {
                 target: ThreadMetadataTarget::CurrentThread,
                 metadata,

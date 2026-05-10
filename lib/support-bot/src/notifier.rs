@@ -1,5 +1,5 @@
 use crate::error::{Result, SupportBotError};
-use crate::metadata::{metadata_value, SupportPostKind, SupportPostMetadata};
+use crate::metadata::{metadata_value, SupportMetadataKind, SupportMetadata};
 use crate::state::SupportThreadStatus;
 use mattermost_api::apis::posts_api;
 use mattermost_api::{apis::configuration::Configuration, models};
@@ -18,6 +18,8 @@ impl DebugReportPoster {
         Self { config }
     }
 
+    // Intentional direct Mattermost API side effect for debug-report HTML upload.
+    // Keep this narrow and avoid expanding it into normal support workflow paths.
     #[tracing::instrument(
         level = "info",
         skip_all,
@@ -352,8 +354,8 @@ fn markdown_fence_for(message: &str) -> String {
     "`".repeat((longest_run + 1).max(3))
 }
 
-pub(crate) fn support_post_props(kind: SupportPostKind, thread: &Thread) -> serde_json::Value {
-    metadata_value(&SupportPostMetadata::for_source_thread(kind, thread))
+pub(crate) fn support_post_props(kind: SupportMetadataKind, thread: &Thread) -> serde_json::Value {
+    metadata_value(&SupportMetadata::for_source_thread(kind, thread))
         .unwrap_or(serde_json::Value::Null)
 }
 

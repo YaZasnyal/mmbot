@@ -1,7 +1,8 @@
-use crate::conversation::{load_state, load_trace};
 use crate::handler::ENGINEER_LINK_KIND;
 use crate::llm::{ChatMessage, ChatRole};
-use crate::metadata::{metadata_value, SupportPostKind, SupportPostMetadata};
+use crate::metadata::{
+    load_message_trace, load_thread_state, metadata_value, SupportMetadata, SupportMetadataKind,
+};
 use crate::notifier::{
     render_thread_html_report, DebugReportPoster, SupportReportPost, SupportReportSummary,
     SupportReportToolCall, SupportReportTrace,
@@ -10,6 +11,9 @@ use crate::state::SupportThreadStatus;
 use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadTarget};
 use tracing::{info, warn};
 
+// NOTE: This module is the only intentional direct Mattermost side-effect path.
+// We upload an HTML attachment and create a post via API here because
+// ThreadEffect currently has no file-attachment variant.
 pub(crate) async fn handle_debug_export_html(
     engineer_thread: &Thread,
     ctx: &ThreadContext,
@@ -67,7 +71,7 @@ pub(crate) async fn handle_debug_export_html(
         .await?
         .into_iter()
         .filter_map(|message| {
-            let trace = load_trace(&message.metadata).ok()?;
+            let trace = load_message_trace(&message.metadata).ok()?;
             if trace.is_empty() {
                 return None;
             }
@@ -103,7 +107,7 @@ pub(crate) async fn handle_debug_export_html(
                 "Attached: support thread HTML export for `{}`.",
                 record.thread_id
             ),
-            metadata_value(&SupportPostMetadata::thread_html_report(&record.thread_id))?,
+            metadata_value(&SupportMetadata::thread_html_report(&record.thread_id))?,
         )
         .await?;
     info!(
@@ -124,7 +128,7 @@ pub(crate) async fn handle_debug_export_html(
 }
 
 pub(crate) fn debug_response_metadata() -> serde_json::Value {
-    metadata_value(&SupportPostMetadata::new(SupportPostKind::DebugResponse))
+    metadata_value(&SupportMetadata::new(SupportMetadataKind::DebugResponse))
         .unwrap_or(serde_json::Value::Null)
 }
 
@@ -141,7 +145,7 @@ fn build_report_summary(
     thread_metadata: &serde_json::Value,
     traces: &[SupportReportTrace],
 ) -> SupportReportSummary {
-    let decoded_state = load_state(thread_metadata);
+    let decoded_state = load_thread_state(thread_metadata);
     let support_status = decoded_state
         .as_ref()
         .map(|state| support_status_label(&state.status).to_string())

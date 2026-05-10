@@ -27,10 +27,10 @@ and normalized `thread_links`.
 The next simplification pass should remove compatibility leftovers and collapse
 workflow-only ceremony. Best payoff:
 
-1. Delete or split legacy `MattermostSupportNotifier`.
-2. Make `UserThreadRun` and `workflow::apply_action` synchronous effect builders.
-3. Move user workflow loop out of `handler.rs`.
-4. Split the giant handler test module by behavior.
+1. Delete or split legacy `MattermostSupportNotifier` (done).
+2. Make `UserThreadRun` and `workflow::apply_action` synchronous effect builders. (done)
+3. Move user workflow loop out of `handler.rs`. (done)
+4. Split the giant handler test module by behavior. (done)
 
 ## Refactor Candidates
 
@@ -167,7 +167,7 @@ Expected result:
 - Smaller compile-error blast radius when changing one behavior.
 - Easier to evolve user workflow tests after extraction.
 
-### 5. Collapse workflow tool boilerplate
+### 5. Collapse workflow tool boilerplate (done)
 
 Current state:
 
@@ -193,7 +193,7 @@ Expected result:
 - Fewer private types.
 - Easier to scan supported workflow actions.
 
-### 6. Normalize support metadata types
+### 6. Normalize support metadata types (done)
 
 Current state:
 
@@ -213,6 +213,19 @@ Relevant locations:
 - `lib/support-bot/src/conversation.rs:107`
 - `lib/support-bot/src/handler.rs:528`
 
+Applied:
+
+- Renamed `SupportPostMetadata` to neutral `SupportMetadata`.
+- Renamed `SupportPostKind` to `SupportMetadataKind`.
+- Kept one shared metadata shape for both post metadata and thread metadata
+  (including engineer linked thread metadata) to remove naming mismatch without
+  introducing unnecessary split types.
+- Removed thin metadata wrappers from `conversation.rs`
+  (`load_state`, `store_state`, `load_trace`, `with_trace_metadata`).
+- Updated call sites to import metadata helpers directly from `metadata.rs`
+  (`load_thread_state`, `store_thread_state`, `load_message_trace`,
+  `store_message_trace`).
+
 Recommendation:
 
 - Introduce a small `SupportThreadMetadata` only if thread metadata needs a
@@ -226,7 +239,7 @@ Expected result:
 - Less semantic mismatch.
 - Fewer wrapper functions.
 
-### 7. Make debug export the only explicit direct-side-effect exception
+### 7. Make debug export the only explicit direct-side-effect exception (done)
 
 Current state:
 
@@ -255,12 +268,21 @@ Expected result:
 - Clear boundary.
 - No new generic effect machinery for one debug feature.
 
+Applied:
+
+- Kept debug HTML attachment upload isolated in `debug_export.rs` +
+  `DebugReportPoster`.
+- Added explicit code comments documenting this as an intentional exception to
+  effect-driven flow: file upload/post creation is done directly because
+  `ThreadEffect` has no file-attachment variant.
+- Did not introduce new generic `ThreadEffect` machinery.
+
 ## Suggested Order
 
 1. Done: synchronous `UserThreadRun`/`workflow` cleanup.
 2. Done: split/delete legacy notifier and `EngineerThreadRef`.
-3. Extract `user_workflow.rs` from `handler.rs`. Bigger move, easier after step 1.
-4. Split handler tests after extraction. Best done once module boundaries settle.
+3. Done: Extract `user_workflow.rs` from `handler.rs`. Bigger move, easier after step 1.
+4. Done: Split handler tests after extraction. Best done once module boundaries settle.
 5. Metadata/tool boilerplate cleanup as small opportunistic follow-ups.
 
 ## Checks

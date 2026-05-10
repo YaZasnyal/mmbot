@@ -1,6 +1,6 @@
 use crate::llm::{ChatMessage, ChatRole};
 use crate::metadata::{
-    load_message_trace, load_thread_state, store_message_trace, store_thread_state,
+    load_message_trace,
 };
 use crate::state::SupportThreadState;
 use crate::tools::ToolResult;
@@ -40,7 +40,7 @@ pub(crate) fn build_llm_messages(
 
     for message in thread_messages {
         messages.push(thread_message_to_chat_message(message, bot_user_id));
-        messages.extend(load_trace(&message.metadata)?);
+        messages.extend(load_message_trace(&message.metadata)?);
     }
 
     Ok(messages)
@@ -91,30 +91,6 @@ pub(crate) fn result_to_message(result: ToolResult, max_bytes: usize) -> ChatMes
     }
 
     ChatMessage::tool(result.call_id, truncated)
-}
-
-pub(crate) fn load_trace(metadata: &serde_json::Value) -> Result<Vec<ChatMessage>, ThreadBotError> {
-    load_message_trace(metadata)
-}
-
-pub(crate) fn with_trace_metadata(
-    metadata: &serde_json::Value,
-    trace: &[ChatMessage],
-) -> Result<serde_json::Value, ThreadBotError> {
-    store_message_trace(metadata, trace)
-}
-
-pub(crate) fn load_state(
-    metadata: &serde_json::Value,
-) -> Result<SupportThreadState, ThreadBotError> {
-    load_thread_state(metadata)
-}
-
-pub(crate) fn store_state(
-    metadata: &serde_json::Value,
-    state: &SupportThreadState,
-) -> Result<serde_json::Value, ThreadBotError> {
-    store_thread_state(metadata, state)
 }
 
 pub(crate) fn truncate_utf8(value: String, max_bytes: usize) -> String {
