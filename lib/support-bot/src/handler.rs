@@ -542,11 +542,6 @@ impl SupportBotHandler {
                         "source_channel_id": thread.info.channel_id
                     }
                 }),
-                link_metadata: json!({
-                    STATE_KEY: {
-                        "kind": "engineer_thread_link"
-                    }
-                }),
             },
             ThreadEffect::Reschedule,
         ]))

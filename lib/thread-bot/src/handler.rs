@@ -88,7 +88,6 @@ pub enum ThreadEffect {
         message: String,
         metadata: serde_json::Value,
         thread_metadata: serde_json::Value,
-        link_metadata: serde_json::Value,
     },
     /// Reschedule handler run after applying effects
     ///

@@ -288,7 +288,6 @@ async fn upsert_thread_link_creates_and_reads_forward_link() {
             source_thread_id: "thread_1".to_string(),
             link_kind: "engineer".to_string(),
             target_thread_id: "thread_2".to_string(),
-            metadata: json!({"created_by": "test"}),
         })
         .await
         .unwrap();
@@ -296,7 +295,6 @@ async fn upsert_thread_link_creates_and_reads_forward_link() {
     assert_eq!(link.source_thread_id, "thread_1");
     assert_eq!(link.link_kind, "engineer");
     assert_eq!(link.target_thread_id, "thread_2");
-    assert_eq!(link.metadata, json!({"created_by": "test"}));
 
     let found = store
         .get_thread_link("thread_1", "thread_2")
@@ -323,7 +321,6 @@ async fn upsert_thread_link_updates_existing_target() {
             source_thread_id: "thread_1".to_string(),
             link_kind: "engineer".to_string(),
             target_thread_id: "thread_2".to_string(),
-            metadata: json!({"version": 1}),
         })
         .await
         .unwrap();
@@ -332,7 +329,6 @@ async fn upsert_thread_link_updates_existing_target() {
             source_thread_id: "thread_1".to_string(),
             link_kind: "debug".to_string(),
             target_thread_id: "thread_2".to_string(),
-            metadata: json!({"version": 2}),
         })
         .await
         .unwrap();
@@ -341,7 +337,6 @@ async fn upsert_thread_link_updates_existing_target() {
     assert!(updated.updated_at >= created.updated_at);
     assert_eq!(updated.link_kind, "debug");
     assert_eq!(updated.target_thread_id, "thread_2");
-    assert_eq!(updated.metadata, json!({"version": 2}));
 
     let links = store.list_thread_links("thread_1").await.unwrap();
     assert_eq!(links.len(), 1);
@@ -366,7 +361,6 @@ async fn list_thread_links_and_reverse_links_are_ordered() {
             source_thread_id: "thread_1".to_string(),
             link_kind: "debug".to_string(),
             target_thread_id: "thread_3".to_string(),
-            metadata: json!({}),
         })
         .await
         .unwrap();
@@ -375,7 +369,6 @@ async fn list_thread_links_and_reverse_links_are_ordered() {
             source_thread_id: "thread_1".to_string(),
             link_kind: "engineer".to_string(),
             target_thread_id: "thread_2".to_string(),
-            metadata: json!({}),
         })
         .await
         .unwrap();
@@ -384,7 +377,6 @@ async fn list_thread_links_and_reverse_links_are_ordered() {
             source_thread_id: "thread_1".to_string(),
             link_kind: "engineer".to_string(),
             target_thread_id: "thread_4".to_string(),
-            metadata: json!({}),
         })
         .await
         .unwrap();
@@ -393,7 +385,6 @@ async fn list_thread_links_and_reverse_links_are_ordered() {
             source_thread_id: "thread_3".to_string(),
             link_kind: "source".to_string(),
             target_thread_id: "thread_2".to_string(),
-            metadata: json!({}),
         })
         .await
         .unwrap();

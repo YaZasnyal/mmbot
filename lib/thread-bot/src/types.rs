@@ -24,7 +24,6 @@ pub struct ThreadLink {
     pub source_thread_id: String,
     pub link_kind: String,
     pub target_thread_id: String,
-    pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -35,7 +34,6 @@ pub struct UpsertThreadLink {
     pub source_thread_id: String,
     pub link_kind: String,
     pub target_thread_id: String,
-    pub metadata: serde_json::Value,
 }
 
 /// Lightweight handler invocation.

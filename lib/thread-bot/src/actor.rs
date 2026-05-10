@@ -171,7 +171,7 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
 
             result = &mut handler_fut, if handler_running => {
                 handler_fut = pending_handler();
-                if handle_handler_result(result, a, &mut pending_run, &mut debounce_deadline).await {
+                if handle_handler_result(result, a, &mut debounce_deadline).await {
                     pending_run = reschedule_trigger.clone();
                     continue;
                 }
@@ -252,7 +252,6 @@ async fn idle_sleep_until(deadline: Option<Instant>) {
 async fn handle_handler_result<H: ThreadHandler>(
     (invocation, handler_duration, result): HandlerResult,
     a: &ActorCtx<H>,
-    pending_run: &mut Option<ThreadTrigger>,
     debounce_deadline: &mut Instant,
 ) -> bool {
     match result {
@@ -516,7 +515,6 @@ async fn execute_effects<H: ThreadHandler>(
                 message,
                 metadata,
                 thread_metadata,
-                link_metadata,
             } => {
                 let result = ensure_linked_thread(
                     thread,
@@ -528,7 +526,6 @@ async fn execute_effects<H: ThreadHandler>(
                         message,
                         metadata,
                         thread_metadata,
-                        link_metadata,
                     },
                 )
                 .await;
@@ -578,7 +575,6 @@ struct EnsureLinkedThreadRequest {
     message: String,
     metadata: serde_json::Value,
     thread_metadata: serde_json::Value,
-    link_metadata: serde_json::Value,
 }
 
 async fn resolve_thread_target<H: ThreadHandler>(
@@ -745,7 +741,6 @@ async fn ensure_linked_thread<H: ThreadHandler>(
             source_thread_id: source_thread.thread_id.clone(),
             link_kind: request.link_kind,
             target_thread_id: created.id,
-            metadata: request.link_metadata,
         })
         .await?;
 

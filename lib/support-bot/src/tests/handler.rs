@@ -5,7 +5,6 @@ use crate::config::{
 };
 use crate::conversation::{store_state, TRACE_KEY};
 use crate::debug::DebugResponse;
-use crate::debug_export::source_user_thread_id;
 use crate::llm::{ChatMessage, ChatRole, LlmResponse};
 use crate::state::{SupportThreadState, SupportThreadStatus};
 use crate::testutil::PanicStore;
@@ -189,16 +188,6 @@ fn thread_record(channel_id: &str, metadata: serde_json::Value) -> ThreadRecord 
     }
 }
 
-fn engineer_thread_with_source(source_thread_id: &str) -> Thread {
-    let mut thread = thread("engineers", "engineer root");
-    thread.messages[0].props = json!({
-        STATE_KEY: {
-            "source_thread_id": source_thread_id
-        }
-    });
-    thread
-}
-
 fn context() -> ThreadContext {
     ThreadContext {
         config: Arc::new(Default::default()),
@@ -276,9 +265,14 @@ impl ThreadStore for SnapshotStore {
 
     async fn list_reverse_thread_links(
         &self,
-        _target_thread_id: &str,
+        target_thread_id: &str,
     ) -> Result<Vec<ThreadLink>, ThreadBotError> {
-        panic!("store should not list reverse thread links")
+        Ok(self
+            .links
+            .iter()
+            .filter(|link| link.target_thread_id == target_thread_id)
+            .cloned()
+            .collect())
     }
 
     async fn update_thread_seen(
@@ -388,7 +382,6 @@ async fn context_with_snapshot(thread: &Thread) -> (ThreadContext, MockServer) {
             source_thread_id: thread.info.thread_id.clone(),
             link_kind: ENGINEER_LINK_KIND.to_string(),
             target_thread_id: "engineer-thread".to_string(),
-            metadata: json!({}),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }]
@@ -1150,7 +1143,6 @@ async fn finish_request_persists_finished_state_and_queues_status_notification()
             source_thread_id: thread.info.thread_id.clone(),
             link_kind: ENGINEER_LINK_KIND.to_string(),
             target_thread_id: "engineer-thread".to_string(),
-            metadata: json!({}),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }],
@@ -1212,14 +1204,6 @@ fn tool_registry_specs_are_still_empty_by_default() {
     let specs: Vec<ToolSpec> = registry.specs();
 
     assert!(specs.is_empty());
-}
-
-#[test]
-fn source_user_thread_id_is_read_from_engineer_root_props() {
-    assert_eq!(
-        source_user_thread_id(&engineer_thread_with_source("user-thread-1")).as_deref(),
-        Some("user-thread-1")
-    );
 }
 
 #[test]

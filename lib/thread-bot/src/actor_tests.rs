@@ -697,7 +697,6 @@ async fn actor_ensure_linked_thread_creates_tracked_thread_and_link() {
         message: "Engineer thread".into(),
         metadata: serde_json::json!({"kind": "engineer_root"}),
         thread_metadata: serde_json::json!({"status": "open"}),
-        link_metadata: serde_json::json!({"source": "test"}),
     }]);
 
     let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
@@ -717,7 +716,6 @@ async fn actor_ensure_linked_thread_creates_tracked_thread_and_link() {
         .find(|link| link.link_kind == "engineer")
         .expect("link should be stored");
     assert_eq!(link.target_thread_id, "reply_post_id");
-    assert_eq!(link.metadata, serde_json::json!({"source": "test"}));
 
     let linked_thread = store
         .thread_snapshot("reply_post_id")
@@ -776,7 +774,6 @@ async fn actor_reply_to_linked_threads_uses_stored_links() {
             source_thread_id: "thread1".into(),
             link_kind: "engineer".into(),
             target_thread_id: "engineer-thread".into(),
-            metadata: serde_json::json!({}),
         })
         .await
         .unwrap();

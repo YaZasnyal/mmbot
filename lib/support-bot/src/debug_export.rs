@@ -1,4 +1,5 @@
 use crate::conversation::{load_state, load_trace, STATE_KEY};
+use crate::handler::ENGINEER_LINK_KIND;
 use crate::llm::{ChatMessage, ChatRole};
 use crate::notifier::{
     render_thread_html_report, MattermostSupportNotifier, SupportReportPost, SupportReportSummary,
@@ -14,10 +15,17 @@ pub(crate) async fn handle_debug_export_html(
     engineer_thread: &Thread,
     ctx: &ThreadContext,
 ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
-    let Some(source_thread_id) = source_user_thread_id(engineer_thread) else {
+    let source_links = ctx
+        .store
+        .list_reverse_thread_links(&engineer_thread.info.thread_id)
+        .await?;
+    let source_link = source_links
+        .iter()
+        .find(|link| link.link_kind == ENGINEER_LINK_KIND);
+    let Some(source_thread_id) = source_link.map(|link| link.source_thread_id.as_str()) else {
         warn!(
             engineer_thread_id = %engineer_thread.info.thread_id,
-            "support-bot: debug-report source thread id missing in engineer thread props"
+            "support-bot: debug-report source thread link is missing"
         );
         return Ok(vec![ThreadEffect::Reply {
             target: ThreadTarget::CurrentThread,
@@ -123,18 +131,6 @@ pub(crate) async fn handle_debug_export_html(
         ),
         metadata: debug_response_metadata(),
     }])
-}
-
-pub(crate) fn source_user_thread_id(thread: &Thread) -> Option<String> {
-    thread
-        .messages
-        .iter()
-        .find(|message| message.post_id == thread.info.root_post_id)
-        .or_else(|| thread.messages.first())
-        .and_then(|message| message.props.get(STATE_KEY))
-        .and_then(|props| props.get("source_thread_id"))
-        .and_then(serde_json::Value::as_str)
-        .map(ToString::to_string)
 }
 
 pub(crate) fn debug_response_metadata() -> serde_json::Value {

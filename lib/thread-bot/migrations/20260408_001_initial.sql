@@ -22,7 +22,6 @@ CREATE TABLE thread_links (
     source_thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
     link_kind TEXT NOT NULL,
     target_thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (source_thread_id, target_thread_id)

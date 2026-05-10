@@ -82,7 +82,6 @@ struct ThreadLinkRow {
     source_thread_id: String,
     link_kind: String,
     target_thread_id: String,
-    metadata: serde_json::Value,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -93,7 +92,6 @@ impl From<ThreadLinkRow> for ThreadLink {
             source_thread_id: row.source_thread_id,
             link_kind: row.link_kind,
             target_thread_id: row.target_thread_id,
-            metadata: row.metadata,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -171,7 +169,7 @@ const MESSAGE_COLUMNS: &str = r#"
 "#;
 
 const THREAD_LINK_COLUMNS: &str = r#"
-    source_thread_id, link_kind, target_thread_id, metadata, created_at, updated_at
+    source_thread_id, link_kind, target_thread_id, created_at, updated_at
 "#;
 
 #[async_trait]
@@ -292,13 +290,11 @@ impl ThreadStore for PgThreadStore {
         let sql = format!(
             r#"
             INSERT INTO thread_links (
-                source_thread_id, link_kind, target_thread_id, metadata,
-                created_at, updated_at
+                source_thread_id, link_kind, target_thread_id, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $5)
+            VALUES ($1, $2, $3, $4, $4)
             ON CONFLICT (source_thread_id, target_thread_id) DO UPDATE SET
                 link_kind = EXCLUDED.link_kind,
-                metadata = EXCLUDED.metadata,
                 updated_at = EXCLUDED.updated_at
             RETURNING {THREAD_LINK_COLUMNS}
             "#
@@ -308,7 +304,6 @@ impl ThreadStore for PgThreadStore {
             .bind(&input.source_thread_id)
             .bind(&input.link_kind)
             .bind(&input.target_thread_id)
-            .bind(&input.metadata)
             .bind(now)
             .fetch_one(&self.pool)
             .await?;

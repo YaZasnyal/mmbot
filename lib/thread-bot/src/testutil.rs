@@ -177,7 +177,6 @@ impl ThreadStore for MockStore {
         let link = if let Some(existing) = state.links.get(&key) {
             ThreadLink {
                 link_kind: input.link_kind,
-                metadata: input.metadata,
                 updated_at: now,
                 ..existing.clone()
             }
@@ -186,7 +185,6 @@ impl ThreadStore for MockStore {
                 source_thread_id: input.source_thread_id,
                 link_kind: input.link_kind,
                 target_thread_id: input.target_thread_id,
-                metadata: input.metadata,
                 created_at: now,
                 updated_at: now,
             }
