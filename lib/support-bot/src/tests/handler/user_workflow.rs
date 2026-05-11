@@ -392,7 +392,6 @@ async fn stopped_user_thread_metadata_skips_workflow() {
     assert!(matches!(effects.as_slice(), [ThreadEffect::Noop]));
 }
 
-
 #[tokio::test]
 async fn finish_request_persists_finished_state_without_mark_resolved() {
     let call = ToolCall {

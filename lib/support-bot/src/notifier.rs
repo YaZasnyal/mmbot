@@ -1,5 +1,5 @@
 use crate::error::{Result, SupportBotError};
-use crate::metadata::{metadata_value, SupportMetadataKind, SupportMetadata};
+use crate::metadata::{metadata_value, SupportMetadata, SupportMetadataKind};
 use crate::state::SupportThreadStatus;
 use mattermost_api::apis::posts_api;
 use mattermost_api::{apis::configuration::Configuration, models};

@@ -492,9 +492,8 @@ fn message_record(message: &ThreadMessage) -> ThreadMessageRecord {
     }
 }
 
-
-mod routing;
+mod control_reactions;
 mod debug_report;
 mod engineer_thread;
+mod routing;
 mod user_workflow;
-mod control_reactions;

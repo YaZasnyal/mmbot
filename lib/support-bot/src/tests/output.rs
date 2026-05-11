@@ -42,8 +42,7 @@ fn strips_leading_thread_context_marker() {
 fn strips_multiple_leading_thread_context_markers() {
     assert_eq!(
         sanitize_user_visible_message(
-            "[post_id=post-1, user_id=bot] [post_id=post-2, user_id=user-1]\nDone."
-                .to_string()
+            "[post_id=post-1, user_id=bot] [post_id=post-2, user_id=user-1]\nDone.".to_string()
         )
         .as_deref(),
         Some("Done.")

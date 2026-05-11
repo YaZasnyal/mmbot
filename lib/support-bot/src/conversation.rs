@@ -1,7 +1,5 @@
 use crate::llm::{ChatMessage, ChatRole};
-use crate::metadata::{
-    load_message_trace,
-};
+use crate::metadata::load_message_trace;
 use crate::state::SupportThreadState;
 use crate::tools::ToolResult;
 use serde_json::json;

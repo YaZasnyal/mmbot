@@ -1,5 +1,5 @@
 use crate::handler::ENGINEER_LINK_KIND;
-use crate::metadata::{metadata_value, SupportMetadataKind, SupportMetadata};
+use crate::metadata::{metadata_value, SupportMetadata, SupportMetadataKind};
 use crate::notifier::{status_update_message, support_post_props};
 use crate::output::sanitize_user_visible_message;
 use crate::tools::{SupportAction, ToolResult};
@@ -31,10 +31,7 @@ pub(crate) fn apply_action(
             run.reply(
                 thread,
                 message,
-                metadata_value(&SupportMetadata::tool_action(
-                    call_id,
-                    "send_user_message",
-                ))?,
+                metadata_value(&SupportMetadata::tool_action(call_id, "send_user_message"))?,
             );
             run.await_next_user_message();
             sent_result(call_id)

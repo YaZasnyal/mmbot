@@ -1,7 +1,5 @@
 use crate::conversation::{build_llm_messages, result_to_message, truncate_utf8};
-use crate::metadata::{
-    load_thread_state, metadata_value, SupportMetadata, SupportMetadataKind,
-};
+use crate::metadata::{load_thread_state, metadata_value, SupportMetadata, SupportMetadataKind};
 use crate::notifier::{source_post_link, support_post_props};
 use crate::output::sanitize_user_visible_message;
 use crate::state::SupportThreadStatus;
@@ -12,8 +10,8 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Instant;
 use thread_bot::{
-    Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadMessage, ThreadRecord,
-    ThreadTarget, ThreadTrigger,
+    Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadMessage, ThreadRecord, ThreadTarget,
+    ThreadTrigger,
 };
 use tracing::{debug, info, warn, Span};
 
@@ -110,7 +108,8 @@ impl SupportBotHandler {
                     response
                 }
                 Err(error) => {
-                    self.metrics.record_llm_request("error", llm_started.elapsed());
+                    self.metrics
+                        .record_llm_request("error", llm_started.elapsed());
                     return Err(error.into());
                 }
             };

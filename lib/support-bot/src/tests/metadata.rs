@@ -23,11 +23,8 @@ fn message_trace_round_trips_under_support_bot_key() {
 
 #[test]
 fn post_metadata_serializes_kind_as_snake_case() {
-    let value = metadata_value(&SupportMetadata::tool_action(
-        "call-1",
-        "send_user_message",
-    ))
-    .unwrap();
+    let value =
+        metadata_value(&SupportMetadata::tool_action("call-1", "send_user_message")).unwrap();
 
     assert_eq!(value[SUPPORT_METADATA_KEY]["kind"], "tool_action");
     assert_eq!(value[SUPPORT_METADATA_KEY]["tool_call_id"], "call-1");
