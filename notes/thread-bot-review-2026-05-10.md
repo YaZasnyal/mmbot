@@ -274,7 +274,7 @@ This lets unit tests assert behavior without scraping logs.
 
 ## Suggested refactor slices
 
-### Slice 1: Small deletion pass, low risk
+### Slice 1: Small deletion pass, low risk (done)
 
 Target files:
 
@@ -288,6 +288,12 @@ Changes:
 - Stop spawning an actor for already tracked root posts when no command is sent.
 
 Expected result: less code in `runtime.rs`, no behavior change except avoiding pointless idle actor spawns.
+
+Status: done 2026-05-11.
+
+- Added shared post routing via `route_post()` and removed `handle_replayed_post()` duplication.
+- Added `post_to_upsert_thread_message()` so runtime bot-message persistence and actor incoming-message persistence use the same conversion rules.
+- Existing tracked root-post replay now advances the checkpoint without spawning an idle actor.
 
 ### Slice 2: Reconciliation guard and clearer semantics
 
@@ -351,9 +357,9 @@ Expected result: reaction behavior becomes readable enough to extend or test.
 
 ## Quick win checklist
 
-- [ ] Delete `handle_replayed_post()` by introducing shared `route_post()`.
-- [ ] Avoid actor spawn for already tracked root post replay without command.
-- [ ] Extract `UpsertThreadMessage` creation from `models::Post`.
+- [x] Delete `handle_replayed_post()` by introducing shared `route_post()`.
+- [x] Avoid actor spawn for already tracked root post replay without command.
+- [x] Extract `UpsertThreadMessage` creation from `models::Post`.
 - [ ] Extract checkpoint helper methods with policy names.
 - [ ] Add reconciliation single-flight guard.
 - [ ] Split `reconcile()` into channel-level helpers.

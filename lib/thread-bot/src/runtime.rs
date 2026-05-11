@@ -63,7 +63,9 @@ use mattermost_bot::{chrono, cron_tab};
 
 use crate::handle::ThreadBotHandle;
 
-use crate::actor::{get_root_post_id, is_root_post, ms_to_datetime, ThreadCommand};
+use crate::actor::{
+    get_root_post_id, is_root_post, ms_to_datetime, post_to_upsert_thread_message, ThreadCommand,
+};
 use crate::actor_registry::{ActorRegistry, ActorSpawnConfig};
 use crate::channel_messages::{channel_messages_after, latest_channel_post};
 use crate::error::ThreadBotError;
@@ -204,8 +206,11 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
         posted: &mattermost_bot::types::PostedEvent,
         mm_config: &Arc<Configuration>,
     ) {
-        let post = &posted.post.inner;
+        self.route_post(&posted.post.inner, mm_config).await;
+    }
 
+    /// Route a Mattermost post to the appropriate thread actor.
+    async fn route_post(&self, post: &models::Post, mm_config: &Arc<Configuration>) {
         if is_root_post(post) {
             self.handle_new_thread(post, mm_config).await;
         } else {
@@ -329,30 +334,9 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             let bot_user_id = self.bot_user_id.read().await;
             if let Some(bot_id) = bot_user_id.as_ref() {
                 if post.user_id.as_deref() == Some(bot_id.as_str()) {
-                    let bot_id = bot_id.clone();
                     drop(bot_user_id);
 
-                    let msg = UpsertThreadMessage {
-                        post_id: post.id.clone(),
-                        thread_id: root_post_id.to_string(),
-                        user_id: bot_id,
-                        is_bot_message: true,
-                        root_id: post.root_id.clone(),
-                        parent_post_id: post.root_id.clone(),
-                        metadata: serde_json::Value::Null,
-                        post_created_at: post
-                            .create_at
-                            .map(ms_to_datetime)
-                            .unwrap_or_else(chrono::Utc::now),
-                        post_updated_at: post.update_at.map(ms_to_datetime),
-                        post_deleted_at: post.delete_at.and_then(|ts| {
-                            if ts == 0 {
-                                None
-                            } else {
-                                Some(ms_to_datetime(ts))
-                            }
-                        }),
-                    };
+                    let msg = post_to_upsert_thread_message(post, root_post_id, true);
 
                     if let Err(e) = self.store.upsert_message(msg).await {
                         tracing::error!(post_id = %post.id, error = %e, "Failed to save bot message");
@@ -546,7 +530,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
                             break;
                         }
                     };
-                    self.handle_replayed_post(&post, config).await;
+                    self.route_post(&post, config).await;
                     replayed_count += 1;
                     last_replayed = Some(post);
                 }
@@ -576,16 +560,6 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
                     tracing::error!(channel_id = %cp.channel_id, error = %e, "Failed to mark channel reconciled");
                 }
             }
-        }
-    }
-
-    async fn handle_replayed_post(&self, post: &models::Post, mm_config: &Arc<Configuration>) {
-        if is_root_post(post) {
-            self.handle_new_thread(post, mm_config).await;
-        } else {
-            let root_post_id = get_root_post_id(post);
-            self.handle_thread_reply(post, root_post_id, mm_config)
-                .await;
         }
     }
 

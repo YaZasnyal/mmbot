@@ -7,7 +7,7 @@ use mattermost_api::models;
 
 use crate::actor::{
     build_thread_snapshot, get_root_post_id, is_root_post, ms_to_datetime, post_to_thread_message,
-    ThreadCommand,
+    post_to_upsert_thread_message, ThreadCommand,
 };
 use crate::handler::{ThreadEffect, ThreadMetadataTarget, ThreadTarget};
 use crate::store::ThreadStore;
@@ -116,6 +116,32 @@ fn post_to_thread_message_defaults_for_missing() {
     assert_eq!(msg.user_id, "");
     assert_eq!(msg.message, "");
     assert_eq!(msg.props, serde_json::Value::Null);
+}
+
+#[test]
+fn post_to_upsert_thread_message_preserves_persistence_fields() {
+    let post = models::Post {
+        id: "p1".into(),
+        user_id: Some("bot".into()),
+        root_id: Some("root".into()),
+        create_at: Some(1_700_000_000_000),
+        update_at: Some(1_700_000_001_000),
+        delete_at: Some(0),
+        props: Some(serde_json::json!({"key": "val"})),
+        ..Default::default()
+    };
+
+    let msg = post_to_upsert_thread_message(&post, "t1", true);
+    assert_eq!(msg.post_id, "p1");
+    assert_eq!(msg.thread_id, "t1");
+    assert_eq!(msg.user_id, "bot");
+    assert!(msg.is_bot_message);
+    assert_eq!(msg.root_id, Some("root".into()));
+    assert_eq!(msg.parent_post_id, Some("root".into()));
+    assert_eq!(msg.metadata, serde_json::json!({"key": "val"}));
+    assert_eq!(msg.post_created_at, ms_to_datetime(1_700_000_000_000));
+    assert_eq!(msg.post_updated_at, Some(ms_to_datetime(1_700_000_001_000)));
+    assert_eq!(msg.post_deleted_at, None);
 }
 
 #[tokio::test]

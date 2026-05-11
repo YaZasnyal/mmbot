@@ -853,24 +853,7 @@ async fn save_incoming_message(a: &ActorCtx<impl ThreadHandler>, post: &models::
     let is_bot = bot_id.as_deref() == post.user_id.as_deref();
     drop(bot_id);
 
-    let msg = UpsertThreadMessage {
-        post_id: post.id.clone(),
-        thread_id: a.thread_id.clone(),
-        user_id: post.user_id.clone().unwrap_or_default(),
-        is_bot_message: is_bot,
-        root_id: post.root_id.clone(),
-        parent_post_id: post.root_id.clone(),
-        metadata: post.props.clone().unwrap_or(serde_json::Value::Null),
-        post_created_at: post.create_at.map(ms_to_datetime).unwrap_or_else(Utc::now),
-        post_updated_at: post.update_at.map(ms_to_datetime),
-        post_deleted_at: post.delete_at.and_then(|ts| {
-            if ts == 0 {
-                None
-            } else {
-                Some(ms_to_datetime(ts))
-            }
-        }),
-    };
+    let msg = post_to_upsert_thread_message(post, &a.thread_id, is_bot);
 
     if let Err(e) = a.store.upsert_message(msg).await {
         tracing::error!(
@@ -921,6 +904,26 @@ pub(crate) fn post_to_thread_message(post: &models::Post, thread_id: &str) -> Th
         created_at: post.create_at.map(ms_to_datetime).unwrap_or_default(),
         updated_at: post.update_at.map(ms_to_datetime).unwrap_or_default(),
         is_new: false,
+    }
+}
+
+/// Convert a Mattermost API [`Post`](models::Post) to a store upsert.
+pub(crate) fn post_to_upsert_thread_message(
+    post: &models::Post,
+    thread_id: &str,
+    is_bot_message: bool,
+) -> UpsertThreadMessage {
+    UpsertThreadMessage {
+        post_id: post.id.clone(),
+        thread_id: thread_id.to_string(),
+        user_id: post.user_id.clone().unwrap_or_default(),
+        is_bot_message,
+        root_id: post.root_id.clone(),
+        parent_post_id: post.root_id.clone(),
+        metadata: post.props.clone().unwrap_or(serde_json::Value::Null),
+        post_created_at: post.create_at.map(ms_to_datetime).unwrap_or_else(Utc::now),
+        post_updated_at: post.update_at.map(ms_to_datetime),
+        post_deleted_at: post.delete_at.and_then(nonzero_ms_to_datetime),
     }
 }
 
