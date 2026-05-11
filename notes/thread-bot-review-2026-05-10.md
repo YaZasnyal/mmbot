@@ -123,31 +123,21 @@ This is a clean deletion target.
 
 Location: `lib/thread-bot/src/runtime.rs:389`
 
-`handle_reaction()` currently does four things:
+Original concern: `handle_reaction()` did four things:
 
 1. Finds the thread by post id.
 2. Builds `ReactionChange`.
 3. Persists root/control reactions unconditionally.
-4. For non-root reactions, persists only feedback reactions on bot messages.
+4. For non-root reactions, persisted only feedback reactions on bot messages.
 5. Optionally calls handler sync policy and dispatches a control effect to actor.
 
-The nested `if self.handler.is_feedback_reaction(...) { if let Ok(Some(...)) { if msg_record.is_bot_message { ... }}}` makes the important policy easy to miss.
+That nested feedback policy made reaction storage look like a base runtime concern, even though emoji interpretation belongs to L4.
 
-Recommended simplification:
+Updated simplification:
 
-- Extract `persist_reaction_if_interesting(change, thread_record) -> Result<bool, ThreadBotError>`.
-- Extract `control_reaction_effect(thread_record, change) -> Option<ThreadEffect>`.
-- Consider representing the policy as an enum:
-
-```rust
-enum ReactionRoute {
-    Control { effect: Option<ThreadEffect> },
-    Feedback,
-    Ignore,
-}
-```
-
-Then `handle_reaction()` becomes lookup -> classify -> persist -> dispatch. Much calmer.
+- Do not persist emoji reactions in the base runtime at all.
+- Keep root-post control reactions as an L4 hook via `on_control_reaction()`.
+- Ignore non-root reactions in `thread-bot`; L4 can persist any reaction-derived state into its own metadata if it needs that later.
 
 ### P2: `ThreadBotPlugin` owns too much mutable shared state directly
 
@@ -339,7 +329,7 @@ Status: done 2026-05-11.
 - Kept the `Sender::strong_count()` teardown check inside the registry because it models the important race: a sender clone may already be selected for a send before the command is visible in the queue.
 - `ThreadBotHandle::wake_thread()` now routes through the registry without spawning missing actors.
 
-### Slice 4: Reaction router cleanup
+### Slice 4: Reaction router cleanup (done)
 
 Target files:
 
@@ -348,11 +338,17 @@ Target files:
 
 Changes:
 
-- Add `ReactionRoute` classification.
-- Flatten nested reaction persistence logic.
-- Keep L4 policy hooks (`on_control_reaction`, `is_feedback_reaction`) visible but not mixed with store details.
+- Remove base runtime reaction persistence.
+- Keep only the root-post `on_control_reaction` hook and control-effect dispatch.
+- Remove the feedback-reaction policy hook from `ThreadHandler`.
 
-Expected result: reaction behavior becomes readable enough to extend or test.
+Expected result: reaction behavior becomes small enough that L4 owns any domain-specific emoji policy.
+
+Status: done 2026-05-11.
+
+- Removed runtime emoji persistence, including feedback reaction storage.
+- Removed the `is_feedback_reaction()` handler hook.
+- Kept root control reactions as a synchronous L4 policy hook that can dispatch effects.
 
 ## What I would not do yet
 
@@ -366,7 +362,7 @@ Expected result: reaction behavior becomes readable enough to extend or test.
 - [x] Delete `handle_replayed_post()` by introducing shared `route_post()`.
 - [x] Avoid actor spawn for already tracked root post replay without command.
 - [x] Extract `UpsertThreadMessage` creation from `models::Post`.
-- [ ] Extract checkpoint helper methods with policy names.
+- [x] Extract checkpoint helper methods with policy names.
 - [x] Add reconciliation single-flight guard.
 - [x] Split `reconcile()` into channel-level helpers.
 - [x] Wrap actor map in `ActorRegistry`.

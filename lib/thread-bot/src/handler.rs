@@ -139,16 +139,6 @@ pub trait ThreadHandler: Send + Sync + 'static {
         None
     }
 
-    /// Determine if an emoji is a feedback reaction
-    ///
-    /// Feedback reactions are saved to DB only for bot messages
-    /// (with is_bot_message = true) for later analytics.
-    ///
-    /// Default: 👍 and 👎
-    fn is_feedback_reaction(&self, emoji_name: &str) -> bool {
-        matches!(emoji_name, "thumbsup" | "thumbsdown" | "+1" | "-1")
-    }
-
     /// Configure periodic tasks for this handler.
     ///
     /// Called once at bot startup. Register cron jobs using `scheduler`,

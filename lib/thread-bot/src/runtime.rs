@@ -69,7 +69,7 @@ use crate::actor::{
 use crate::actor_registry::{ActorRegistry, ActorSpawnConfig};
 use crate::channel_messages::{channel_messages_after, latest_channel_post};
 use crate::error::ThreadBotError;
-use crate::handler::ThreadHandler;
+use crate::handler::{ThreadEffect, ThreadHandler};
 use crate::metrics::ThreadBotMetricsHandle;
 use crate::store::ThreadStore;
 use crate::types::*;
@@ -241,14 +241,8 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
                 // Already tracked — this is an idempotent replay, so only move
                 // the channel checkpoint. Replies/reactions spawn actors when
                 // there is actual work to route.
-                // Advance channel checkpoint (harmless if replayed — GREATEST keeps max)
-                if let Err(e) = self
-                    .store
-                    .advance_channel_checkpoint(&channel_id, &post.id, post_at)
-                    .await
-                {
-                    tracing::error!(channel_id = %channel_id, error = %e, "Failed to advance channel checkpoint");
-                }
+                self.advance_channel_if_reconciled(&channel_id, post, post_at)
+                    .await;
                 return;
             }
             Ok(None) => {}
@@ -279,14 +273,8 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             return;
         }
 
-        // Register channel checkpoint (first tracked message in this channel)
-        if let Err(e) = self
-            .store
-            .upsert_channel_checkpoint(&channel_id, &post.id, post_at)
-            .await
-        {
-            tracing::error!(channel_id = %channel_id, error = %e, "Failed to upsert channel checkpoint");
-        }
+        self.register_channel_if_needed(&channel_id, post, post_at)
+            .await;
 
         if let Err(e) = self
             .registry
@@ -322,17 +310,8 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             .create_at
             .map(ms_to_datetime)
             .unwrap_or_else(chrono::Utc::now);
-        if let Err(e) = self
-            .store
-            .advance_channel_checkpoint(&thread_record.channel_id, &post.id, post_at)
-            .await
-        {
-            tracing::error!(
-                channel_id = %thread_record.channel_id,
-                error = %e,
-                "Failed to advance channel checkpoint"
-            );
-        }
+        self.advance_channel_if_reconciled(&thread_record.channel_id, post, post_at)
+            .await;
 
         // Bot's own messages: save to DB but don't trigger handler re-run
         {
@@ -396,63 +375,34 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             created_at,
         };
 
-        let is_root_reaction = post_id == thread_record.root_post_id;
-
-        if is_root_reaction {
-            // Control reaction on root post
-            let effect = self.handler.on_control_reaction(&thread_record, &change);
-
-            // Always save the reaction to DB
-            let append = AppendReaction {
-                thread_id: Some(thread_record.thread_id.clone()),
-                post_id: post_id.to_string(),
-                user_id: user_id.to_string(),
-                emoji_name: emoji_name.to_string(),
-                action,
-            };
-            if let Err(e) = self.store.append_reaction(append).await {
-                tracing::error!(post_id = %post_id, error = %e, "Failed to save control reaction");
+        if change.post_id == thread_record.root_post_id {
+            if let Some(effect) = self.handler.on_control_reaction(&thread_record, &change) {
+                self.dispatch_control_reaction(&thread_record, change, effect, mm_config)
+                    .await;
             }
+        }
+    }
 
-            // If handler returned an effect, send it to the actor
-            if let Some(effect) = effect {
-                if let Err(e) = self
-                    .registry
-                    .send_or_spawn(
-                        ThreadCommand::ControlReaction { effect, change },
-                        self.actor_spawn_config(&thread_record.root_post_id, mm_config),
-                    )
-                    .await
-                {
-                    tracing::error!(
-                        thread_id = %thread_record.thread_id,
-                        error = %e,
-                        "Failed to send control reaction to actor"
-                    );
-                }
-            }
-        } else {
-            // Non-root reaction — save feedback reactions on bot messages to DB
-            if self.handler.is_feedback_reaction(emoji_name) {
-                if let Ok(Some(msg_record)) = self.store.get_message(post_id).await {
-                    if msg_record.is_bot_message {
-                        let append = AppendReaction {
-                            thread_id: Some(thread_record.thread_id.clone()),
-                            post_id: post_id.to_string(),
-                            user_id: user_id.to_string(),
-                            emoji_name: emoji_name.to_string(),
-                            action,
-                        };
-                        if let Err(e) = self.store.append_reaction(append).await {
-                            tracing::error!(
-                                post_id = %post_id,
-                                error = %e,
-                                "Failed to save feedback reaction"
-                            );
-                        }
-                    }
-                }
-            }
+    async fn dispatch_control_reaction(
+        &self,
+        thread_record: &ThreadRecord,
+        change: ReactionChange,
+        effect: ThreadEffect,
+        mm_config: &Arc<Configuration>,
+    ) {
+        if let Err(e) = self
+            .registry
+            .send_or_spawn(
+                ThreadCommand::ControlReaction { effect, change },
+                self.actor_spawn_config(&thread_record.root_post_id, mm_config),
+            )
+            .await
+        {
+            tracing::error!(
+                thread_id = %thread_record.thread_id,
+                error = %e,
+                "Failed to send control reaction to actor"
+            );
         }
     }
 
@@ -586,13 +536,8 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
                 .create_at
                 .map(ms_to_datetime)
                 .unwrap_or_else(chrono::Utc::now);
-            if let Err(e) = self
-                .store
-                .upsert_channel_checkpoint(&checkpoint.channel_id, &post.id, post_at)
-                .await
-            {
-                tracing::error!(channel_id = %checkpoint.channel_id, error = %e, "Failed to advance reconciled channel checkpoint");
-            }
+            self.force_checkpoint_to_post(&checkpoint.channel_id, post, post_at)
+                .await;
         }
 
         // Channel scanned — mark reconciled so normal flow can advance it.
@@ -640,6 +585,51 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
         self.store
             .upsert_channel_checkpoint(&checkpoint.channel_id, &post.id, post_at)
             .await
+    }
+
+    async fn register_channel_if_needed(
+        &self,
+        channel_id: &str,
+        post: &models::Post,
+        post_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        if let Err(e) = self
+            .store
+            .upsert_channel_checkpoint(channel_id, &post.id, post_at)
+            .await
+        {
+            tracing::error!(channel_id = %channel_id, error = %e, "Failed to upsert channel checkpoint");
+        }
+    }
+
+    async fn advance_channel_if_reconciled(
+        &self,
+        channel_id: &str,
+        post: &models::Post,
+        post_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        if let Err(e) = self
+            .store
+            .advance_channel_checkpoint(channel_id, &post.id, post_at)
+            .await
+        {
+            tracing::error!(channel_id = %channel_id, error = %e, "Failed to advance channel checkpoint");
+        }
+    }
+
+    async fn force_checkpoint_to_post(
+        &self,
+        channel_id: &str,
+        post: &models::Post,
+        post_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        if let Err(e) = self
+            .store
+            .upsert_channel_checkpoint(channel_id, &post.id, post_at)
+            .await
+        {
+            tracing::error!(channel_id = %channel_id, error = %e, "Failed to advance reconciled channel checkpoint");
+        }
     }
 
     // ── Actor management ─────────────────────────────────────────────────
