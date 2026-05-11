@@ -295,7 +295,7 @@ Status: done 2026-05-11.
 - Added `post_to_upsert_thread_message()` so runtime bot-message persistence and actor incoming-message persistence use the same conversion rules.
 - Existing tracked root-post replay now advances the checkpoint without spawning an idle actor.
 
-### Slice 2: Reconciliation guard and clearer semantics
+### Slice 2: Reconciliation guard and clearer semantics (done)
 
 Target files:
 
@@ -309,6 +309,12 @@ Changes:
 - Update comments to say whether live routing can happen concurrently.
 
 Expected result: fewer hidden assumptions around checkpoint safety.
+
+Status: done 2026-05-11.
+
+- Added a single-flight reconciliation gate so repeated `Hello` events cannot start overlapping scans.
+- Updated runtime comments to make the current semantic explicit: reconciliation is backgrounded, and live routing is allowed while checkpoints are held unreconciled.
+- Split channel reconciliation into `reconcile_channel()`, `skip_channel_backlog()`, `replay_channel_posts()`, and `finish_channel_reconciliation()`.
 
 ### Slice 3: Actor registry extraction (done)
 
@@ -361,8 +367,8 @@ Expected result: reaction behavior becomes readable enough to extend or test.
 - [x] Avoid actor spawn for already tracked root post replay without command.
 - [x] Extract `UpsertThreadMessage` creation from `models::Post`.
 - [ ] Extract checkpoint helper methods with policy names.
-- [ ] Add reconciliation single-flight guard.
-- [ ] Split `reconcile()` into channel-level helpers.
+- [x] Add reconciliation single-flight guard.
+- [x] Split `reconcile()` into channel-level helpers.
 - [x] Wrap actor map in `ActorRegistry`.
 - [x] Move actor spawn/retirement into `ActorRegistry`; keep `strong_count()` localized there.
 

@@ -52,7 +52,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use mattermost_api::apis::configuration::Configuration;
 use mattermost_api::apis::users_api;
@@ -137,6 +137,9 @@ pub struct ThreadBotPlugin<H: ThreadHandler> {
     /// Bot's own user ID, fetched in [`Plugin::on_start`].
     bot_user_id: Arc<RwLock<Option<String>>>,
 
+    /// Ensures reconnect storms cannot run overlapping reconciliation scans.
+    reconciliation_gate: Arc<Mutex<()>>,
+
     metrics: ThreadBotMetricsHandle,
 }
 
@@ -149,6 +152,7 @@ impl<H: ThreadHandler> Clone for ThreadBotPlugin<H> {
             config: self.config.clone(),
             registry: self.registry.clone(),
             bot_user_id: Arc::clone(&self.bot_user_id),
+            reconciliation_gate: Arc::clone(&self.reconciliation_gate),
             metrics: self.metrics.clone(),
         }
     }
@@ -163,6 +167,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             config: ThreadBotConfig::default(),
             registry: ActorRegistry::new(),
             bot_user_id: Arc::new(RwLock::new(None)),
+            reconciliation_gate: Arc::new(Mutex::new(())),
             metrics: ThreadBotMetricsHandle::noop(),
         }
     }
@@ -455,10 +460,14 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
 
     /// Reconcile state after a (re)connection.
     ///
-    /// Called on every `Hello` event — i.e. on initial connect **and** on
-    /// every WebSocket reconnect.  Because `process_event` blocks the WS
-    /// read loop, incoming events are buffered by the TCP/WS layer while
-    /// reconciliation runs and are processed normally afterwards.
+    /// Called after a `Hello` event — i.e. on initial connect **and** on every
+    /// WebSocket reconnect.
+    ///
+    /// Reconciliation runs in a background task so live events may still route
+    /// while this scan is active. Channel checkpoints are marked unreconciled
+    /// before scanning so normal live processing does not advance them until
+    /// each channel is finalized. A single-flight gate prevents overlapping
+    /// reconciliation tasks during reconnect storms.
     ///
     /// 1. Snapshot channel checkpoints from DB (timestamps won't move during
     ///    reconciliation because `is_reconciled` is set to `false`).
@@ -494,73 +503,116 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             );
 
             for cp in &checkpoints {
-                if self.reconcile_gap_exceeds_window(cp) {
-                    let now = chrono::Utc::now();
-                    tracing::warn!(
-                        channel_id = %cp.channel_id,
-                        last_seen_post_at = %cp.last_seen_post_at,
-                        skipped_to = %now,
-                        "Reconciliation gap exceeds max window, skipping backlog"
-                    );
-                    if let Err(e) = self
-                        .advance_skipped_reconciliation_checkpoint(config, cp, now)
-                        .await
-                    {
-                        tracing::error!(channel_id = %cp.channel_id, error = %e, "Failed to advance skipped reconciliation checkpoint");
-                    }
-                    if let Err(e) = self.store.set_channel_reconciled(&cp.channel_id).await {
-                        tracing::error!(channel_id = %cp.channel_id, error = %e, "Failed to mark channel reconciled");
-                    }
-                    continue;
-                }
-
-                let mut channel_messages = channel_messages_after(Arc::clone(config), cp);
-                let mut replayed_count = 0usize;
-                let mut last_replayed = None;
-
-                while let Some(result) = channel_messages.next().await {
-                    let post = match result {
-                        Ok(post) => post,
-                        Err(e) => {
-                            tracing::error!(
-                                channel_id = %cp.channel_id,
-                                error = %e,
-                                "Failed to scan channel for missed posts"
-                            );
-                            break;
-                        }
-                    };
-                    self.route_post(&post, config).await;
-                    replayed_count += 1;
-                    last_replayed = Some(post);
-                }
-
-                tracing::info!(
-                    channel_id = %cp.channel_id,
-                    count = replayed_count,
-                    "Replayed missed posts"
-                );
-
-                if let Some(post) = last_replayed.as_ref() {
-                    let post_at = post
-                        .create_at
-                        .map(ms_to_datetime)
-                        .unwrap_or_else(chrono::Utc::now);
-                    if let Err(e) = self
-                        .store
-                        .upsert_channel_checkpoint(&cp.channel_id, &post.id, post_at)
-                        .await
-                    {
-                        tracing::error!(channel_id = %cp.channel_id, error = %e, "Failed to advance reconciled channel checkpoint");
-                    }
-                }
-
-                // Channel scanned — mark reconciled so normal flow can advance it
-                if let Err(e) = self.store.set_channel_reconciled(&cp.channel_id).await {
-                    tracing::error!(channel_id = %cp.channel_id, error = %e, "Failed to mark channel reconciled");
-                }
+                self.reconcile_channel(config, cp).await;
             }
         }
+    }
+
+    async fn reconcile_channel(&self, config: &Arc<Configuration>, checkpoint: &ChannelCheckpoint) {
+        if self.reconcile_gap_exceeds_window(checkpoint) {
+            self.skip_channel_backlog(config, checkpoint).await;
+            return;
+        }
+
+        let (replayed_count, last_replayed) = self.replay_channel_posts(config, checkpoint).await;
+
+        tracing::info!(
+            channel_id = %checkpoint.channel_id,
+            count = replayed_count,
+            "Replayed missed posts"
+        );
+
+        self.finish_channel_reconciliation(checkpoint, last_replayed.as_ref())
+            .await;
+    }
+
+    async fn skip_channel_backlog(
+        &self,
+        config: &Arc<Configuration>,
+        checkpoint: &ChannelCheckpoint,
+    ) {
+        let now = chrono::Utc::now();
+        tracing::warn!(
+            channel_id = %checkpoint.channel_id,
+            last_seen_post_at = %checkpoint.last_seen_post_at,
+            skipped_to = %now,
+            "Reconciliation gap exceeds max window, skipping backlog"
+        );
+        if let Err(e) = self
+            .advance_skipped_reconciliation_checkpoint(config, checkpoint, now)
+            .await
+        {
+            tracing::error!(channel_id = %checkpoint.channel_id, error = %e, "Failed to advance skipped reconciliation checkpoint");
+        }
+        self.mark_channel_reconciled(&checkpoint.channel_id).await;
+    }
+
+    async fn replay_channel_posts(
+        &self,
+        config: &Arc<Configuration>,
+        checkpoint: &ChannelCheckpoint,
+    ) -> (usize, Option<models::Post>) {
+        let mut channel_messages = channel_messages_after(Arc::clone(config), checkpoint);
+        let mut replayed_count = 0usize;
+        let mut last_replayed = None;
+
+        while let Some(result) = channel_messages.next().await {
+            let post = match result {
+                Ok(post) => post,
+                Err(e) => {
+                    tracing::error!(
+                        channel_id = %checkpoint.channel_id,
+                        error = %e,
+                        "Failed to scan channel for missed posts"
+                    );
+                    break;
+                }
+            };
+            self.route_post(&post, config).await;
+            replayed_count += 1;
+            last_replayed = Some(post);
+        }
+
+        (replayed_count, last_replayed)
+    }
+
+    async fn finish_channel_reconciliation(
+        &self,
+        checkpoint: &ChannelCheckpoint,
+        last_replayed: Option<&models::Post>,
+    ) {
+        if let Some(post) = last_replayed {
+            let post_at = post
+                .create_at
+                .map(ms_to_datetime)
+                .unwrap_or_else(chrono::Utc::now);
+            if let Err(e) = self
+                .store
+                .upsert_channel_checkpoint(&checkpoint.channel_id, &post.id, post_at)
+                .await
+            {
+                tracing::error!(channel_id = %checkpoint.channel_id, error = %e, "Failed to advance reconciled channel checkpoint");
+            }
+        }
+
+        // Channel scanned — mark reconciled so normal flow can advance it.
+        self.mark_channel_reconciled(&checkpoint.channel_id).await;
+    }
+
+    async fn mark_channel_reconciled(&self, channel_id: &str) {
+        if let Err(e) = self.store.set_channel_reconciled(channel_id).await {
+            tracing::error!(channel_id = %channel_id, error = %e, "Failed to mark channel reconciled");
+        }
+    }
+
+    async fn reconcile_single_flight(&self, config: &Arc<Configuration>) {
+        let Ok(_guard) = self.reconciliation_gate.try_lock() else {
+            tracing::info!("Reconciliation already running, skipping duplicate start");
+            return;
+        };
+
+        tracing::info!("Starting reconcile");
+        self.reconcile(config).await;
     }
 
     fn reconcile_gap_exceeds_window(&self, checkpoint: &ChannelCheckpoint) -> bool {
@@ -665,8 +717,7 @@ impl<H: ThreadHandler> mattermost_bot::Plugin for ThreadBotPlugin<H> {
                 let plugin = self.clone();
                 let config = Arc::clone(config);
                 tokio::spawn(async move {
-                    tracing::info!("Starting reconcile");
-                    plugin.reconcile(&config).await;
+                    plugin.reconcile_single_flight(&config).await;
                 });
             }
             EventType::Posted(posted) => {
