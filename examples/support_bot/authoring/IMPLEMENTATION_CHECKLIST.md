@@ -8,7 +8,8 @@ Use this as the final acceptance checklist for a coding LLM.
 - Startup initializes tracing before other work.
 - Config is loaded once from environment variables.
 - Required env vars produce clear startup errors.
-- `InstructionRepository::lint` runs at startup.
+- `InstructionRepository::load` runs at startup, or `lint` runs before loading
+  when the deployment should fail on lint findings.
 - `OpenAiChatCompletionsClient` is built from `LlmConfig`.
 - `SupportBotBuilder` receives the instruction repository, local tools,
   remote MCP config, and support metrics handle.

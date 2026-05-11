@@ -59,8 +59,10 @@ valid linked document.
 
 ## Linting
 
-Use `InstructionRepository::lint(root_path)` to validate authoring mistakes.
-The lint pass checks:
+Use `InstructionRepository::load(root_path)` to log lint issues and load valid
+documents during startup. Use `InstructionRepository::lint(root_path)` directly
+when your process should fail readiness or startup on authoring mistakes. The
+lint pass checks:
 
 - valid frontmatter and non-empty `title`;
 - existence of `/index`;

@@ -67,8 +67,6 @@ Required support config:
 - `SUPPORT_MAX_TOOL_ROUNDS`, default `4`.
 - `SUPPORT_MAX_TOOL_CALLS_PER_ROUND`, default `8`.
 - `SUPPORT_MAX_TOOL_RESULT_BYTES`, default `16384`.
-- `SUPPORT_MAX_CONTEXT_INSTRUCTIONS`, default `5`.
-- `SUPPORT_MAX_INSTRUCTION_BYTES`, default `16384`.
 - `SUPPORT_SYSTEM_PROMPT_FILE`, optional; wins over inline prompt.
 - `SUPPORT_SYSTEM_PROMPT`, optional; falls back to
   `DEFAULT_SUPPORT_SYSTEM_PROMPT`.
@@ -229,8 +227,9 @@ Create a small `Readiness` object that owns cheap dependency handles:
   expose a convenient method, implement the check with the same configured base
   URL and bearer token using an existing HTTP client already used by the
   project.
-- Instructions: call `InstructionRepository::lint(root)` and fail readiness
-  if lint issues are present. This catches bad runbook deploys.
+- Instructions: call `InstructionRepository::lint(root)` and fail readiness if
+  lint issues are present. Use `InstructionRepository::load(root)` during
+  startup when you want the repository to own lint logging and tool loading.
 - Remote MCP: at minimum validate that configured URLs parse and required
   env-derived fields are present. If the MCP client exposes a cheap list-tools
   or health call, use it with each endpoint timeout.

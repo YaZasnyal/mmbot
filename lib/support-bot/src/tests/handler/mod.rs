@@ -1,8 +1,7 @@
 use super::*;
 use crate::admission::{SupportThreadAdmissionDecision, SupportThreadAdmissionHook};
 use crate::config::{
-    DebugCommandConfig, InstructionConfig, LlmConfig, SupportBotLimits, SupportRouteConfig,
-    ToolConfig,
+    DebugCommandConfig, LlmConfig, SupportBotLimits, SupportRouteConfig, ToolConfig,
 };
 use crate::conversation::{build_llm_messages, STATE_KEY, TRACE_KEY};
 use crate::debug::DebugResponse;
@@ -18,7 +17,6 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -154,11 +152,6 @@ fn test_config() -> SupportBotConfig {
             api_key: None,
             model: "test-model".to_string(),
             timeout: Duration::from_secs(1),
-        },
-        instructions: InstructionConfig {
-            root_path: PathBuf::from("."),
-            max_context_instructions: 5,
-            max_instruction_bytes: 1024,
         },
         tools: ToolConfig::default(),
         limits: SupportBotLimits::default(),

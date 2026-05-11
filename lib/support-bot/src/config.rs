@@ -4,7 +4,6 @@ use std::time::Duration;
 pub struct SupportBotConfig {
     pub system_prompt: String,
     pub llm: LlmConfig,
-    pub instructions: InstructionConfig,
     pub tools: ToolConfig,
     pub limits: SupportBotLimits,
     pub routes: SupportRouteConfig,
@@ -16,13 +15,6 @@ pub struct LlmConfig {
     pub api_key: Option<String>,
     pub model: String,
     pub timeout: Duration,
-}
-
-#[derive(Debug, Clone)]
-pub struct InstructionConfig {
-    pub root_path: std::path::PathBuf,
-    pub max_context_instructions: usize,
-    pub max_instruction_bytes: usize,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -54,6 +54,8 @@ This crate now includes a concrete `SupportBotHandler`:
   `register_remote_mcp_tools`.
 - includes `SupportBotBuilder` with a default system prompt that enforces using
   the `instructions` tool before inventing diagnostics.
+- keeps instruction repository loading in the instruction tool via
+  `InstructionRepository::load`, outside `SupportBotConfig`.
 
 ## Runtime Flow
 

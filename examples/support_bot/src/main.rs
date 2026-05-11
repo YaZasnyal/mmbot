@@ -1,13 +1,12 @@
 use anyhow::{Context, Result};
 use mattermost_api::apis::configuration::Configuration;
 use mattermost_bot::{Bot, MattermostBotMetrics, tokio_graceful};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use support_bot::{
-    DEFAULT_SUPPORT_SYSTEM_PROMPT, FirstMessageTextAdmissionHook, InstructionConfig,
-    InstructionRepository, LlmConfig, OpenAiChatCompletionsClient, SupportBotBuilder,
-    SupportBotConfig, SupportBotLimits, SupportBotMetrics, SupportRouteConfig, ToolConfig,
+    DEFAULT_SUPPORT_SYSTEM_PROMPT, FirstMessageTextAdmissionHook, InstructionRepository, LlmConfig,
+    OpenAiChatCompletionsClient, SupportBotBuilder, SupportBotConfig, SupportBotLimits,
+    SupportBotMetrics, SupportRouteConfig, ToolConfig,
 };
 use thread_bot::{PgThreadStore, ThreadBotMetrics, ThreadBotPlugin, ThreadStore};
 
@@ -18,7 +17,10 @@ async fn main() -> Result<()> {
         .init();
 
     let config = load_support_config()?;
-    let instruction_repo = load_instruction_repository(&config.instructions)?;
+    let instruction_repo = InstructionRepository::load(read_env(
+        "SUPPORT_INSTRUCTIONS_ROOT",
+        "examples/support_bot/instructions",
+    )?)?;
 
     let llm = Arc::new(OpenAiChatCompletionsClient::new(config.llm.clone())?);
 
@@ -76,21 +78,12 @@ async fn main() -> Result<()> {
 }
 
 fn load_support_config() -> Result<SupportBotConfig> {
-    let instructions_root = read_env(
-        "SUPPORT_INSTRUCTIONS_ROOT",
-        "examples/support_bot/instructions",
-    )?;
     let llm_timeout_secs: u64 = read_env("SUPPORT_LLM_TIMEOUT_SECS", "45")?.parse()?;
     let max_tool_rounds: usize = read_env("SUPPORT_MAX_TOOL_ROUNDS", "4")?.parse()?;
     let max_tool_calls_per_round: usize =
         read_env("SUPPORT_MAX_TOOL_CALLS_PER_ROUND", "8")?.parse()?;
     let max_tool_result_bytes: usize =
         read_env("SUPPORT_MAX_TOOL_RESULT_BYTES", "16384")?.parse()?;
-
-    let max_context_instructions: usize =
-        read_env("SUPPORT_MAX_CONTEXT_INSTRUCTIONS", "5")?.parse()?;
-    let max_instruction_bytes: usize =
-        read_env("SUPPORT_MAX_INSTRUCTION_BYTES", "16384")?.parse()?;
 
     let engineer_channel_id = read_required_env("SUPPORT_ENGINEER_CHANNEL_ID")?;
 
@@ -103,11 +96,6 @@ fn load_support_config() -> Result<SupportBotConfig> {
             api_key: std::env::var("SUPPORT_LLM_API_KEY").ok(),
             model: read_env("SUPPORT_LLM_MODEL", "gpt-4o-mini")?,
             timeout: Duration::from_secs(llm_timeout_secs),
-        },
-        instructions: InstructionConfig {
-            root_path: PathBuf::from(instructions_root),
-            max_context_instructions,
-            max_instruction_bytes,
         },
         tools: ToolConfig {
             remote_mcp_endpoints,
@@ -123,28 +111,6 @@ fn load_support_config() -> Result<SupportBotConfig> {
             ..SupportRouteConfig::default()
         },
     })
-}
-
-fn load_instruction_repository(config: &InstructionConfig) -> Result<InstructionRepository> {
-    for issue in InstructionRepository::lint(&config.root_path)? {
-        let path = issue
-            .path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "-".to_string());
-        let id = issue.id.as_deref().unwrap_or("-");
-        tracing::error!(
-            issue_kind = ?issue.kind,
-            path = %path,
-            id = %id,
-            message = %issue.message,
-            "support-bot: instruction repository lint issue"
-        );
-    }
-
-    Ok(InstructionRepository::new(config.root_path.clone())?
-        .with_max_instruction_bytes(config.max_instruction_bytes)
-        .with_max_load_documents(config.max_context_instructions))
 }
 
 fn load_remote_mcp_endpoints() -> Result<Vec<support_bot::RemoteMcpEndpoint>> {

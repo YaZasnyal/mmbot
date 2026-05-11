@@ -1,11 +1,8 @@
 use super::*;
 use crate::admission::{SupportThreadAdmissionDecision, SupportThreadAdmissionHook};
-use crate::config::{
-    InstructionConfig, LlmConfig, SupportBotLimits, SupportRouteConfig, ToolConfig,
-};
+use crate::config::{LlmConfig, SupportBotLimits, SupportRouteConfig, ToolConfig};
 use crate::llm::{ChatMessage, LlmRequest, LlmResponse};
 use async_trait::async_trait;
-use std::path::PathBuf;
 use std::time::Duration;
 
 struct StaticLlm;
@@ -40,11 +37,6 @@ fn test_config() -> SupportBotConfig {
             api_key: None,
             model: "gpt-test".to_string(),
             timeout: Duration::from_secs(5),
-        },
-        instructions: InstructionConfig {
-            root_path: PathBuf::from("."),
-            max_context_instructions: 5,
-            max_instruction_bytes: 4096,
         },
         tools: ToolConfig::default(),
         limits: SupportBotLimits::default(),

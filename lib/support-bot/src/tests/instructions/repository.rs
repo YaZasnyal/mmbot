@@ -65,6 +65,18 @@ fn loads_document_without_frontmatter_body() {
 }
 
 #[test]
+fn load_returns_repository_after_linting() {
+    let root = temp_dir("load-helper");
+    write_doc(&root, "index.md", "Index", "\n# Index");
+
+    let repository = InstructionRepository::load(&root).unwrap();
+
+    assert_eq!(repository.documents().count(), 1);
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn repository_skips_invalid_documents_without_failing() {
     let root = temp_dir("invalid-skip");
     write_doc(&root, "index.md", "Index", "\n# Index");

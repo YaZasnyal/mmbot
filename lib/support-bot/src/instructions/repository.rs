@@ -22,7 +22,6 @@ pub struct LoadedInstruction {
 pub struct InstructionRepository {
     root_path: PathBuf,
     documents: BTreeMap<String, InstructionDocument>,
-    max_instruction_bytes: usize,
 }
 
 impl InstructionRepository {
@@ -37,22 +36,33 @@ impl InstructionRepository {
                 .filter(|loaded| loaded.parse_error.is_none())
                 .map(|loaded| (loaded.document.id.clone(), loaded.document))
                 .collect(),
-            max_instruction_bytes: 16 * 1024,
         })
+    }
+
+    pub fn load(root_path: impl Into<PathBuf>) -> Result<Self> {
+        let root_path = root_path.into();
+        for issue in Self::lint(&root_path)? {
+            let path = issue
+                .path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let id = issue.id.as_deref().unwrap_or("-");
+            tracing::error!(
+                issue_kind = ?issue.kind,
+                path = %path,
+                id = %id,
+                message = %issue.message,
+                "support-bot: instruction repository lint issue"
+            );
+        }
+
+        Self::new(root_path)
     }
 
     pub fn lint(root_path: impl AsRef<Path>) -> Result<Vec<InstructionLintIssue>> {
         let documents = scan_documents(root_path.as_ref())?;
         Ok(lint_documents(&documents))
-    }
-
-    pub fn with_max_instruction_bytes(mut self, max_instruction_bytes: usize) -> Self {
-        self.max_instruction_bytes = max_instruction_bytes;
-        self
-    }
-
-    pub fn with_max_load_documents(self, _max_load_documents: usize) -> Self {
-        self
     }
 
     pub fn documents(&self) -> impl Iterator<Item = &InstructionDocument> {
@@ -70,11 +80,9 @@ impl InstructionRepository {
             SupportBotError::Instruction(format!("failed to read {}: {err}", path.display()))
         })?;
         let parsed = parse_markdown(&raw)?;
-        let content = truncate_to_char_boundary(parsed.body, self.max_instruction_bytes);
-
         Ok(Some(LoadedInstruction {
             document: document.clone(),
-            content,
+            content: parsed.body,
         }))
     }
 }
@@ -209,19 +217,6 @@ fn safe_join(root: &Path, relative: &Path) -> Result<PathBuf> {
     }
 
     Ok(root.join(relative))
-}
-
-fn truncate_to_char_boundary(mut content: String, max_bytes: usize) -> String {
-    if content.len() <= max_bytes {
-        return content;
-    }
-
-    let mut boundary = max_bytes;
-    while !content.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    content.truncate(boundary);
-    content
 }
 
 #[cfg(test)]

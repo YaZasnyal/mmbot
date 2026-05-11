@@ -32,8 +32,8 @@ pub use admission::{
 pub use async_trait::async_trait;
 pub use builder::{SupportBotBuilder, DEFAULT_SUPPORT_SYSTEM_PROMPT};
 pub use config::{
-    DebugCommandConfig, InstructionConfig, LlmConfig, RemoteMcpEndpoint, SupportBotConfig,
-    SupportBotLimits, SupportRouteConfig, ToolConfig,
+    DebugCommandConfig, LlmConfig, RemoteMcpEndpoint, SupportBotConfig, SupportBotLimits,
+    SupportRouteConfig, ToolConfig,
 };
 pub use debug::{DebugCommand, DebugCommandHandler, DebugCommandMatch, DebugResponse};
 pub use error::{Result, SupportBotError};

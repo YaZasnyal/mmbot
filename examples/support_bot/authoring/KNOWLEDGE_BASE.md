@@ -163,8 +163,10 @@ Avoid:
 
 ## Linting
 
-Use `InstructionRepository::lint(root_path)` during startup. The lint pass
-checks:
+Use `InstructionRepository::load(root_path)` during startup when you want the
+repository to log lint issues and then load valid documents. Use
+`InstructionRepository::lint(root_path)` directly when readiness/startup policy
+needs to fail on lint findings. The lint pass checks:
 
 - valid frontmatter;
 - non-empty title;
@@ -176,11 +178,11 @@ For production, failing lint should make readiness fail and should usually make
 startup fail. The current example logs lint errors and continues; a production
 deployment should be stricter.
 
-## Size Limits
+## Size Guidance
 
-`InstructionRepository` enforces `max_instruction_bytes`. The config also
-contains `max_context_instructions`; keep documents small enough that the LLM
-can load several in one workflow.
+`InstructionRepository` returns full document bodies. The bot administrator owns
+document size policy through repository authoring, review, and any custom tool
+wrapper they choose to add.
 
 Practical guidance:
 
