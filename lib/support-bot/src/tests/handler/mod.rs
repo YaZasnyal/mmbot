@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::{
-    DebugCommandConfig, EngineerNotificationConfig, InstructionConfig, LlmConfig, SupportBotLimits,
-    SupportRouteConfig, ToolConfig,
+    DebugCommandConfig, InstructionConfig, LlmConfig, SupportBotLimits, SupportRouteConfig,
+    ToolConfig,
 };
 use crate::conversation::{build_llm_messages, STATE_KEY, TRACE_KEY};
 use crate::debug::DebugResponse;
@@ -125,11 +125,8 @@ fn test_config() -> SupportBotConfig {
         limits: SupportBotLimits::default(),
         routes: SupportRouteConfig {
             user_channel_ids: vec!["users".to_string()],
-            engineer_channel_id: Some("engineers".to_string()),
+            engineer_channel_id: "engineers".to_string(),
             debug_commands: DebugCommandConfig::default(),
-        },
-        engineer_notifications: EngineerNotificationConfig {
-            channel_id: "engineers".to_string(),
         },
     }
 }

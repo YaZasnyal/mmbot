@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use support_bot::{
-    DEFAULT_SUPPORT_SYSTEM_PROMPT, EngineerNotificationConfig, InstructionConfig,
-    InstructionRepository, LlmConfig, OpenAiChatCompletionsClient, SupportBotBuilder,
-    SupportBotConfig, SupportBotLimits, SupportBotMetrics, SupportRouteConfig, ToolConfig,
+    DEFAULT_SUPPORT_SYSTEM_PROMPT, InstructionConfig, InstructionRepository, LlmConfig,
+    OpenAiChatCompletionsClient, SupportBotBuilder, SupportBotConfig, SupportBotLimits,
+    SupportBotMetrics, SupportRouteConfig, ToolConfig,
 };
 use thread_bot::{PgThreadStore, ThreadBotMetrics, ThreadBotPlugin, ThreadStore};
 
@@ -114,11 +114,8 @@ fn load_support_config() -> Result<SupportBotConfig> {
         },
         routes: SupportRouteConfig {
             user_channel_ids: read_csv_env("SUPPORT_USER_CHANNEL_IDS"),
-            engineer_channel_id: Some(engineer_channel_id.clone()),
+            engineer_channel_id,
             ..SupportRouteConfig::default()
-        },
-        engineer_notifications: EngineerNotificationConfig {
-            channel_id: engineer_channel_id,
         },
     })
 }

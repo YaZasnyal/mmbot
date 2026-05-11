@@ -76,7 +76,7 @@ impl SupportBotHandler {
                     .any(|user_channel_id| user_channel_id == channel_id)
                 {
                     SupportRoute::User
-                } else if channel_id == self.config.engineer_notifications.channel_id {
+                } else if channel_id == self.config.routes.engineer_channel_id {
                     SupportRoute::Engineer
                 } else {
                     SupportRoute::Ignored

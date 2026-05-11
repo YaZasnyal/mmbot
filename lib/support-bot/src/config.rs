@@ -8,7 +8,6 @@ pub struct SupportBotConfig {
     pub tools: ToolConfig,
     pub limits: SupportBotLimits,
     pub routes: SupportRouteConfig,
-    pub engineer_notifications: EngineerNotificationConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -47,14 +46,9 @@ pub struct SupportBotLimits {
 }
 
 #[derive(Debug, Clone)]
-pub struct EngineerNotificationConfig {
-    pub channel_id: String,
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct SupportRouteConfig {
     pub user_channel_ids: Vec<String>,
-    pub engineer_channel_id: Option<String>,
+    pub engineer_channel_id: String,
     pub debug_commands: DebugCommandConfig,
 }
 
@@ -69,6 +63,16 @@ impl Default for DebugCommandConfig {
         Self {
             enabled: true,
             prefixes: vec!["/support".to_string(), "!support".to_string()],
+        }
+    }
+}
+
+impl Default for SupportRouteConfig {
+    fn default() -> Self {
+        Self {
+            user_channel_ids: Vec::new(),
+            engineer_channel_id: String::new(),
+            debug_commands: DebugCommandConfig::default(),
         }
     }
 }

@@ -468,9 +468,8 @@ async fn finish_request_persists_finished_state_and_queues_status_notification()
     }]));
     let mut registry = ToolRegistry::new();
     register_default_workflow_tools(&mut registry).unwrap();
-    let mut config = test_config();
-    config.engineer_notifications.channel_id = "engineers".to_string();
-    let handler = SupportBotHandler::new("support", config, llm, Arc::new(registry), "system");
+    let handler =
+        SupportBotHandler::new("support", test_config(), llm, Arc::new(registry), "system");
 
     let mut thread = thread("users", "help");
     thread.info.metadata = store_state(&json!({}), &SupportThreadState::default()).unwrap();

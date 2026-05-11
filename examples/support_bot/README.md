@@ -9,7 +9,7 @@ Runnable `support-bot` example on top of `thread-bot`.
 - Optional remote MCP tool registration from env-driven `ToolConfig`.
 - Optional Prometheus/OpenMetrics metric families for Mattermost WS,
   thread actors, and support workflow counters/durations.
-- User-channel routing and optional engineer-channel routing.
+- User-channel routing and engineer-channel routing.
 - Engineer-thread mirroring, explicit engineer notifications, finish status
   updates, close notifications, and debug report export.
 - Mattermost runtime via `mattermost-bot` + `ThreadBotPlugin`.
@@ -64,13 +64,10 @@ cargo run -p support-bot-example
 - Defaults are already baked into the example for everything except:
   - `MM_BEARER_TOKEN` (required),
   - LLM settings (`SUPPORT_LLM_BASE_URL`, `SUPPORT_LLM_MODEL`, and optional `SUPPORT_LLM_API_KEY`),
-  - channel routing (`SUPPORT_USER_CHANNEL_IDS`, optional `SUPPORT_ENGINEER_CHANNEL_ID`).
+  - channel routing (`SUPPORT_USER_CHANNEL_IDS`, `SUPPORT_ENGINEER_CHANNEL_ID`).
 - `THREAD_BOT_DATABASE_URL` defaults to `postgres://test:test@localhost:5433/thread_bot_test`.
 - `MM_BASE_PATH` defaults to `http://localhost:8065`.
 - `SUPPORT_SYSTEM_PROMPT_FILE` or `SUPPORT_SYSTEM_PROMPT` overrides the default support-bot system prompt.
-- If `SUPPORT_ENGINEER_CHANNEL_ID` is unset, explicit `notify_engineer` tool
-  calls stay in the user thread. Message mirroring, finish status updates, close
-  notifications, and debug report exports require a separate engineer channel.
 - `SUPPORT_REMOTE_MCP_NAMES` is a comma-separated list. For each name `x`, provide `SUPPORT_REMOTE_MCP_X_URL` and optionally `SUPPORT_REMOTE_MCP_X_AUTH_HEADER` / `SUPPORT_REMOTE_MCP_X_TIMEOUT_SECS` (name is uppercased, `-` becomes `_`).
 - The included instruction files are placeholders; replace them with your runbooks.
 - Instruction repository lint issues are logged at `error` during startup, but
@@ -79,8 +76,8 @@ cargo run -p support-bot-example
 - Support thread state is stored in thread metadata under `support_bot`. The
   current request status is `active` until the model calls `finish_request`,
   then it is persisted as `finished` with the optional finish summary.
-- When `SUPPORT_ENGINEER_CHANNEL_ID` is set, the first handled user thread
-  creates an engineer thread containing a source link and quoted root request.
+- The first handled user thread creates an engineer thread containing a source
+  link and quoted root request in `SUPPORT_ENGINEER_CHANNEL_ID`.
   Later user messages, bot replies, `notify_engineer` calls, and
   `finish_request` status updates are posted as replies in that engineer thread.
 - Engineer thread commands:

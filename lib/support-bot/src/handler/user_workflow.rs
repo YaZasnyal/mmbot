@@ -64,11 +64,7 @@ impl SupportBotHandler {
         info!("support-bot: handling user thread message");
 
         if let Some(effects) = self
-            .ensure_engineer_thread_effects(
-                ctx,
-                &thread,
-                &self.config.engineer_notifications.channel_id,
-            )
+            .ensure_engineer_thread_effects(ctx, &thread, &self.config.routes.engineer_channel_id)
             .await?
         {
             info!("support-bot: queuing linked engineer thread creation");
