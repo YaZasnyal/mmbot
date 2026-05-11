@@ -3,15 +3,15 @@
 //! Provides read access to thread data via [`ThreadStore`] and controlled
 //! write access via actor commands (`Wake`).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::RwLock;
 
 use mattermost_api::apis::configuration::Configuration;
 
 use crate::actor::{build_thread_snapshot, ThreadCommand};
+use crate::actor_registry::ActorRegistry;
 use crate::error::ThreadBotError;
 use crate::store::ThreadStore;
 use crate::types::*;
@@ -24,7 +24,7 @@ use crate::types::*;
 pub struct ThreadBotHandle {
     store: Arc<dyn ThreadStore>,
     config: Arc<Configuration>,
-    actors: Arc<Mutex<HashMap<String, mpsc::Sender<ThreadCommand>>>>,
+    registry: ActorRegistry,
     bot_user_id: Arc<RwLock<Option<String>>>,
 }
 
@@ -33,13 +33,13 @@ impl ThreadBotHandle {
     pub(crate) fn new(
         store: Arc<dyn ThreadStore>,
         config: Arc<Configuration>,
-        actors: Arc<Mutex<HashMap<String, mpsc::Sender<ThreadCommand>>>>,
+        registry: ActorRegistry,
         bot_user_id: Arc<RwLock<Option<String>>>,
     ) -> Self {
         Self {
             store,
             config,
-            actors,
+            registry,
             bot_user_id,
         }
     }
@@ -105,18 +105,17 @@ impl ThreadBotHandle {
     /// Returns `Ok(true)` if the command was sent, `Ok(false)` if no
     /// actor exists.
     pub async fn wake_thread(&self, thread_id: &str) -> Result<bool, ThreadBotError> {
-        let actors = self.actors.lock().await;
-        if let Some(tx) = actors.get(thread_id) {
-            if !tx.is_closed() {
-                let _ = tx.send(ThreadCommand::Wake).await;
-                return Ok(true);
-            }
+        let sent = self
+            .registry
+            .send_if_active(thread_id, ThreadCommand::Wake)
+            .await?;
+        if !sent {
+            tracing::debug!(
+                thread_id = %thread_id,
+                "wake_thread: no actor found"
+            );
         }
-        tracing::debug!(
-            thread_id = %thread_id,
-            "wake_thread: no actor found"
-        );
-        Ok(false)
+        Ok(sent)
     }
 
     // ── Direct store writes ─────────────────────────────────────────────

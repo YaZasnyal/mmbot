@@ -48,12 +48,11 @@
 //! # }
 //! ```
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::RwLock;
 
 use mattermost_api::apis::configuration::Configuration;
 use mattermost_api::apis::users_api;
@@ -64,12 +63,11 @@ use mattermost_bot::{chrono, cron_tab};
 
 use crate::handle::ThreadBotHandle;
 
-use crate::actor::{
-    get_root_post_id, is_root_post, ms_to_datetime, thread_actor, ActorCtx, ThreadCommand,
-};
+use crate::actor::{get_root_post_id, is_root_post, ms_to_datetime, ThreadCommand};
+use crate::actor_registry::{ActorRegistry, ActorSpawnConfig};
 use crate::channel_messages::{channel_messages_after, latest_channel_post};
 use crate::error::ThreadBotError;
-use crate::handler::{ThreadContext, ThreadHandler};
+use crate::handler::ThreadHandler;
 use crate::metrics::ThreadBotMetricsHandle;
 use crate::store::ThreadStore;
 use crate::types::*;
@@ -131,8 +129,8 @@ pub struct ThreadBotPlugin<H: ThreadHandler> {
     store: Arc<dyn ThreadStore>,
     config: ThreadBotConfig,
 
-    /// Per-thread command senders, keyed by root_post_id.
-    actors: Arc<Mutex<HashMap<String, mpsc::Sender<ThreadCommand>>>>,
+    /// Per-thread actor command registry, keyed by root_post_id.
+    registry: ActorRegistry,
 
     /// Bot's own user ID, fetched in [`Plugin::on_start`].
     bot_user_id: Arc<RwLock<Option<String>>>,
@@ -147,7 +145,7 @@ impl<H: ThreadHandler> Clone for ThreadBotPlugin<H> {
             handler: Arc::clone(&self.handler),
             store: Arc::clone(&self.store),
             config: self.config.clone(),
-            actors: Arc::clone(&self.actors),
+            registry: self.registry.clone(),
             bot_user_id: Arc::clone(&self.bot_user_id),
             metrics: self.metrics.clone(),
         }
@@ -161,7 +159,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             handler: Arc::new(handler),
             store,
             config: ThreadBotConfig::default(),
-            actors: Arc::new(Mutex::new(HashMap::new())),
+            registry: ActorRegistry::new(),
             bot_user_id: Arc::new(RwLock::new(None)),
             metrics: ThreadBotMetricsHandle::noop(),
         }
@@ -229,11 +227,10 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
 
         // Check if thread already exists in DB (idempotency for reconnection replays)
         match self.store.get_thread(&thread_id).await {
-            Ok(Some(record)) => {
-                // Already tracked — ensure actor exists (may be a new session).
-                // Lifecycle state belongs to Layer 4, so L3 routes any persisted thread.
-                self.ensure_or_spawn_actor(&record.thread_id, mm_config)
-                    .await;
+            Ok(Some(_)) => {
+                // Already tracked — this is an idempotent replay, so only move
+                // the channel checkpoint. Replies/reactions spawn actors when
+                // there is actual work to route.
                 // Advance channel checkpoint (harmless if replayed — GREATEST keeps max)
                 if let Err(e) = self
                     .store
@@ -281,18 +278,12 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             tracing::error!(channel_id = %channel_id, error = %e, "Failed to upsert channel checkpoint");
         }
 
-        // Spawn actor and send the initial message
-        let tx = {
-            let mut actors = self.actors.lock().await;
-            let tx = self
-                .spawn_actor(thread_id.clone(), Arc::clone(mm_config))
-                .await;
-            actors.insert(thread_id.clone(), tx.clone());
-            tx
-        };
-
-        if let Err(e) = tx
-            .send(ThreadCommand::NewMessage { post: post.clone() })
+        if let Err(e) = self
+            .registry
+            .send_or_spawn(
+                ThreadCommand::NewMessage { post: post.clone() },
+                self.actor_spawn_config(&thread_id, mm_config),
+            )
             .await
         {
             tracing::error!(thread_id = %thread_id, error = %e, "Failed to send initial message to actor");
@@ -371,10 +362,12 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             }
         }
 
-        // Send to actor (creates one if needed)
-        let tx = self.ensure_or_spawn_actor(root_post_id, mm_config).await;
-        if let Err(e) = tx
-            .send(ThreadCommand::NewMessage { post: post.clone() })
+        if let Err(e) = self
+            .registry
+            .send_or_spawn(
+                ThreadCommand::NewMessage { post: post.clone() },
+                self.actor_spawn_config(root_post_id, mm_config),
+            )
             .await
         {
             tracing::error!(
@@ -382,7 +375,6 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
                 error = %e,
                 "Failed to send message to actor"
             );
-            self.actors.lock().await.remove(root_post_id);
         }
     }
 
@@ -435,11 +427,12 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
 
             // If handler returned an effect, send it to the actor
             if let Some(effect) = effect {
-                let tx = self
-                    .ensure_or_spawn_actor(&thread_record.root_post_id, mm_config)
-                    .await;
-                if let Err(e) = tx
-                    .send(ThreadCommand::ControlReaction { effect, change })
+                if let Err(e) = self
+                    .registry
+                    .send_or_spawn(
+                        ThreadCommand::ControlReaction { effect, change },
+                        self.actor_spawn_config(&thread_record.root_post_id, mm_config),
+                    )
                     .await
                 {
                     tracing::error!(
@@ -447,7 +440,6 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
                         error = %e,
                         "Failed to send control reaction to actor"
                     );
-                    self.actors.lock().await.remove(&thread_record.root_post_id);
                 }
             }
         } else {
@@ -626,88 +618,22 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
 
     // ── Actor management ─────────────────────────────────────────────────
 
-    /// Get an existing actor or spawn a new one for the given thread.
-    async fn ensure_or_spawn_actor(
+    fn actor_spawn_config(
         &self,
         thread_id: &str,
         mm_config: &Arc<Configuration>,
-    ) -> mpsc::Sender<ThreadCommand> {
-        let mut actors = self.actors.lock().await;
-
-        if let Some(tx) = actors.get(thread_id) {
-            if !tx.is_closed() {
-                return tx.clone();
-            }
-            actors.remove(thread_id);
-        }
-
-        let tx = self
-            .spawn_actor(thread_id.to_string(), Arc::clone(mm_config))
-            .await;
-        actors.insert(thread_id.to_string(), tx.clone());
-        tx
-    }
-
-    /// Spawn a new per-thread actor task.
-    async fn spawn_actor(
-        &self,
-        thread_id: String,
-        mm_config: Arc<Configuration>,
-    ) -> mpsc::Sender<ThreadCommand> {
-        let (tx, rx) = mpsc::channel(self.config.channel_buffer);
-        let actors = Arc::clone(&self.actors);
-
-        let actor_ctx = ActorCtx {
+    ) -> ActorSpawnConfig<H> {
+        ActorSpawnConfig {
             handler: Arc::clone(&self.handler),
             store: Arc::clone(&self.store),
-            ctx: ThreadContext {
-                config: Arc::clone(&mm_config),
-                store: Arc::clone(&self.store),
-                plugin_id: self.handler.id(),
-                bot_user_id: self.bot_user_id.read().await.clone(),
-            },
-            mm_config,
+            mm_config: Arc::clone(mm_config),
             debounce: self.config.debounce,
+            channel_buffer: self.config.channel_buffer,
             actor_idle_timeout: self.config.actor_idle_timeout,
-            thread_id: thread_id.clone(),
+            thread_id: thread_id.to_string(),
             bot_user_id: Arc::clone(&self.bot_user_id),
             metrics: self.metrics.clone(),
-        };
-
-        tokio::spawn(async move {
-            let mut rx = rx;
-            loop {
-                thread_actor(&mut rx, &actor_ctx).await;
-
-                let mut actors = actors.lock().await;
-                let Some(current) = actors.get(&thread_id) else {
-                    tracing::debug!(
-                        thread_id = %thread_id,
-                        "Actor registry entry is already absent"
-                    );
-                    break;
-                };
-
-                let sender_count = current.strong_count();
-                if sender_count >= 2 || !rx.is_empty() {
-                    tracing::info!(
-                        thread_id = %thread_id,
-                        queued_commands = rx.len(),
-                        sender_count,
-                        "Actor received or may receive commands during teardown, continuing"
-                    );
-                    drop(actors);
-                    continue;
-                }
-
-                actors.remove(&thread_id);
-                break;
-            }
-
-            tracing::info!(thread_id = %thread_id, "finished actor for thread");
-        });
-
-        tx
+        }
     }
 }
 
@@ -742,19 +668,9 @@ impl<H: ThreadHandler> mattermost_bot::Plugin for ThreadBotPlugin<H> {
     }
 
     async fn on_shutdown(&self, _config: &Arc<Configuration>) -> mattermost_bot::Result<()> {
-        let senders: Vec<mpsc::Sender<ThreadCommand>> = {
-            let actors = self.actors.lock().await;
-            actors.values().cloned().collect()
-        };
+        let actor_count = self.registry.send_shutdown_to_all().await;
 
-        tracing::info!(
-            actor_count = senders.len(),
-            "Sending shutdown to thread actors"
-        );
-
-        for tx in senders {
-            let _ = tx.send(ThreadCommand::Shutdown).await;
-        }
+        tracing::info!(actor_count, "Sending shutdown to thread actors");
 
         Ok(())
     }
@@ -826,7 +742,7 @@ impl<H: ThreadHandler> mattermost_bot::Plugin for ThreadBotPlugin<H> {
         let handle = ThreadBotHandle::new(
             Arc::clone(&self.store),
             config,
-            Arc::clone(&self.actors),
+            self.registry.clone(),
             Arc::clone(&self.bot_user_id),
         );
         Arc::clone(&self.handler).setup_cron(scheduler, handle);
