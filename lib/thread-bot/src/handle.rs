@@ -77,14 +77,6 @@ impl ThreadBotHandle {
         self.store.list_thread_messages(thread_id).await
     }
 
-    /// Get reactions from DB for a thread.
-    pub async fn get_thread_reactions(
-        &self,
-        thread_id: &str,
-    ) -> Result<Vec<ThreadReaction>, ThreadBotError> {
-        self.store.list_thread_reactions(thread_id).await
-    }
-
     // ── Snapshot (Mattermost API + DB) ───────────────────────────────────
 
     /// Build a full thread snapshot with live messages from Mattermost API.

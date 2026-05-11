@@ -772,8 +772,8 @@ fn stop_after_critical_effect_failure<H: ThreadHandler>(
 
 /// Build a full [`Thread`] snapshot from Mattermost API and DB.
 ///
-/// Each message and reaction is marked with `is_new = true` if it arrived
-/// after `last_processed_post_at`.
+/// Each message is marked with `is_new = true` if it arrived after
+/// `last_processed_post_at`.
 pub async fn build_thread_snapshot(
     thread_id: &str,
     store: &dyn ThreadStore,
@@ -822,19 +822,9 @@ pub async fn build_thread_snapshot(
             .then_with(|| left.post_id.cmp(&right.post_id))
     });
 
-    // Get reactions from DB, mark is_new
-    let mut reactions = store.list_thread_reactions(thread_id).await?;
-    for reaction in &mut reactions {
-        reaction.is_new = match &processed_at {
-            Some(ts) => reaction.created_at > *ts,
-            None => true,
-        };
-    }
-
     Ok(Thread {
         info: record.into(),
         messages,
-        reactions,
     })
 }
 

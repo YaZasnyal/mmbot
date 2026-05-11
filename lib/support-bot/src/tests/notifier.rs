@@ -31,7 +31,6 @@ fn thread() -> Thread {
             updated_at: Utc::now(),
             is_new: true,
         }],
-        reactions: Vec::new(),
     }
 }
 

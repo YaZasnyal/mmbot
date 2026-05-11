@@ -1,7 +1,7 @@
 use crate::error::ThreadBotError;
 use crate::types::{
-    AppendReaction, ChannelCheckpoint, ThreadLink, ThreadMessageRecord, ThreadReaction,
-    ThreadRecord, UpsertThread, UpsertThreadLink, UpsertThreadMessage,
+    ChannelCheckpoint, ThreadLink, ThreadMessageRecord, ThreadRecord, UpsertThread,
+    UpsertThreadLink, UpsertThreadMessage,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -107,15 +107,6 @@ pub trait ThreadStore: Send + Sync + 'static {
         post_id: &str,
         metadata: serde_json::Value,
     ) -> Result<(), ThreadBotError>;
-
-    /// Append a reaction event
-    async fn append_reaction(&self, input: AppendReaction) -> Result<(), ThreadBotError>;
-
-    /// Get list of reactions for a thread (for building Thread snapshot)
-    async fn list_thread_reactions(
-        &self,
-        thread_id: &str,
-    ) -> Result<Vec<ThreadReaction>, ThreadBotError>;
 
     // ── Channel checkpoints ─────────────────────────────────────────────
 

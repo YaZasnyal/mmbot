@@ -22,9 +22,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use thread_bot::{
-    AppendReaction, ChannelCheckpoint, ThreadInfo, ThreadInvocation, ThreadLink, ThreadMessage,
-    ThreadMessageRecord, ThreadReaction, ThreadRecord, ThreadStore, ThreadTrigger, UpsertThread,
-    UpsertThreadLink, UpsertThreadMessage,
+    ChannelCheckpoint, ThreadInfo, ThreadInvocation, ThreadLink, ThreadMessage,
+    ThreadMessageRecord, ThreadRecord, ThreadStore, ThreadTrigger, UpsertThread, UpsertThreadLink,
+    UpsertThreadMessage,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -168,7 +168,6 @@ fn thread(channel_id: &str, message: &str) -> Thread {
             updated_at: Utc::now(),
             is_new: true,
         }],
-        reactions: Vec::new(),
     }
 }
 
@@ -326,17 +325,6 @@ impl ThreadStore for SnapshotStore {
         _metadata: serde_json::Value,
     ) -> Result<(), ThreadBotError> {
         panic!("store should not set message metadata")
-    }
-
-    async fn append_reaction(&self, _input: AppendReaction) -> Result<(), ThreadBotError> {
-        panic!("store should not append reactions")
-    }
-
-    async fn list_thread_reactions(
-        &self,
-        _thread_id: &str,
-    ) -> Result<Vec<ThreadReaction>, ThreadBotError> {
-        Ok(Vec::new())
     }
 
     async fn list_channel_checkpoints(&self) -> Result<Vec<ChannelCheckpoint>, ThreadBotError> {

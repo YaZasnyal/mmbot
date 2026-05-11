@@ -11,8 +11,7 @@ use chrono::Utc;
 use common::{make_message, make_thread, TestDb};
 use serde_json::json;
 use thread_bot::{
-    AppendReaction, ReactionAction, ThreadBotError, ThreadStore, UpsertThread, UpsertThreadLink,
-    UpsertThreadMessage,
+    ThreadBotError, ThreadStore, UpsertThread, UpsertThreadLink, UpsertThreadMessage,
 };
 
 // ---------------------------------------------------------------------------
@@ -596,209 +595,8 @@ async fn set_message_metadata_not_found() {
 }
 
 // ---------------------------------------------------------------------------
-// Reaction tests
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn append_reaction_with_explicit_thread_id() {
-    let db = TestDb::new().await;
-    let store = db.store().await;
-
-    let thread = make_thread("1");
-    store.upsert_thread(thread).await.unwrap();
-
-    let reaction = AppendReaction {
-        thread_id: Some("thread_1".to_string()),
-        post_id: "root_post_1".to_string(),
-        user_id: "user_2".to_string(),
-        emoji_name: "white_check_mark".to_string(),
-        action: ReactionAction::Added,
-    };
-    store.append_reaction(reaction).await.unwrap();
-
-    let reactions = store.list_thread_reactions("thread_1").await.unwrap();
-    assert_eq!(reactions.len(), 1);
-    assert_eq!(reactions[0].emoji_name, "white_check_mark");
-    assert_eq!(reactions[0].user_id, "user_2");
-    assert_eq!(reactions[0].action, ReactionAction::Added);
-
-    db.cleanup().await;
-}
-
-#[tokio::test]
-async fn append_reaction_auto_resolves_thread_by_root_post() {
-    let db = TestDb::new().await;
-    let store = db.store().await;
-
-    let thread = make_thread("1");
-    store.upsert_thread(thread).await.unwrap();
-
-    // No explicit thread_id — should resolve via get_thread_by_post
-    let reaction = AppendReaction {
-        thread_id: None,
-        post_id: "root_post_1".to_string(),
-        user_id: "user_2".to_string(),
-        emoji_name: "thumbsup".to_string(),
-        action: ReactionAction::Added,
-    };
-    store.append_reaction(reaction).await.unwrap();
-
-    let reactions = store.list_thread_reactions("thread_1").await.unwrap();
-    assert_eq!(reactions.len(), 1);
-    assert_eq!(reactions[0].emoji_name, "thumbsup");
-
-    db.cleanup().await;
-}
-
-#[tokio::test]
-async fn append_reaction_auto_resolves_thread_by_message_post() {
-    let db = TestDb::new().await;
-    let store = db.store().await;
-
-    let thread = make_thread("1");
-    store.upsert_thread(thread).await.unwrap();
-
-    // Add a message to the thread
-    let msg = UpsertThreadMessage {
-        post_id: "reply_99".to_string(),
-        thread_id: "thread_1".to_string(),
-        user_id: "user_2".to_string(),
-        is_bot_message: false,
-        root_id: Some("root_post_1".to_string()),
-        parent_post_id: None,
-        metadata: json!({}),
-        post_created_at: Utc::now(),
-        post_updated_at: None,
-        post_deleted_at: None,
-    };
-    store.upsert_message(msg).await.unwrap();
-
-    // React to the reply (no explicit thread_id)
-    let reaction = AppendReaction {
-        thread_id: None,
-        post_id: "reply_99".to_string(),
-        user_id: "user_3".to_string(),
-        emoji_name: "thumbsdown".to_string(),
-        action: ReactionAction::Added,
-    };
-    store.append_reaction(reaction).await.unwrap();
-
-    let reactions = store.list_thread_reactions("thread_1").await.unwrap();
-    assert_eq!(reactions.len(), 1);
-    assert_eq!(reactions[0].post_id, "reply_99");
-
-    db.cleanup().await;
-}
-
-#[tokio::test]
-async fn append_reaction_untracked_post_is_noop() {
-    let db = TestDb::new().await;
-    let store = db.store().await;
-
-    // No thread exists — reaction on untracked post should silently succeed
-    let reaction = AppendReaction {
-        thread_id: None,
-        post_id: "unknown_post".to_string(),
-        user_id: "user_1".to_string(),
-        emoji_name: "smile".to_string(),
-        action: ReactionAction::Added,
-    };
-    let result = store.append_reaction(reaction).await;
-    assert!(result.is_ok());
-
-    db.cleanup().await;
-}
-
-#[tokio::test]
-async fn list_thread_reactions_ordered_by_created_at() {
-    let db = TestDb::new().await;
-    let store = db.store().await;
-
-    let thread = make_thread("1");
-    store.upsert_thread(thread).await.unwrap();
-
-    let emojis = ["thumbsup", "eyes", "white_check_mark"];
-    for emoji in &emojis {
-        let reaction = AppendReaction {
-            thread_id: Some("thread_1".to_string()),
-            post_id: "root_post_1".to_string(),
-            user_id: "user_2".to_string(),
-            emoji_name: emoji.to_string(),
-            action: ReactionAction::Added,
-        };
-        store.append_reaction(reaction).await.unwrap();
-    }
-
-    let reactions = store.list_thread_reactions("thread_1").await.unwrap();
-    assert_eq!(reactions.len(), 3);
-
-    // Verify ascending order
-    for i in 1..reactions.len() {
-        assert!(reactions[i].created_at >= reactions[i - 1].created_at);
-    }
-
-    db.cleanup().await;
-}
-
-#[tokio::test]
-async fn list_thread_reactions_empty() {
-    let db = TestDb::new().await;
-    let store = db.store().await;
-
-    let thread = make_thread("1");
-    store.upsert_thread(thread).await.unwrap();
-
-    let reactions = store.list_thread_reactions("thread_1").await.unwrap();
-    assert!(reactions.is_empty());
-
-    db.cleanup().await;
-}
-
-#[tokio::test]
-async fn reaction_add_and_remove_are_both_recorded() {
-    let db = TestDb::new().await;
-    let store = db.store().await;
-
-    let thread = make_thread("1");
-    store.upsert_thread(thread).await.unwrap();
-
-    // Add a reaction
-    store
-        .append_reaction(AppendReaction {
-            thread_id: Some("thread_1".to_string()),
-            post_id: "root_post_1".to_string(),
-            user_id: "user_2".to_string(),
-            emoji_name: "thumbsup".to_string(),
-            action: ReactionAction::Added,
-        })
-        .await
-        .unwrap();
-
-    // Remove the same reaction
-    store
-        .append_reaction(AppendReaction {
-            thread_id: Some("thread_1".to_string()),
-            post_id: "root_post_1".to_string(),
-            user_id: "user_2".to_string(),
-            emoji_name: "thumbsup".to_string(),
-            action: ReactionAction::Removed,
-        })
-        .await
-        .unwrap();
-
-    let reactions = store.list_thread_reactions("thread_1").await.unwrap();
-    // Both events are stored (append-only log)
-    assert_eq!(reactions.len(), 2);
-    assert_eq!(reactions[0].action, ReactionAction::Added);
-    assert_eq!(reactions[1].action, ReactionAction::Removed);
-
-    db.cleanup().await;
-}
-
-// ---------------------------------------------------------------------------
 // Cross-feature / integration scenarios
 // ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn full_thread_lifecycle() {
     let db = TestDb::new().await;
@@ -849,18 +647,6 @@ async fn full_thread_lifecycle() {
         .await
         .unwrap();
 
-    // 5. User reacts with ✅
-    store
-        .append_reaction(AppendReaction {
-            thread_id: Some("thread_lifecycle".to_string()),
-            post_id: "root_post_lifecycle".to_string(),
-            user_id: "user_lifecycle".to_string(),
-            emoji_name: "white_check_mark".to_string(),
-            action: ReactionAction::Added,
-        })
-        .await
-        .unwrap();
-
     // Verify final state
     let final_thread = store.get_thread("thread_lifecycle").await.unwrap().unwrap();
     assert_eq!(
@@ -880,13 +666,6 @@ async fn full_thread_lifecycle() {
     assert!(!messages[0].is_bot_message);
     assert!(messages[1].is_bot_message);
 
-    let reactions = store
-        .list_thread_reactions("thread_lifecycle")
-        .await
-        .unwrap();
-    assert_eq!(reactions.len(), 1);
-    assert_eq!(reactions[0].emoji_name, "white_check_mark");
-
     db.cleanup().await;
 }
 
@@ -895,7 +674,7 @@ async fn messages_cascade_delete_with_thread() {
     let db = TestDb::new().await;
     let store = db.store().await;
 
-    // Create thread with messages and reactions
+    // Create thread with messages
     let thread = make_thread("cascade");
     store.upsert_thread(thread).await.unwrap();
 
@@ -913,17 +692,6 @@ async fn messages_cascade_delete_with_thread() {
     };
     store.upsert_message(msg).await.unwrap();
 
-    store
-        .append_reaction(AppendReaction {
-            thread_id: Some("thread_cascade".to_string()),
-            post_id: "cascade_msg".to_string(),
-            user_id: "user_2".to_string(),
-            emoji_name: "thumbsup".to_string(),
-            action: ReactionAction::Added,
-        })
-        .await
-        .unwrap();
-
     // Delete the thread directly via SQL (simulating cascade)
     sqlx::query("DELETE FROM threads WHERE thread_id = $1")
         .bind("thread_cascade")
@@ -931,12 +699,9 @@ async fn messages_cascade_delete_with_thread() {
         .await
         .unwrap();
 
-    // Messages and reactions should be gone (CASCADE)
+    // Messages should be gone (CASCADE)
     let msg = store.get_message("cascade_msg").await.unwrap();
     assert!(msg.is_none());
-
-    let reactions = store.list_thread_reactions("thread_cascade").await.unwrap();
-    assert!(reactions.is_empty());
 
     db.cleanup().await;
 }

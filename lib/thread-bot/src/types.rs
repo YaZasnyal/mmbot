@@ -61,18 +61,15 @@ pub enum ThreadTrigger {
 
 /// Full thread snapshot for handler (expensive to build).
 ///
-/// Contains all messages and reactions in the thread. Each item has an
-/// [`is_new`](ThreadMessage::is_new) flag indicating whether it arrived
-/// since the last handler run.
+/// Contains all messages in the thread. Each item has an
+/// [`is_new`](ThreadMessage::is_new) flag indicating whether it arrived since
+/// the last handler run.
 #[derive(Debug, Clone)]
 pub struct Thread {
     pub info: ThreadInfo,
 
     /// All messages in the thread, ordered by creation time.
     pub messages: Vec<ThreadMessage>,
-
-    /// All reactions in the thread, ordered by creation time.
-    pub reactions: Vec<ThreadReaction>,
 }
 
 /// Thread metadata (converted from ThreadRecord)
@@ -125,18 +122,6 @@ pub struct ThreadMessage {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// `true` if this message arrived since the last handler run.
-    pub is_new: bool,
-}
-
-/// Thread reaction event
-#[derive(Debug, Clone)]
-pub struct ThreadReaction {
-    pub post_id: String,
-    pub user_id: String,
-    pub emoji_name: String,
-    pub action: ReactionAction,
-    pub created_at: DateTime<Utc>,
-    /// `true` if this reaction arrived since the last handler run.
     pub is_new: bool,
 }
 
@@ -213,14 +198,4 @@ pub struct ChannelCheckpoint {
     pub last_seen_post_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub is_reconciled: bool,
-}
-
-/// Input for appending a reaction
-#[derive(Debug, Clone)]
-pub struct AppendReaction {
-    pub thread_id: Option<String>,
-    pub post_id: String,
-    pub user_id: String,
-    pub emoji_name: String,
-    pub action: ReactionAction,
 }

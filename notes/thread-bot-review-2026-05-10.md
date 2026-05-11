@@ -9,8 +9,8 @@ Scope: `lib/thread-bot`, with emphasis on `lib/thread-bot/src/runtime.rs`.
 
 The best simplification path is not a big rewrite. I would split the current runtime into three small responsibilities and delete duplicated conversion/routing code as we go:
 
-1. `router`: convert Mattermost events/posts/reactions into internal routing actions.
-2. `ingest`: persist root posts, replies, bot messages, reactions, and checkpoints.
+1. `router`: convert Mattermost events/posts/root reactions into internal routing actions.
+2. `ingest`: persist root posts, replies, bot messages, and checkpoints.
 3. `actor_registry`: own `HashMap<thread_id, Sender<ThreadCommand>>` and actor spawn/teardown details.
 
 That should make the core runtime read like orchestration instead of stateful plumbing.
@@ -67,7 +67,7 @@ Recommended simplification:
 
 This removes one branch where actor lifecycle leaks into ingestion.
 
-### P1: Actor registry teardown relies on `Sender::strong_count()` heuristics
+### P1: Actor registry teardown relies on `Sender::strong_count()` heuristics (closed)
 
 Location: `lib/thread-bot/src/runtime.rs:677`
 
@@ -82,13 +82,10 @@ if sender_count >= 2 || !rx.is_empty() {
 
 This is clever, but it is also hard to reason about. A temporary sender clone held by a routing function can keep the actor alive even if no command will actually arrive. Conversely, the code is relying on subtle timing between `send()`, clone lifetime, queue state, and registry locking.
 
-Recommended simplification:
+Updated decision:
 
 - Move this logic into an `ActorRegistry` type with one public method: `send_or_spawn(thread_id, command, config)`.
-- Keep sender lifetime entirely inside that method where possible: get/spawn, send, remove-on-send-error.
-- Let actors exit and remove their registry entry by identity/token rather than by sender count. For example, store `ActorEntry { tx, generation }`; spawned task removes only if generation still matches.
-
-That would replace the sender-count teardown protocol with a generation-token protocol, which is easier to test and explain.
+- Keep `strong_count()` localized inside the registry and do not attempt generation-token removal for now. A prior attempt made the teardown protocol harder to get right.
 
 ### P2: `runtime.rs` duplicates post-to-record conversion logic that already belongs near actor ingestion
 
@@ -139,28 +136,16 @@ Updated simplification:
 - Keep root-post control reactions as an L4 hook via `on_control_reaction()`.
 - Ignore non-root reactions in `thread-bot`; L4 can persist any reaction-derived state into its own metadata if it needs that later.
 
-### P2: `ThreadBotPlugin` owns too much mutable shared state directly
+### P2: `ThreadBotPlugin` owns too much mutable shared state directly (deferred)
 
 Location: `lib/thread-bot/src/runtime.rs:124`
 
 Fields currently include handler, store, config, actors, bot user id, metrics. That is manageable, but most methods only need subsets. The result is that every helper has access to everything, so boundaries blur.
 
-Recommended simplification:
+Updated decision:
 
-Introduce two narrow structs:
-
-```rust
-struct RuntimeDeps<H> {
-    handler: Arc<H>,
-    store: Arc<dyn ThreadStore>,
-    metrics: ThreadBotMetricsHandle,
-    bot_user_id: Arc<RwLock<Option<String>>>,
-}
-
-struct ActorRegistry<H> { ... }
-```
-
-Then `ThreadBotPlugin` becomes configuration + deps + registry. This is not just aesthetics: it makes it harder for reconciliation code to accidentally manage actors, or for reaction classification to mutate checkpoints.
+- Do not introduce `RuntimeDeps` or a similar wrapper yet. At the current size it looks more like abstraction overhead than simplification.
+- Revisit only if `runtime.rs` keeps growing after the current deletion pass.
 
 ### P2: Reconciliation is too large and mixes scanning, skip policy, replay, and checkpoint finalization
 
@@ -347,6 +332,7 @@ Expected result: reaction behavior becomes small enough that L4 owns any domain-
 Status: done 2026-05-11.
 
 - Removed runtime emoji persistence, including feedback reaction storage.
+- Removed the L3 reaction storage API, snapshot field, pg-store methods, migration table, mocks, and pg-store reaction tests.
 - Removed the `is_feedback_reaction()` handler hook.
 - Kept root control reactions as a synchronous L4 policy hook that can dispatch effects.
 
@@ -356,6 +342,8 @@ Status: done 2026-05-11.
 - I would not merge actor and runtime logic. The actor is already a better boundary than the runtime; the pressure should go the other direction.
 - I would not move Mattermost API effect execution back into runtime. Keeping effects in the actor is consistent with the “one executor per thread while active” model.
 - I would not add Layer 3 business statuses again. RFC 0007’s direction still looks right.
+- I would not replace the localized `ActorRegistry` `strong_count()` teardown check with generation tokens right now; the added protocol did not prove simpler in practice.
+- I would not introduce `RuntimeDeps`/state wrapper structs until there is stronger pressure from new runtime responsibilities.
 
 ## Quick win checklist
 
@@ -370,7 +358,7 @@ Status: done 2026-05-11.
 
 ## Bottom line
 
-The main simplification opportunity is to make `runtime.rs` boring. Right now it is a router, ingester, reconciler, reaction policy engine, actor registry, and plugin adapter in one file. The underlying model is mostly sound; the complexity is concentrated in boundaries that have not been named yet.
+The main simplification opportunity is to make `runtime.rs` boring. It has already shed actor registry ownership and reaction storage; the remaining complexity is concentrated around routing, ingestion, reconciliation, and plugin adaptation.
 
 If we name those boundaries and delete the duplicated conversion/checkpoint code, the remaining hard parts should be isolated to two places only:
 

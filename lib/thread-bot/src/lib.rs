@@ -25,9 +25,9 @@ pub use pg_store::PgThreadStore;
 pub use runtime::{ThreadBotConfig, ThreadBotPlugin};
 pub use store::ThreadStore;
 pub use types::{
-    AppendReaction, ChannelCheckpoint, ReactionAction, ReactionChange, Thread, ThreadInfo,
-    ThreadInvocation, ThreadLink, ThreadMessage, ThreadMessageRecord, ThreadReaction, ThreadRecord,
-    ThreadTrigger, UpsertThread, UpsertThreadLink, UpsertThreadMessage,
+    ChannelCheckpoint, ReactionAction, ReactionChange, Thread, ThreadInfo, ThreadInvocation,
+    ThreadLink, ThreadMessage, ThreadMessageRecord, ThreadRecord, ThreadTrigger, UpsertThread,
+    UpsertThreadLink, UpsertThreadMessage,
 };
 
 // Re-export async_trait for convenience

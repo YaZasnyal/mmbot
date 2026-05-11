@@ -1,8 +1,8 @@
 use crate::error::ThreadBotError;
 use crate::store::ThreadStore;
 use crate::types::{
-    AppendReaction, ChannelCheckpoint, ReactionAction, ThreadLink, ThreadMessageRecord,
-    ThreadReaction, ThreadRecord, UpsertThread, UpsertThreadLink, UpsertThreadMessage,
+    ChannelCheckpoint, ThreadLink, ThreadMessageRecord, ThreadRecord, UpsertThread,
+    UpsertThreadLink, UpsertThreadMessage,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -21,23 +21,6 @@ impl PgThreadStore {
             .await
             .map_err(|e| ThreadBotError::Internal(Box::new(e)))?;
         Ok(Self { pool })
-    }
-}
-
-// Helper: parse ReactionAction from DB string
-fn parse_reaction_action(s: &str) -> ReactionAction {
-    match s {
-        "added" => ReactionAction::Added,
-        "removed" => ReactionAction::Removed,
-        _ => ReactionAction::Added,
-    }
-}
-
-// Helper: ReactionAction to DB string
-fn reaction_action_str(action: &ReactionAction) -> &'static str {
-    match action {
-        ReactionAction::Added => "added",
-        ReactionAction::Removed => "removed",
     }
 }
 
@@ -129,28 +112,6 @@ impl From<MessageRow> for ThreadMessageRecord {
             post_deleted_at: row.post_deleted_at,
             created_at: row.created_at,
             updated_at: row.updated_at,
-        }
-    }
-}
-
-#[derive(FromRow)]
-struct ReactionRow {
-    post_id: String,
-    user_id: String,
-    emoji_name: String,
-    action: String,
-    created_at: DateTime<Utc>,
-}
-
-impl From<ReactionRow> for ThreadReaction {
-    fn from(row: ReactionRow) -> Self {
-        Self {
-            post_id: row.post_id,
-            user_id: row.user_id,
-            emoji_name: row.emoji_name,
-            action: parse_reaction_action(&row.action),
-            created_at: row.created_at,
-            is_new: false, // Set by build_thread_snapshot
         }
     }
 }
@@ -502,58 +463,6 @@ impl ThreadStore for PgThreadStore {
             return Err(ThreadBotError::MessageNotFound(post_id.to_string()));
         }
         Ok(())
-    }
-
-    async fn append_reaction(&self, input: AppendReaction) -> Result<(), ThreadBotError> {
-        let action = reaction_action_str(&input.action);
-        let now = Utc::now();
-
-        let thread_id = match input.thread_id {
-            Some(id) => id,
-            None => {
-                let record = self.get_thread_by_post(&input.post_id).await?;
-                match record {
-                    Some(r) => r.thread_id,
-                    None => return Ok(()), // Not a tracked thread, skip
-                }
-            }
-        };
-
-        sqlx::query(
-            r#"
-            INSERT INTO thread_reactions (thread_id, post_id, user_id, emoji_name, action, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            "#,
-        )
-        .bind(&thread_id)
-        .bind(&input.post_id)
-        .bind(&input.user_id)
-        .bind(&input.emoji_name)
-        .bind(action)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    async fn list_thread_reactions(
-        &self,
-        thread_id: &str,
-    ) -> Result<Vec<ThreadReaction>, ThreadBotError> {
-        let rows: Vec<ReactionRow> = sqlx::query_as(
-            r#"
-            SELECT post_id, user_id, emoji_name, action, created_at
-            FROM thread_reactions
-            WHERE thread_id = $1
-            ORDER BY created_at ASC
-            "#,
-        )
-        .bind(thread_id)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     // ── Channel checkpoints ─────────────────────────────────────────────

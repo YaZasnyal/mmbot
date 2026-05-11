@@ -35,17 +35,7 @@ struct MockStoreState {
     threads: HashMap<String, ThreadRecord>,
     links: HashMap<(String, String), ThreadLink>,
     messages: HashMap<String, ThreadMessageRecord>,
-    reactions: Vec<StoredReaction>,
     checkpoints: HashMap<String, ChannelCheckpoint>,
-}
-
-struct StoredReaction {
-    thread_id: String,
-    post_id: String,
-    user_id: String,
-    emoji_name: String,
-    action: ReactionAction,
-    created_at: DateTime<Utc>,
 }
 
 impl MockStore {
@@ -55,7 +45,6 @@ impl MockStore {
                 threads: HashMap::new(),
                 links: HashMap::new(),
                 messages: HashMap::new(),
-                reactions: Vec::new(),
                 checkpoints: HashMap::new(),
             }),
         }
@@ -347,54 +336,6 @@ impl ThreadStore for MockStore {
             }
             None => Err(ThreadBotError::MessageNotFound(post_id.to_string())),
         }
-    }
-
-    async fn append_reaction(&self, input: AppendReaction) -> Result<(), ThreadBotError> {
-        let mut state = self.state.write().await;
-
-        let thread_id = match input.thread_id {
-            Some(id) => id,
-            None => {
-                if let Some(thread) = state.threads.get(&input.post_id) {
-                    thread.thread_id.clone()
-                } else if let Some(msg) = state.messages.get(&input.post_id) {
-                    msg.thread_id.clone()
-                } else {
-                    return Ok(());
-                }
-            }
-        };
-
-        state.reactions.push(StoredReaction {
-            thread_id,
-            post_id: input.post_id,
-            user_id: input.user_id,
-            emoji_name: input.emoji_name,
-            action: input.action,
-            created_at: Utc::now(),
-        });
-
-        Ok(())
-    }
-
-    async fn list_thread_reactions(
-        &self,
-        thread_id: &str,
-    ) -> Result<Vec<ThreadReaction>, ThreadBotError> {
-        let state = self.state.read().await;
-        Ok(state
-            .reactions
-            .iter()
-            .filter(|r| r.thread_id == thread_id)
-            .map(|r| ThreadReaction {
-                post_id: r.post_id.clone(),
-                user_id: r.user_id.clone(),
-                emoji_name: r.emoji_name.clone(),
-                action: r.action,
-                created_at: r.created_at,
-                is_new: false,
-            })
-            .collect())
     }
 
     async fn list_channel_checkpoints(&self) -> Result<Vec<ChannelCheckpoint>, ThreadBotError> {

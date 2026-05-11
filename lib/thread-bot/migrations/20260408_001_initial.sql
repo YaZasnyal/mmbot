@@ -54,20 +54,6 @@ CREATE INDEX idx_thread_messages_metadata_gin ON thread_messages USING GIN(metad
 CREATE INDEX idx_thread_messages_is_bot ON thread_messages(is_bot_message)
     WHERE is_bot_message = TRUE;
 
-CREATE TABLE thread_reactions (
-    id BIGSERIAL PRIMARY KEY,
-    thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
-    post_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    emoji_name TEXT NOT NULL,
-    action TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE INDEX idx_thread_reactions_thread_id ON thread_reactions(thread_id);
-CREATE INDEX idx_thread_reactions_post_id ON thread_reactions(post_id);
-CREATE INDEX idx_thread_reactions_emoji_name ON thread_reactions(emoji_name);
-
 CREATE TABLE channel_checkpoints (
     channel_id TEXT PRIMARY KEY,
     last_seen_post_id TEXT NOT NULL,
