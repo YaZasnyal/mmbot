@@ -1,4 +1,5 @@
 use super::*;
+use crate::admission::{SupportThreadAdmissionDecision, SupportThreadAdmissionHook};
 use crate::config::{
     InstructionConfig, LlmConfig, SupportBotLimits, SupportRouteConfig, ToolConfig,
 };
@@ -16,6 +17,18 @@ impl LlmClient for StaticLlm {
             message: ChatMessage::assistant("ok"),
             tool_calls: Vec::new(),
         })
+    }
+}
+
+struct AcceptAdmissionHook;
+
+#[async_trait]
+impl SupportThreadAdmissionHook for AcceptAdmissionHook {
+    async fn evaluate(
+        &self,
+        _thread: &thread_bot::Thread,
+    ) -> crate::Result<SupportThreadAdmissionDecision> {
+        Ok(SupportThreadAdmissionDecision::Accept)
     }
 }
 
@@ -37,6 +50,17 @@ fn test_config() -> SupportBotConfig {
         limits: SupportBotLimits::default(),
         routes: SupportRouteConfig::default(),
     }
+}
+
+#[tokio::test]
+async fn builder_accepts_admission_hook() {
+    let llm = Arc::new(StaticLlm);
+
+    SupportBotBuilder::new("support", test_config(), llm)
+        .with_admission_hook(Arc::new(AcceptAdmissionHook))
+        .build()
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

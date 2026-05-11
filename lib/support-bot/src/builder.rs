@@ -1,3 +1,4 @@
+use crate::admission::SupportThreadAdmissionHook;
 use crate::config::SupportBotConfig;
 use crate::debug::DebugCommandHandler;
 use crate::error::Result;
@@ -25,6 +26,7 @@ pub struct SupportBotBuilder {
     config: SupportBotConfig,
     llm: Arc<dyn LlmClient>,
     tools: ToolRegistry,
+    admission_hook: Option<Arc<dyn SupportThreadAdmissionHook>>,
     debug_handler: Option<Arc<dyn DebugCommandHandler>>,
     system_prompt: String,
     include_default_workflow_tools: bool,
@@ -40,6 +42,7 @@ impl SupportBotBuilder {
             config,
             llm,
             tools: ToolRegistry::new(),
+            admission_hook: None,
             debug_handler: None,
             system_prompt,
             include_default_workflow_tools: true,
@@ -55,6 +58,11 @@ impl SupportBotBuilder {
 
     pub fn with_debug_handler(mut self, handler: Arc<dyn DebugCommandHandler>) -> Self {
         self.debug_handler = Some(handler);
+        self
+    }
+
+    pub fn with_admission_hook(mut self, hook: Arc<dyn SupportThreadAdmissionHook>) -> Self {
+        self.admission_hook = Some(hook);
         self
     }
 
@@ -108,6 +116,10 @@ impl SupportBotBuilder {
 
         if let Some(debug_handler) = self.debug_handler {
             handler = handler.with_debug_handler(debug_handler);
+        }
+
+        if let Some(admission_hook) = self.admission_hook {
+            handler = handler.with_admission_hook(admission_hook);
         }
 
         if let Some(metrics) = self.metrics {

@@ -24,3 +24,17 @@ fn support_thread_state_ignores_legacy_engineer_thread_field() {
 
     assert_eq!(decoded, SupportThreadState::default());
 }
+
+#[test]
+fn ignored_support_thread_state_round_trips_as_json() {
+    let state = SupportThreadState {
+        status: SupportThreadStatus::Ignored,
+        ignored_reason: Some("missing required text: @xxxduty".to_string()),
+        ..SupportThreadState::default()
+    };
+
+    let value = serde_json::to_value(&state).unwrap();
+    let decoded: SupportThreadState = serde_json::from_value(value).unwrap();
+
+    assert_eq!(decoded, state);
+}

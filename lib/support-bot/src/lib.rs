@@ -3,6 +3,7 @@
 //! This crate is an experimental skeleton for Mattermost support bots built on
 //! top of `thread-bot`.
 
+pub mod admission;
 pub mod builder;
 pub mod config;
 mod conversation;
@@ -25,6 +26,9 @@ mod workflow;
 #[cfg(test)]
 mod testutil;
 
+pub use admission::{
+    FirstMessageTextAdmissionHook, SupportThreadAdmissionDecision, SupportThreadAdmissionHook,
+};
 pub use async_trait::async_trait;
 pub use builder::{SupportBotBuilder, DEFAULT_SUPPORT_SYSTEM_PROMPT};
 pub use config::{

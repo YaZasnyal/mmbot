@@ -7,6 +7,8 @@ pub struct SupportThreadState {
     pub status: SupportThreadStatus,
     #[serde(default)]
     pub finished_summary: Option<String>,
+    #[serde(default)]
+    pub ignored_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -14,6 +16,7 @@ pub struct SupportThreadState {
 pub enum SupportThreadStatus {
     #[default]
     Active,
+    Ignored,
     Finished,
     Stopped,
 }
@@ -24,6 +27,7 @@ impl Default for SupportThreadState {
             version: 1,
             status: SupportThreadStatus::Active,
             finished_summary: None,
+            ignored_reason: None,
         }
     }
 }

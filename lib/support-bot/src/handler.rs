@@ -1,3 +1,4 @@
+use crate::admission::SupportThreadAdmissionHook;
 use crate::config::SupportBotConfig;
 use crate::debug::{DebugCommand, DebugCommandHandler};
 use crate::debug_export::handle_debug_export_html;
@@ -26,6 +27,7 @@ pub struct SupportBotHandler {
     config: SupportBotConfig,
     llm: Arc<dyn LlmClient>,
     tools: Arc<ToolRegistry>,
+    admission_hook: Option<Arc<dyn SupportThreadAdmissionHook>>,
     debug_handler: Option<Arc<dyn DebugCommandHandler>>,
     system_prompt: String,
     metrics: SupportBotMetricsHandle,
@@ -47,6 +49,7 @@ impl SupportBotHandler {
             config,
             llm,
             tools,
+            admission_hook: None,
             debug_handler: None,
             system_prompt: system_prompt.into(),
             metrics: SupportBotMetricsHandle::noop(),
@@ -55,6 +58,11 @@ impl SupportBotHandler {
 
     pub fn with_debug_handler(mut self, handler: Arc<dyn DebugCommandHandler>) -> Self {
         self.debug_handler = Some(handler);
+        self
+    }
+
+    pub fn with_admission_hook(mut self, hook: Arc<dyn SupportThreadAdmissionHook>) -> Self {
+        self.admission_hook = Some(hook);
         self
     }
 

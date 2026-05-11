@@ -42,6 +42,8 @@ export SUPPORT_LLM_TIMEOUT_SECS=45
 
 export SUPPORT_USER_CHANNEL_IDS=YOUR_SUPPORT_CHANNEL_ID
 export SUPPORT_ENGINEER_CHANNEL_ID=YOUR_ENGINEER_CHANNEL_ID
+# Optional: only handle user threads whose first message contains these texts.
+# export SUPPORT_ADMISSION_REQUIRED_TEXTS=@xxxduty
 
 export SUPPORT_INSTRUCTIONS_ROOT=examples/support_bot/instructions
 
@@ -68,14 +70,19 @@ cargo run -p support-bot-example
 - `THREAD_BOT_DATABASE_URL` defaults to `postgres://test:test@localhost:5433/thread_bot_test`.
 - `MM_BASE_PATH` defaults to `http://localhost:8065`.
 - `SUPPORT_SYSTEM_PROMPT_FILE` or `SUPPORT_SYSTEM_PROMPT` overrides the default support-bot system prompt.
+- `SUPPORT_ADMISSION_REQUIRED_TEXTS` is an optional comma-separated list of
+  case-sensitive substrings that must all appear in the first user-thread
+  message. For example, `@xxxduty` ignores unrelated channel traffic before
+  engineer-thread creation or LLM processing.
 - `SUPPORT_REMOTE_MCP_NAMES` is a comma-separated list. For each name `x`, provide `SUPPORT_REMOTE_MCP_X_URL` and optionally `SUPPORT_REMOTE_MCP_X_AUTH_HEADER` / `SUPPORT_REMOTE_MCP_X_TIMEOUT_SECS` (name is uppercased, `-` becomes `_`).
 - The included instruction files are placeholders; replace them with your runbooks.
 - Instruction repository lint issues are logged at `error` during startup, but
   they do not stop the example process. Invalid documents are skipped by the
   repository until fixed.
 - Support thread state is stored in thread metadata under `support_bot`. The
-  current request status is `active` until the model calls `finish_request`,
-  then it is persisted as `finished` with the optional finish summary.
+  request status can be `active`, `ignored`, `finished`, or `stopped`.
+  Admission-rejected threads are persisted as `ignored`; active threads become
+  `finished` when the model calls `finish_request`.
 - The first handled user thread creates an engineer thread containing a source
   link and quoted root request in `SUPPORT_ENGINEER_CHANNEL_ID`.
   Later user messages, bot replies, `notify_engineer` calls, and

@@ -33,9 +33,11 @@ This crate now includes a concrete `SupportBotHandler`:
 
 - routes user-channel threads into the LLM/tool loop;
 - routes engineer-channel threads through debug command handling before LLM;
+- can run a configurable admission hook before handling a new user thread,
+  including a reusable first-message text filter for tags such as `@xxxduty`;
 - persists compact `SupportThreadState` under the `support_bot` thread metadata
-  key, including `active`/`finished`/`stopped` request state and optional finish
-  summary;
+  key, including `active`/`ignored`/`finished`/`stopped` request state,
+  optional ignore reason, and optional finish summary;
 - executes local tools through `ToolRegistry` with bounded tool rounds.
 - provides default workflow tools for user replies, engineer notifications,
   and finishing a request.
@@ -55,10 +57,23 @@ This crate now includes a concrete `SupportBotHandler`:
 
 ## Runtime Flow
 
-For a user-channel thread, the handler loads `SupportThreadState`, ensures the
-engineer thread exists when a separate engineer channel is configured, mirrors
-new user messages, builds LLM context from the source thread plus loaded
-instruction state, and executes bounded tool rounds.
+For a user-channel thread, the handler loads `SupportThreadState`, runs the
+optional admission hook before engineer-thread creation or LLM processing,
+ensures the engineer thread exists when a separate engineer channel is
+configured, mirrors new user messages, builds LLM context from the source thread
+plus loaded instruction state, and executes bounded tool rounds.
+
+Threads rejected by admission are persisted as `status = "ignored"` and are not
+rechecked by later messages. A simple first-message text filter can be wired
+from application code:
+
+```rust
+use std::sync::Arc;
+use support_bot::{FirstMessageTextAdmissionHook, SupportBotBuilder};
+
+let builder = SupportBotBuilder::new("support", config, llm)
+    .with_admission_hook(Arc::new(FirstMessageTextAdmissionHook::new(["@xxxduty"])));
+```
 
 Default workflow tools return structured actions:
 

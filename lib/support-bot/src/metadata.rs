@@ -100,6 +100,10 @@ pub(crate) fn load_thread_state(metadata: &Value) -> Result<SupportThreadState, 
     load_payload(metadata).map(|payload| payload.unwrap_or_default())
 }
 
+pub(crate) fn has_thread_state(metadata: &Value) -> bool {
+    metadata.get(SUPPORT_METADATA_KEY).is_some()
+}
+
 pub(crate) fn store_thread_state(
     metadata: &Value,
     state: &SupportThreadState,

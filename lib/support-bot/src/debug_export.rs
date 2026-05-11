@@ -213,6 +213,7 @@ fn build_report_summary(
 fn support_status_label(status: &SupportThreadStatus) -> &'static str {
     match status {
         SupportThreadStatus::Active => "active",
+        SupportThreadStatus::Ignored => "ignored",
         SupportThreadStatus::Finished => "finished",
         SupportThreadStatus::Stopped => "stopped",
     }

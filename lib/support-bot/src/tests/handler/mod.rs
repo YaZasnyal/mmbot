@@ -1,4 +1,5 @@
 use super::*;
+use crate::admission::{SupportThreadAdmissionDecision, SupportThreadAdmissionHook};
 use crate::config::{
     DebugCommandConfig, InstructionConfig, LlmConfig, SupportBotLimits, SupportRouteConfig,
     ToolConfig,
@@ -18,6 +19,7 @@ use chrono::{DateTime, Utc};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -104,6 +106,43 @@ impl LlmClient for SequenceLlm {
             .unwrap()
             .pop_front()
             .ok_or_else(|| crate::SupportBotError::Llm("missing test response".to_string()))
+    }
+}
+
+struct StaticAdmissionHook {
+    decision: SupportThreadAdmissionDecision,
+    calls: AtomicUsize,
+}
+
+impl StaticAdmissionHook {
+    fn new(decision: SupportThreadAdmissionDecision) -> Self {
+        Self {
+            decision,
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl SupportThreadAdmissionHook for StaticAdmissionHook {
+    async fn evaluate(&self, _thread: &Thread) -> crate::Result<SupportThreadAdmissionDecision> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.decision.clone())
+    }
+}
+
+struct ErrorAdmissionHook;
+
+#[async_trait]
+impl SupportThreadAdmissionHook for ErrorAdmissionHook {
+    async fn evaluate(&self, _thread: &Thread) -> crate::Result<SupportThreadAdmissionDecision> {
+        Err(crate::SupportBotError::Config(
+            "admission failed".to_string(),
+        ))
     }
 }
 

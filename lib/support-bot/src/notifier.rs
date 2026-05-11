@@ -297,6 +297,7 @@ pub(crate) fn status_update_message(
 fn support_status_label(status: &SupportThreadStatus) -> &'static str {
     match status {
         SupportThreadStatus::Active => "active",
+        SupportThreadStatus::Ignored => "ignored",
         SupportThreadStatus::Finished => "finished",
         SupportThreadStatus::Stopped => "stopped",
     }

@@ -1,5 +1,9 @@
+use crate::admission::SupportThreadAdmissionDecision;
 use crate::conversation::{build_llm_messages, result_to_message, truncate_utf8};
-use crate::metadata::{load_thread_state, metadata_value, SupportMetadata, SupportMetadataKind};
+use crate::metadata::{
+    has_thread_state, load_thread_state, metadata_value, store_thread_state, SupportMetadata,
+    SupportMetadataKind,
+};
 use crate::notifier::{source_post_link, support_post_props};
 use crate::output::sanitize_user_visible_message;
 use crate::state::SupportThreadStatus;
@@ -41,11 +45,12 @@ impl SupportBotHandler {
         };
         Span::current().record("post_id", tracing::field::display(trigger_post_id));
 
-        let state = load_thread_state(&record.metadata)?;
+        let mut state = load_thread_state(&record.metadata)?;
         if !matches!(state.status, SupportThreadStatus::Active) {
             info!(
                 status = ?state.status,
                 finished_summary = state.finished_summary.as_deref(),
+                ignored_reason = state.ignored_reason.as_deref(),
                 "support-bot: user thread is not active in metadata; skipping workflow"
             );
             return Ok(vec![ThreadEffect::Noop]);
@@ -61,6 +66,31 @@ impl SupportBotHandler {
             info!("support-bot: user thread trigger message is not processable");
             return Ok(vec![ThreadEffect::Noop]);
         };
+
+        let should_persist_admission_accept =
+            self.admission_hook.is_some() && !has_thread_state(&record.metadata);
+        if let Some(hook) = &self.admission_hook {
+            if !has_thread_state(&record.metadata) {
+                match hook.evaluate(&thread).await? {
+                    SupportThreadAdmissionDecision::Accept => {
+                        info!("support-bot: user thread accepted by admission hook");
+                    }
+                    SupportThreadAdmissionDecision::Ignore { reason } => {
+                        info!(
+                            ignored_reason = reason.as_deref(),
+                            "support-bot: user thread ignored by admission hook"
+                        );
+                        state.status = SupportThreadStatus::Ignored;
+                        state.ignored_reason = reason;
+                        let metadata = store_thread_state(&thread.info.metadata, &state)?;
+                        return Ok(vec![ThreadEffect::SetThreadMetadata {
+                            target: thread_bot::ThreadMetadataTarget::CurrentThread,
+                            metadata,
+                        }]);
+                    }
+                }
+            }
+        }
         info!("support-bot: handling user thread message");
 
         if let Some(effects) = self
@@ -68,6 +98,18 @@ impl SupportBotHandler {
             .await?
         {
             info!("support-bot: queuing linked engineer thread creation");
+            if should_persist_admission_accept {
+                let metadata = store_thread_state(&thread.info.metadata, &state)?;
+                let mut effects = effects;
+                effects.insert(
+                    0,
+                    ThreadEffect::SetThreadMetadata {
+                        target: thread_bot::ThreadMetadataTarget::CurrentThread,
+                        metadata,
+                    },
+                );
+                return Ok(effects);
+            }
             return Ok(effects);
         }
 

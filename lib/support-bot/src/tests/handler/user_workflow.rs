@@ -23,6 +23,128 @@ async fn user_message_gets_llm_reply_and_state_update() {
 }
 
 #[tokio::test]
+async fn admission_accepts_thread_before_llm_workflow() {
+    let llm = Arc::new(SequenceLlm::new(vec![LlmResponse {
+        message: ChatMessage::assistant("accepted"),
+        tool_calls: Vec::new(),
+    }]));
+    let hook = Arc::new(StaticAdmissionHook::new(
+        SupportThreadAdmissionDecision::Accept,
+    ));
+    let handler = SupportBotHandler::new(
+        "support",
+        test_config(),
+        llm.clone(),
+        Arc::new(ToolRegistry::new()),
+        "system",
+    )
+    .with_admission_hook(hook.clone());
+
+    let effects = handle_thread(&handler, thread("users", "help @xxxduty"))
+        .await
+        .unwrap();
+
+    assert_eq!(hook.calls(), 1);
+    assert_eq!(llm.requests().len(), 1);
+    assert!(effects.iter().any(|effect| {
+        matches!(effect, ThreadEffect::Reply { message, .. } if message == "accepted")
+    }));
+}
+
+#[tokio::test]
+async fn admission_ignore_persists_ignored_state_without_workflow() {
+    let llm = Arc::new(SequenceLlm::new(vec![LlmResponse {
+        message: ChatMessage::assistant("should not run"),
+        tool_calls: Vec::new(),
+    }]));
+    let hook = Arc::new(StaticAdmissionHook::new(
+        SupportThreadAdmissionDecision::Ignore {
+            reason: Some("missing @xxxduty".to_string()),
+        },
+    ));
+    let handler = SupportBotHandler::new(
+        "support",
+        test_config(),
+        llm.clone(),
+        Arc::new(ToolRegistry::new()),
+        "system",
+    )
+    .with_admission_hook(hook.clone());
+
+    let effects = handle_thread(&handler, thread("users", "help"))
+        .await
+        .unwrap();
+
+    assert_eq!(hook.calls(), 1);
+    assert_eq!(llm.requests().len(), 0);
+    assert_eq!(effects.len(), 1);
+    let ThreadEffect::SetThreadMetadata { metadata, .. } = &effects[0] else {
+        panic!("ignored admission should only persist thread metadata");
+    };
+    assert_eq!(metadata[STATE_KEY]["status"], "ignored");
+    assert_eq!(metadata[STATE_KEY]["ignored_reason"], "missing @xxxduty");
+    assert!(!effects
+        .iter()
+        .any(|effect| matches!(effect, ThreadEffect::EnsureLinkedThread { .. })));
+}
+
+#[tokio::test]
+async fn ignored_user_thread_metadata_skips_workflow_and_admission() {
+    let llm = Arc::new(SequenceLlm::new(vec![LlmResponse {
+        message: ChatMessage::assistant("should not run"),
+        tool_calls: Vec::new(),
+    }]));
+    let hook = Arc::new(StaticAdmissionHook::new(
+        SupportThreadAdmissionDecision::Accept,
+    ));
+    let handler = SupportBotHandler::new(
+        "support",
+        test_config(),
+        llm.clone(),
+        Arc::new(ToolRegistry::new()),
+        "system",
+    )
+    .with_admission_hook(hook.clone());
+    let mut thread = thread("users", "new reply after ignore");
+    thread.info.metadata = store_state(
+        &json!({}),
+        &SupportThreadState {
+            status: SupportThreadStatus::Ignored,
+            ignored_reason: Some("missing @xxxduty".to_string()),
+            ..SupportThreadState::default()
+        },
+    )
+    .unwrap();
+
+    let effects = handle_thread(&handler, thread).await.unwrap();
+
+    assert_eq!(hook.calls(), 0);
+    assert_eq!(llm.requests().len(), 0);
+    assert!(matches!(effects.as_slice(), [ThreadEffect::Noop]));
+}
+
+#[tokio::test]
+async fn admission_error_bubbles_without_persisting_ignored_state() {
+    let llm = Arc::new(SequenceLlm::new(vec![LlmResponse {
+        message: ChatMessage::assistant("should not run"),
+        tool_calls: Vec::new(),
+    }]));
+    let handler = SupportBotHandler::new(
+        "support",
+        test_config(),
+        llm.clone(),
+        Arc::new(ToolRegistry::new()),
+        "system",
+    )
+    .with_admission_hook(Arc::new(ErrorAdmissionHook));
+
+    let result = handle_thread(&handler, thread("users", "help")).await;
+
+    assert!(result.is_err());
+    assert_eq!(llm.requests().len(), 0);
+}
+
+#[tokio::test]
 async fn empty_user_message_does_not_call_llm() {
     let llm = Arc::new(SequenceLlm::new(vec![LlmResponse {
         message: ChatMessage::assistant("should not be used"),

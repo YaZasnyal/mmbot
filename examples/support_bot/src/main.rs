@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use support_bot::{
-    DEFAULT_SUPPORT_SYSTEM_PROMPT, InstructionConfig, InstructionRepository, LlmConfig,
-    OpenAiChatCompletionsClient, SupportBotBuilder, SupportBotConfig, SupportBotLimits,
-    SupportBotMetrics, SupportRouteConfig, ToolConfig,
+    DEFAULT_SUPPORT_SYSTEM_PROMPT, FirstMessageTextAdmissionHook, InstructionConfig,
+    InstructionRepository, LlmConfig, OpenAiChatCompletionsClient, SupportBotBuilder,
+    SupportBotConfig, SupportBotLimits, SupportBotMetrics, SupportRouteConfig, ToolConfig,
 };
 use thread_bot::{PgThreadStore, ThreadBotMetrics, ThreadBotPlugin, ThreadStore};
 
@@ -28,11 +28,16 @@ async fn main() -> Result<()> {
     let thread_metrics = ThreadBotMetrics::register(&mut _metrics_registry);
     let support_metrics = SupportBotMetrics::register(&mut _metrics_registry);
 
-    let handler = SupportBotBuilder::new(bot_name, config.clone(), llm)
+    let mut builder = SupportBotBuilder::new(bot_name, config.clone(), llm)
         .with_instruction_repository(instruction_repo)?
-        .with_metrics(support_metrics.for_bot(bot_name))
-        .build()
-        .await?;
+        .with_metrics(support_metrics.for_bot(bot_name));
+    let admission_required_texts = read_csv_env("SUPPORT_ADMISSION_REQUIRED_TEXTS");
+    if !admission_required_texts.is_empty() {
+        builder = builder.with_admission_hook(Arc::new(FirstMessageTextAdmissionHook::new(
+            admission_required_texts,
+        )));
+    }
+    let handler = builder.build().await?;
 
     let store: Arc<dyn ThreadStore> = Arc::new(
         PgThreadStore::new(
