@@ -55,6 +55,11 @@ pub(crate) fn apply_action(
                 is_error: false,
             }
         }
+        SupportAction::Noop { reason } => {
+            tracing::Span::current().record("action", tracing::field::display("noop"));
+            run.await_next_user_message();
+            noop_result(call_id, reason)
+        }
         SupportAction::FinishRequest { summary } => {
             tracing::Span::current().record("action", tracing::field::display("finish_request"));
             run.finish_request(summary.clone());
@@ -70,6 +75,17 @@ pub(crate) fn apply_action(
     };
     info!("support-bot: workflow action applied");
     Ok(result)
+}
+
+fn noop_result(call_id: &str, reason: Option<String>) -> ToolResult {
+    ToolResult {
+        call_id: call_id.to_string(),
+        content: json!({
+            "status": "noop",
+            "reason": reason
+        }),
+        is_error: false,
+    }
 }
 
 fn sent_result(call_id: &str) -> ToolResult {

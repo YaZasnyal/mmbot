@@ -404,6 +404,70 @@ async fn notify_engineer_uses_linked_engineer_thread_reply_effect() {
 }
 
 #[tokio::test]
+async fn noop_stops_tool_loop_without_user_reply() {
+    let notify_call = ToolCall {
+        id: "call-1".to_string(),
+        name: "notify_engineer".to_string(),
+        arguments: json!({ "message": "Could not determine a safe answer." }),
+    };
+    let noop_call = ToolCall {
+        id: "call-2".to_string(),
+        name: "noop".to_string(),
+        arguments: json!({ "reason": "waiting for engineer input" }),
+    };
+    let llm = Arc::new(SequenceLlm::new(vec![
+        LlmResponse {
+            message: ChatMessage {
+                role: ChatRole::Assistant,
+                content: None,
+                name: None,
+                tool_call_id: None,
+                tool_calls: vec![notify_call.clone(), noop_call.clone()],
+            },
+            tool_calls: vec![notify_call, noop_call],
+        },
+        LlmResponse {
+            message: ChatMessage::assistant("should not run"),
+            tool_calls: Vec::new(),
+        },
+    ]));
+    let mut registry = ToolRegistry::new();
+    register_default_workflow_tools(&mut registry).unwrap();
+    let handler = SupportBotHandler::new(
+        "support",
+        test_config(),
+        llm.clone(),
+        Arc::new(registry),
+        "system",
+    );
+
+    let effects = handle_thread(&handler, thread("users", "help"))
+        .await
+        .unwrap();
+
+    assert_eq!(llm.requests().len(), 1);
+    assert!(effects.iter().any(|effect| {
+        matches!(
+            effect,
+            ThreadEffect::Reply {
+                target: ThreadTarget::LinkedThreads { .. },
+                message,
+                ..
+            } if message == "Could not determine a safe answer."
+        )
+    }));
+    assert!(!effects.iter().any(|effect| {
+        matches!(
+            effect,
+            ThreadEffect::Reply {
+                target: ThreadTarget::CurrentThread,
+                ..
+            }
+        )
+    }));
+}
+
+#[tokio::test]
 async fn tool_loop_limit_replies_with_generic_error_and_stops_thread() {
     let call = ToolCall {
         id: "call-1".to_string(),

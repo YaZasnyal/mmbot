@@ -21,7 +21,12 @@ fn registers_default_workflow_tools() {
 
     assert_eq!(
         names,
-        vec!["finish_request", "notify_engineer", "send_user_message"]
+        vec![
+            "finish_request",
+            "noop",
+            "notify_engineer",
+            "send_user_message"
+        ]
     );
 }
 
@@ -44,6 +49,29 @@ async fn workflow_tool_returns_support_action() {
         outcome,
         ToolExecutionOutcome::Action(SupportAction::SendUserMessage {
             message: "hello".to_string()
+        })
+    );
+}
+
+#[tokio::test]
+async fn noop_workflow_tool_returns_support_action() {
+    let tool = workflow_tool("noop");
+    let outcome = tool
+        .call(
+            ToolContext::without_thread(),
+            ToolCall {
+                id: "call-1".to_string(),
+                name: "noop".to_string(),
+                arguments: serde_json::json!({ "reason": "engineer notified" }),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome,
+        ToolExecutionOutcome::Action(SupportAction::Noop {
+            reason: Some("engineer notified".to_string())
         })
     );
 }

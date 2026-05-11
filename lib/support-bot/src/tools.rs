@@ -45,6 +45,7 @@ pub enum ToolKind {
 pub enum SupportAction {
     SendUserMessage { message: String },
     NotifyEngineer { message: String },
+    Noop { reason: Option<String> },
     FinishRequest { summary: Option<String> },
 }
 
@@ -153,6 +154,11 @@ const WORKFLOW_TOOL_SPECS: &[WorkflowToolSpec] = &[
         input_schema: workflow_message_schema,
     },
     WorkflowToolSpec {
+        name: "noop",
+        description: "Stop this turn without sending a message to the user.",
+        input_schema: noop_schema,
+    },
+    WorkflowToolSpec {
         name: "finish_request",
         description: "Mark the support request as finished.",
         input_schema: finish_request_schema,
@@ -184,6 +190,12 @@ impl SupportTool for WorkflowTool {
                     message: non_empty_string(args.message, "message")?,
                 }
             }
+            "noop" => {
+                let args: NoopArgs = parse_workflow_args(call.arguments)?;
+                SupportAction::Noop {
+                    reason: args.reason.and_then(non_empty_optional_string),
+                }
+            }
             "finish_request" => {
                 let args: FinishRequestArgs = parse_workflow_args(call.arguments)?;
                 SupportAction::FinishRequest {
@@ -213,6 +225,16 @@ fn workflow_message_schema() -> serde_json::Value {
     })
 }
 
+fn noop_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "reason": { "type": "string" }
+        },
+        "additionalProperties": false
+    })
+}
+
 fn finish_request_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -227,6 +249,13 @@ fn finish_request_schema() -> serde_json::Value {
 #[serde(deny_unknown_fields)]
 struct WorkflowMessageArgs {
     message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NoopArgs {
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
