@@ -3,7 +3,7 @@ CREATE TABLE threads (
     root_post_id TEXT NOT NULL UNIQUE,
     channel_id TEXT NOT NULL,
     creator_user_id TEXT NOT NULL,
-    status TEXT NOT NULL,
+    thread_kind TEXT,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     last_seen_post_id TEXT,
     last_seen_post_at TIMESTAMPTZ,
@@ -14,9 +14,23 @@ CREATE TABLE threads (
 );
 
 CREATE INDEX idx_threads_channel_id ON threads(channel_id);
-CREATE INDEX idx_threads_status ON threads(status);
+CREATE INDEX idx_threads_thread_kind ON threads(thread_kind);
 CREATE INDEX idx_threads_updated_at ON threads(updated_at DESC);
 CREATE INDEX idx_threads_metadata_gin ON threads USING GIN(metadata);
+
+CREATE TABLE thread_links (
+    source_thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+    link_kind TEXT NOT NULL,
+    target_thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (source_thread_id, target_thread_id)
+);
+
+CREATE INDEX idx_thread_links_target_thread_id
+    ON thread_links(target_thread_id);
+CREATE INDEX idx_thread_links_source_link_kind
+    ON thread_links(source_thread_id, link_kind);
 
 CREATE TABLE thread_messages (
     post_id TEXT PRIMARY KEY,
@@ -40,22 +54,9 @@ CREATE INDEX idx_thread_messages_metadata_gin ON thread_messages USING GIN(metad
 CREATE INDEX idx_thread_messages_is_bot ON thread_messages(is_bot_message)
     WHERE is_bot_message = TRUE;
 
-CREATE TABLE thread_reactions (
-    id BIGSERIAL PRIMARY KEY,
-    thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
-    post_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    emoji_name TEXT NOT NULL,
-    action TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE INDEX idx_thread_reactions_thread_id ON thread_reactions(thread_id);
-CREATE INDEX idx_thread_reactions_post_id ON thread_reactions(post_id);
-CREATE INDEX idx_thread_reactions_emoji_name ON thread_reactions(emoji_name);
-
 CREATE TABLE channel_checkpoints (
     channel_id TEXT PRIMARY KEY,
+    last_seen_post_id TEXT NOT NULL,
     last_seen_post_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     is_reconciled BOOLEAN NOT NULL

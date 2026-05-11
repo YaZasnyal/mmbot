@@ -20,7 +20,7 @@ use mattermost_api::models;
 
 use crate::actor::{ActorCtx, ThreadCommand};
 use crate::error::ThreadBotError;
-use crate::handler::{ThreadCloseReason, ThreadContext, ThreadEffect, ThreadHandler};
+use crate::handler::{ThreadContext, ThreadEffect, ThreadHandler};
 use crate::store::ThreadStore;
 use crate::types::*;
 
@@ -33,18 +33,9 @@ pub struct MockStore {
 
 struct MockStoreState {
     threads: HashMap<String, ThreadRecord>,
+    links: HashMap<(String, String), ThreadLink>,
     messages: HashMap<String, ThreadMessageRecord>,
-    reactions: Vec<StoredReaction>,
     checkpoints: HashMap<String, ChannelCheckpoint>,
-}
-
-struct StoredReaction {
-    thread_id: String,
-    post_id: String,
-    user_id: String,
-    emoji_name: String,
-    action: ReactionAction,
-    created_at: DateTime<Utc>,
 }
 
 impl MockStore {
@@ -52,8 +43,8 @@ impl MockStore {
         Self {
             state: RwLock::new(MockStoreState {
                 threads: HashMap::new(),
+                links: HashMap::new(),
                 messages: HashMap::new(),
-                reactions: Vec::new(),
                 checkpoints: HashMap::new(),
             }),
         }
@@ -78,7 +69,7 @@ impl ThreadStore for MockStore {
 
         let record = if let Some(existing) = state.threads.get(&input.thread_id) {
             ThreadRecord {
-                status: input.status,
+                thread_kind: input.thread_kind,
                 metadata: input.metadata,
                 updated_at: now,
                 ..existing.clone()
@@ -89,7 +80,7 @@ impl ThreadStore for MockStore {
                 root_post_id: input.root_post_id,
                 channel_id: input.channel_id,
                 creator_user_id: input.creator_user_id,
-                status: input.status,
+                thread_kind: input.thread_kind,
                 metadata: input.metadata,
                 last_seen_post_id: None,
                 last_seen_post_at: None,
@@ -115,7 +106,11 @@ impl ThreadStore for MockStore {
         let state = self.state.read().await;
 
         // Check root posts first
-        if let Some(thread) = state.threads.get(post_id) {
+        if let Some(thread) = state
+            .threads
+            .values()
+            .find(|thread| thread.root_post_id == post_id)
+        {
             return Ok(Some(thread.clone()));
         }
 
@@ -127,9 +122,8 @@ impl ThreadStore for MockStore {
         Ok(None)
     }
 
-    async fn list_threads_by_status(
+    async fn list_threads(
         &self,
-        statuses: &[ThreadStatus],
         updated_after: Option<DateTime<Utc>>,
         updated_before: Option<DateTime<Utc>>,
     ) -> Result<Vec<ThreadRecord>, ThreadBotError> {
@@ -137,27 +131,10 @@ impl ThreadStore for MockStore {
         Ok(state
             .threads
             .values()
-            .filter(|t| statuses.contains(&t.status))
             .filter(|t| updated_after.is_none_or(|after| t.updated_at > after))
             .filter(|t| updated_before.is_none_or(|before| t.updated_at < before))
             .cloned()
             .collect())
-    }
-
-    async fn update_thread_status(
-        &self,
-        thread_id: &str,
-        status: ThreadStatus,
-    ) -> Result<(), ThreadBotError> {
-        let mut state = self.state.write().await;
-        match state.threads.get_mut(thread_id) {
-            Some(thread) => {
-                thread.status = status;
-                thread.updated_at = Utc::now();
-                Ok(())
-            }
-            None => Err(ThreadBotError::ThreadNotFound(thread_id.to_string())),
-        }
     }
 
     async fn set_thread_metadata(
@@ -174,6 +151,91 @@ impl ThreadStore for MockStore {
             }
             None => Err(ThreadBotError::ThreadNotFound(thread_id.to_string())),
         }
+    }
+
+    async fn upsert_thread_link(
+        &self,
+        input: UpsertThreadLink,
+    ) -> Result<ThreadLink, ThreadBotError> {
+        let mut state = self.state.write().await;
+        let now = Utc::now();
+        let key = (
+            input.source_thread_id.clone(),
+            input.target_thread_id.clone(),
+        );
+        let link = if let Some(existing) = state.links.get(&key) {
+            ThreadLink {
+                link_kind: input.link_kind,
+                updated_at: now,
+                ..existing.clone()
+            }
+        } else {
+            ThreadLink {
+                source_thread_id: input.source_thread_id,
+                link_kind: input.link_kind,
+                target_thread_id: input.target_thread_id,
+                created_at: now,
+                updated_at: now,
+            }
+        };
+        state.links.insert(key, link.clone());
+        Ok(link)
+    }
+
+    async fn get_thread_link(
+        &self,
+        source_thread_id: &str,
+        target_thread_id: &str,
+    ) -> Result<Option<ThreadLink>, ThreadBotError> {
+        Ok(self
+            .state
+            .read()
+            .await
+            .links
+            .get(&(source_thread_id.to_string(), target_thread_id.to_string()))
+            .cloned())
+    }
+
+    async fn list_thread_links(
+        &self,
+        source_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError> {
+        let mut links = self
+            .state
+            .read()
+            .await
+            .links
+            .values()
+            .filter(|link| link.source_thread_id == source_thread_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        links.sort_by(|left, right| {
+            left.link_kind
+                .cmp(&right.link_kind)
+                .then_with(|| left.target_thread_id.cmp(&right.target_thread_id))
+        });
+        Ok(links)
+    }
+
+    async fn list_reverse_thread_links(
+        &self,
+        target_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError> {
+        let mut links = self
+            .state
+            .read()
+            .await
+            .links
+            .values()
+            .filter(|link| link.target_thread_id == target_thread_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        links.sort_by(|left, right| {
+            left.source_thread_id
+                .cmp(&right.source_thread_id)
+                .then_with(|| left.link_kind.cmp(&right.link_kind))
+        });
+        Ok(links)
     }
 
     async fn update_thread_seen(
@@ -276,54 +338,6 @@ impl ThreadStore for MockStore {
         }
     }
 
-    async fn append_reaction(&self, input: AppendReaction) -> Result<(), ThreadBotError> {
-        let mut state = self.state.write().await;
-
-        let thread_id = match input.thread_id {
-            Some(id) => id,
-            None => {
-                if let Some(thread) = state.threads.get(&input.post_id) {
-                    thread.thread_id.clone()
-                } else if let Some(msg) = state.messages.get(&input.post_id) {
-                    msg.thread_id.clone()
-                } else {
-                    return Ok(());
-                }
-            }
-        };
-
-        state.reactions.push(StoredReaction {
-            thread_id,
-            post_id: input.post_id,
-            user_id: input.user_id,
-            emoji_name: input.emoji_name,
-            action: input.action,
-            created_at: Utc::now(),
-        });
-
-        Ok(())
-    }
-
-    async fn list_thread_reactions(
-        &self,
-        thread_id: &str,
-    ) -> Result<Vec<ThreadReaction>, ThreadBotError> {
-        let state = self.state.read().await;
-        Ok(state
-            .reactions
-            .iter()
-            .filter(|r| r.thread_id == thread_id)
-            .map(|r| ThreadReaction {
-                post_id: r.post_id.clone(),
-                user_id: r.user_id.clone(),
-                emoji_name: r.emoji_name.clone(),
-                action: r.action,
-                created_at: r.created_at,
-                is_new: false,
-            })
-            .collect())
-    }
-
     async fn list_channel_checkpoints(&self) -> Result<Vec<ChannelCheckpoint>, ThreadBotError> {
         let state = self.state.read().await;
         Ok(state.checkpoints.values().cloned().collect())
@@ -332,6 +346,7 @@ impl ThreadStore for MockStore {
     async fn upsert_channel_checkpoint(
         &self,
         channel_id: &str,
+        last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
         let mut state = self.state.write().await;
@@ -341,11 +356,13 @@ impl ThreadStore for MockStore {
             .entry(channel_id.to_string())
             .or_insert_with(|| ChannelCheckpoint {
                 channel_id: channel_id.to_string(),
+                last_seen_post_id: last_seen_post_id.to_string(),
                 last_seen_post_at,
                 updated_at: now,
                 is_reconciled: true,
             });
-        if last_seen_post_at > entry.last_seen_post_at {
+        if last_seen_post_at >= entry.last_seen_post_at {
+            entry.last_seen_post_id = last_seen_post_id.to_string();
             entry.last_seen_post_at = last_seen_post_at;
             entry.updated_at = now;
         }
@@ -355,11 +372,13 @@ impl ThreadStore for MockStore {
     async fn advance_channel_checkpoint(
         &self,
         channel_id: &str,
+        last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
         let mut state = self.state.write().await;
         if let Some(cp) = state.checkpoints.get_mut(channel_id) {
-            if cp.is_reconciled && last_seen_post_at > cp.last_seen_post_at {
+            if cp.is_reconciled && last_seen_post_at >= cp.last_seen_post_at {
+                cp.last_seen_post_id = last_seen_post_id.to_string();
                 cp.last_seen_post_at = last_seen_post_at;
                 cp.updated_at = Utc::now();
             }
@@ -403,10 +422,6 @@ pub struct MockHandler {
 
     /// Number of times `handle()` was called.
     pub handle_call_count: AtomicUsize,
-    /// Reasons passed to `on_thread_closed()`.
-    pub closed_reasons: Mutex<Vec<ThreadCloseReason>>,
-    /// Whether `should_track()` returns true.
-    should_track_result: bool,
 }
 
 impl MockHandler {
@@ -421,8 +436,6 @@ impl MockHandler {
             handle_entered_tx: tx,
             handle_entered_rx: Mutex::new(rx),
             handle_call_count: AtomicUsize::new(0),
-            closed_reasons: Mutex::new(Vec::new()),
-            should_track_result: true,
         }
     }
 
@@ -451,13 +464,6 @@ impl MockHandler {
         self
     }
 
-    /// Set whether `should_track()` returns true.
-    #[allow(dead_code)]
-    pub fn with_should_track(mut self, value: bool) -> Self {
-        self.should_track_result = value;
-        self
-    }
-
     /// Get the number of times `handle()` was called.
     pub fn call_count(&self) -> usize {
         self.handle_call_count.load(Ordering::SeqCst)
@@ -475,17 +481,9 @@ impl ThreadHandler for MockHandler {
         "mock-handler"
     }
 
-    async fn should_track(
-        &self,
-        _thread: &Thread,
-        _ctx: &ThreadContext,
-    ) -> Result<bool, ThreadBotError> {
-        Ok(self.should_track_result)
-    }
-
     async fn handle(
         &self,
-        _thread: &Thread,
+        _invocation: &ThreadInvocation,
         _ctx: &ThreadContext,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
         self.handle_call_count.fetch_add(1, Ordering::SeqCst);
@@ -507,16 +505,6 @@ impl ThreadHandler for MockHandler {
         } else {
             Ok(self.default_effects.clone())
         }
-    }
-
-    async fn on_thread_closed(
-        &self,
-        _thread: &Thread,
-        reason: ThreadCloseReason,
-        _ctx: &ThreadContext,
-    ) -> Result<(), ThreadBotError> {
-        self.closed_reasons.lock().await.push(reason);
-        Ok(())
     }
 }
 
@@ -573,7 +561,6 @@ pub async fn setup_mm_mock(posts: Vec<models::Post>) -> (MockServer, Arc<Configu
         .await;
 
     // GET /api/v4/posts/{id}/reactions — NOT mocked by default.
-    // Tests that need reactions use mount_reactions() explicitly.
     // When unmocked, get_reactions() returns Err — the actor's
     // `if let Ok(reactions)` silently skips the check.
 
@@ -614,6 +601,23 @@ pub async fn spawn_test_actor(
     Arc<MockHandler>,
     MockServer,
 ) {
+    spawn_test_actor_with_idle_timeout(handler, thread_id, posts, debounce, Duration::from_secs(60))
+        .await
+}
+
+/// Spawn a test actor with an explicit idle timeout.
+pub async fn spawn_test_actor_with_idle_timeout(
+    handler: MockHandler,
+    thread_id: &str,
+    posts: Vec<models::Post>,
+    debounce: Duration,
+    actor_idle_timeout: Duration,
+) -> (
+    mpsc::Sender<ThreadCommand>,
+    Arc<MockStore>,
+    Arc<MockHandler>,
+    MockServer,
+) {
     let (server, mm_config) = setup_mm_mock(posts).await;
     let store = Arc::new(MockStore::new());
     let handler = Arc::new(handler);
@@ -625,7 +629,7 @@ pub async fn spawn_test_actor(
             root_post_id: thread_id.to_string(),
             channel_id: "test_channel".to_string(),
             creator_user_id: "user_1".to_string(),
-            status: ThreadStatus::New,
+            thread_kind: None,
             metadata: serde_json::Value::Null,
         })
         .await
@@ -646,36 +650,16 @@ pub async fn spawn_test_actor(
         ctx,
         mm_config,
         debounce,
+        actor_idle_timeout,
         thread_id: thread_id.to_string(),
         bot_user_id: Arc::new(RwLock::new(Some("bot_user".to_string()))),
         metrics: crate::metrics::ThreadBotMetricsHandle::noop(),
     };
 
-    tokio::spawn(crate::actor::thread_actor(rx, actor_ctx));
+    tokio::spawn(async move {
+        let mut rx = rx;
+        crate::actor::thread_actor(&mut rx, &actor_ctx).await;
+    });
 
     (tx, store, handler, server)
-}
-
-/// Mount a reactions response for a specific post on the mock server.
-///
-/// Overrides the default empty-array response for
-/// `GET /api/v4/posts/{post_id}/reactions`.
-pub async fn mount_reactions(server: &MockServer, post_id: &str, reactions: Vec<models::Reaction>) {
-    use wiremock::matchers::path;
-
-    Mock::given(method("GET"))
-        .and(path(format!("/api/v4/posts/{post_id}/reactions")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(&reactions))
-        .mount(server)
-        .await;
-}
-
-/// Create a Mattermost [`Reaction`](models::Reaction) for tests.
-pub fn make_mm_reaction(post_id: &str, user_id: &str, emoji_name: &str) -> models::Reaction {
-    models::Reaction {
-        user_id: Some(user_id.to_string()),
-        post_id: Some(post_id.to_string()),
-        emoji_name: Some(emoji_name.to_string()),
-        create_at: Some(Utc::now().timestamp_millis()),
-    }
 }

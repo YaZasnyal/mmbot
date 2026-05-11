@@ -1,11 +1,14 @@
 use crate::llm::{ChatMessage, ChatRole};
+use crate::metadata::load_message_trace;
 use crate::state::SupportThreadState;
 use crate::tools::ToolResult;
 use serde_json::json;
 use thread_bot::{Thread, ThreadBotError, ThreadMessage};
 use tracing::warn;
 
+#[cfg(test)]
 pub(crate) const STATE_KEY: &str = "support_bot";
+#[cfg(test)]
 pub(crate) const TRACE_KEY: &str = "llm_trace";
 
 pub(crate) fn build_llm_messages(
@@ -35,7 +38,7 @@ pub(crate) fn build_llm_messages(
 
     for message in thread_messages {
         messages.push(thread_message_to_chat_message(message, bot_user_id));
-        messages.extend(load_trace(&message.metadata)?);
+        messages.extend(load_message_trace(&message.metadata)?);
     }
 
     Ok(messages)
@@ -86,54 +89,6 @@ pub(crate) fn result_to_message(result: ToolResult, max_bytes: usize) -> ChatMes
     }
 
     ChatMessage::tool(result.call_id, truncated)
-}
-
-pub(crate) fn load_trace(metadata: &serde_json::Value) -> Result<Vec<ChatMessage>, ThreadBotError> {
-    match metadata
-        .get(STATE_KEY)
-        .and_then(|value| value.get(TRACE_KEY))
-    {
-        Some(value) => serde_json::from_value(value.clone()).map_err(ThreadBotError::from),
-        None => Ok(Vec::new()),
-    }
-}
-
-pub(crate) fn with_trace_metadata(
-    metadata: &serde_json::Value,
-    trace: &[ChatMessage],
-) -> Result<serde_json::Value, ThreadBotError> {
-    if trace.is_empty() {
-        return Ok(metadata.clone());
-    }
-
-    let mut metadata = metadata.clone();
-    if !metadata.is_object() {
-        metadata = json!({});
-    }
-    metadata[STATE_KEY][TRACE_KEY] = serde_json::to_value(trace).map_err(ThreadBotError::from)?;
-    Ok(metadata)
-}
-
-pub(crate) fn load_state(
-    metadata: &serde_json::Value,
-) -> Result<SupportThreadState, ThreadBotError> {
-    match metadata.get(STATE_KEY) {
-        Some(value) => serde_json::from_value(value.clone()).map_err(ThreadBotError::from),
-        None => Ok(SupportThreadState::default()),
-    }
-}
-
-pub(crate) fn store_state(
-    metadata: &serde_json::Value,
-    state: &SupportThreadState,
-) -> Result<serde_json::Value, ThreadBotError> {
-    let mut metadata = metadata.clone();
-    if !metadata.is_object() {
-        metadata = json!({});
-    }
-
-    metadata[STATE_KEY] = serde_json::to_value(state).map_err(ThreadBotError::from)?;
-    Ok(metadata)
 }
 
 pub(crate) fn truncate_utf8(value: String, max_bytes: usize) -> String {

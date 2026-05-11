@@ -23,11 +23,13 @@ Use Rust 2021 conventions and `cargo fmt` defaults. Keep modules and files in `s
 
 ## Testing Guidelines
 
-Unit tests may live beside code, such as `lib/thread-bot/src/actor_tests.rs`, or under crate-level `tests/`. Name tests by behavior, for example `test_reconnect_reconciles_threads`. Integration tests for `mattermost-bot` require the Compose environment from `docker-compose.yml` and should run serially with `--test-threads=1`. Add focused tests for middleware, lifecycle, persistence, and thread actor behavior when changing those areas.
+Prefer extracted module tests over inline `mod tests` blocks for new code, especially in `support-bot`: place tests under `src/tests/...` (for example `src/tests/handler.rs`) and connect them from the source file via `#[cfg(test)] #[path = "..."] mod tests;`. Unit tests may also live beside code when needed, such as `lib/thread-bot/src/actor_tests.rs`, or under crate-level `tests/`. Name tests by behavior, for example `test_reconnect_reconciles_threads`. Integration tests for `mattermost-bot` require the Compose environment from `docker-compose.yml` and should run serially with `--test-threads=1`. Add focused tests for middleware, lifecycle, persistence, and thread actor behavior when changing those areas.
 
 ## Commit & Pull Request Guidelines
 
 Recent history uses both Conventional Commit style (`feat(thread-bot): ...`, `docs: ...`) and short imperative summaries. Prefer Conventional Commits for new work, with a scoped subject when useful. Pull requests should describe the behavior change, list test commands run, link related issues or RFCs, and call out generated API updates, migrations, or required Mattermost/Postgres setup.
+
+Do not run git staging or commit commands unless the user explicitly asks for a git operation in the current turn. In particular, do not run `git add`, `git commit`, or similar commands just because a code slice is complete.
 
 ## Security & Configuration Tips
 

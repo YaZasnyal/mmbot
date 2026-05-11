@@ -1,8 +1,8 @@
 use crate::error::ThreadBotError;
 use crate::store::ThreadStore;
 use crate::types::{
-    AppendReaction, ChannelCheckpoint, ReactionAction, ThreadMessageRecord, ThreadReaction,
-    ThreadRecord, ThreadStatus, UpsertThread, UpsertThreadMessage,
+    ChannelCheckpoint, ThreadLink, ThreadMessageRecord, ThreadRecord, UpsertThread,
+    UpsertThreadLink, UpsertThreadMessage,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -24,44 +24,6 @@ impl PgThreadStore {
     }
 }
 
-// Helper: parse ThreadStatus from DB string
-fn parse_status(s: &str) -> ThreadStatus {
-    match s {
-        "new" => ThreadStatus::New,
-        "active" => ThreadStatus::Active,
-        "resolved" => ThreadStatus::Resolved,
-        "stopped" => ThreadStatus::Stopped,
-        _ => ThreadStatus::Active,
-    }
-}
-
-// Helper: ThreadStatus to DB string
-fn status_str(status: &ThreadStatus) -> &'static str {
-    match status {
-        ThreadStatus::New => "new",
-        ThreadStatus::Active => "active",
-        ThreadStatus::Resolved => "resolved",
-        ThreadStatus::Stopped => "stopped",
-    }
-}
-
-// Helper: parse ReactionAction from DB string
-fn parse_reaction_action(s: &str) -> ReactionAction {
-    match s {
-        "added" => ReactionAction::Added,
-        "removed" => ReactionAction::Removed,
-        _ => ReactionAction::Added,
-    }
-}
-
-// Helper: ReactionAction to DB string
-fn reaction_action_str(action: &ReactionAction) -> &'static str {
-    match action {
-        ReactionAction::Added => "added",
-        ReactionAction::Removed => "removed",
-    }
-}
-
 // Row types for sqlx queries
 #[derive(FromRow)]
 struct ThreadRow {
@@ -69,7 +31,7 @@ struct ThreadRow {
     root_post_id: String,
     channel_id: String,
     creator_user_id: String,
-    status: String,
+    thread_kind: Option<String>,
     metadata: serde_json::Value,
     last_seen_post_id: Option<String>,
     last_seen_post_at: Option<DateTime<Utc>>,
@@ -86,12 +48,33 @@ impl From<ThreadRow> for ThreadRecord {
             root_post_id: row.root_post_id,
             channel_id: row.channel_id,
             creator_user_id: row.creator_user_id,
-            status: parse_status(&row.status),
+            thread_kind: row.thread_kind,
             metadata: row.metadata,
             last_seen_post_id: row.last_seen_post_id,
             last_seen_post_at: row.last_seen_post_at,
             last_processed_post_id: row.last_processed_post_id,
             last_processed_post_at: row.last_processed_post_at,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct ThreadLinkRow {
+    source_thread_id: String,
+    link_kind: String,
+    target_thread_id: String,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl From<ThreadLinkRow> for ThreadLink {
+    fn from(row: ThreadLinkRow) -> Self {
+        Self {
+            source_thread_id: row.source_thread_id,
+            link_kind: row.link_kind,
+            target_thread_id: row.target_thread_id,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -133,31 +116,9 @@ impl From<MessageRow> for ThreadMessageRecord {
     }
 }
 
-#[derive(FromRow)]
-struct ReactionRow {
-    post_id: String,
-    user_id: String,
-    emoji_name: String,
-    action: String,
-    created_at: DateTime<Utc>,
-}
-
-impl From<ReactionRow> for ThreadReaction {
-    fn from(row: ReactionRow) -> Self {
-        Self {
-            post_id: row.post_id,
-            user_id: row.user_id,
-            emoji_name: row.emoji_name,
-            action: parse_reaction_action(&row.action),
-            created_at: row.created_at,
-            is_new: false, // Set by build_thread_snapshot
-        }
-    }
-}
-
 const THREAD_COLUMNS: &str = r#"
-    thread_id, root_post_id, channel_id, creator_user_id, status,
-    metadata, last_seen_post_id, last_seen_post_at,
+    thread_id, root_post_id, channel_id, creator_user_id, thread_kind, metadata,
+    last_seen_post_id, last_seen_post_at,
     last_processed_post_id, last_processed_post_at,
     created_at, updated_at
 "#;
@@ -168,18 +129,24 @@ const MESSAGE_COLUMNS: &str = r#"
     created_at, updated_at
 "#;
 
+const THREAD_LINK_COLUMNS: &str = r#"
+    source_thread_id, link_kind, target_thread_id, created_at, updated_at
+"#;
+
 #[async_trait]
 impl ThreadStore for PgThreadStore {
     async fn upsert_thread(&self, input: UpsertThread) -> Result<ThreadRecord, ThreadBotError> {
         let now = Utc::now();
-        let status = status_str(&input.status);
 
         let sql = format!(
             r#"
-            INSERT INTO threads (thread_id, root_post_id, channel_id, creator_user_id, status, metadata, created_at, updated_at)
+            INSERT INTO threads (
+                thread_id, root_post_id, channel_id, creator_user_id,
+                thread_kind, metadata, created_at, updated_at
+            )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
             ON CONFLICT (thread_id) DO UPDATE SET
-                status = EXCLUDED.status,
+                thread_kind = EXCLUDED.thread_kind,
                 metadata = EXCLUDED.metadata,
                 updated_at = EXCLUDED.updated_at
             RETURNING {THREAD_COLUMNS}
@@ -191,7 +158,7 @@ impl ThreadStore for PgThreadStore {
             .bind(&input.root_post_id)
             .bind(&input.channel_id)
             .bind(&input.creator_user_id)
-            .bind(status)
+            .bind(&input.thread_kind)
             .bind(&input.metadata)
             .bind(now)
             .fetch_one(&self.pool)
@@ -234,52 +201,25 @@ impl ThreadStore for PgThreadStore {
         Ok(row.map(Into::into))
     }
 
-    async fn list_threads_by_status(
+    async fn list_threads(
         &self,
-        statuses: &[ThreadStatus],
         updated_after: Option<DateTime<Utc>>,
         updated_before: Option<DateTime<Utc>>,
     ) -> Result<Vec<ThreadRecord>, ThreadBotError> {
-        let status_strings: Vec<&str> = statuses.iter().map(status_str).collect();
-
         let sql = format!(
             "SELECT {THREAD_COLUMNS} FROM threads \
-             WHERE status = ANY($1) \
-             AND ($2::timestamptz IS NULL OR updated_at > $2) \
-             AND ($3::timestamptz IS NULL OR updated_at < $3) \
+             WHERE ($1::timestamptz IS NULL OR updated_at > $1) \
+             AND ($2::timestamptz IS NULL OR updated_at < $2) \
              ORDER BY updated_at DESC"
         );
 
         let rows: Vec<ThreadRow> = sqlx::query_as(&sql)
-            .bind(&status_strings)
             .bind(updated_after)
             .bind(updated_before)
             .fetch_all(&self.pool)
             .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
-    }
-
-    async fn update_thread_status(
-        &self,
-        thread_id: &str,
-        status: ThreadStatus,
-    ) -> Result<(), ThreadBotError> {
-        let status = status_str(&status);
-        let now = Utc::now();
-
-        let result =
-            sqlx::query("UPDATE threads SET status = $2, updated_at = $3 WHERE thread_id = $1")
-                .bind(thread_id)
-                .bind(status)
-                .bind(now)
-                .execute(&self.pool)
-                .await?;
-
-        if result.rows_affected() == 0 {
-            return Err(ThreadBotError::ThreadNotFound(thread_id.to_string()));
-        }
-        Ok(())
     }
 
     async fn set_thread_metadata(
@@ -301,6 +241,88 @@ impl ThreadStore for PgThreadStore {
             return Err(ThreadBotError::ThreadNotFound(thread_id.to_string()));
         }
         Ok(())
+    }
+
+    async fn upsert_thread_link(
+        &self,
+        input: UpsertThreadLink,
+    ) -> Result<ThreadLink, ThreadBotError> {
+        let now = Utc::now();
+        let sql = format!(
+            r#"
+            INSERT INTO thread_links (
+                source_thread_id, link_kind, target_thread_id, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $4)
+            ON CONFLICT (source_thread_id, target_thread_id) DO UPDATE SET
+                link_kind = EXCLUDED.link_kind,
+                updated_at = EXCLUDED.updated_at
+            RETURNING {THREAD_LINK_COLUMNS}
+            "#
+        );
+
+        let row: ThreadLinkRow = sqlx::query_as(&sql)
+            .bind(&input.source_thread_id)
+            .bind(&input.link_kind)
+            .bind(&input.target_thread_id)
+            .bind(now)
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok(row.into())
+    }
+
+    async fn get_thread_link(
+        &self,
+        source_thread_id: &str,
+        target_thread_id: &str,
+    ) -> Result<Option<ThreadLink>, ThreadBotError> {
+        let sql = format!(
+            "SELECT {THREAD_LINK_COLUMNS} FROM thread_links \
+             WHERE source_thread_id = $1 AND target_thread_id = $2"
+        );
+
+        let row: Option<ThreadLinkRow> = sqlx::query_as(&sql)
+            .bind(source_thread_id)
+            .bind(target_thread_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        Ok(row.map(Into::into))
+    }
+
+    async fn list_thread_links(
+        &self,
+        source_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError> {
+        let sql = format!(
+            "SELECT {THREAD_LINK_COLUMNS} FROM thread_links \
+             WHERE source_thread_id = $1 ORDER BY link_kind ASC, target_thread_id ASC"
+        );
+
+        let rows: Vec<ThreadLinkRow> = sqlx::query_as(&sql)
+            .bind(source_thread_id)
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    async fn list_reverse_thread_links(
+        &self,
+        target_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError> {
+        let sql = format!(
+            "SELECT {THREAD_LINK_COLUMNS} FROM thread_links \
+             WHERE target_thread_id = $1 ORDER BY source_thread_id ASC, link_kind ASC"
+        );
+
+        let rows: Vec<ThreadLinkRow> = sqlx::query_as(&sql)
+            .bind(target_thread_id)
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     async fn update_thread_seen(
@@ -443,63 +465,11 @@ impl ThreadStore for PgThreadStore {
         Ok(())
     }
 
-    async fn append_reaction(&self, input: AppendReaction) -> Result<(), ThreadBotError> {
-        let action = reaction_action_str(&input.action);
-        let now = Utc::now();
-
-        let thread_id = match input.thread_id {
-            Some(id) => id,
-            None => {
-                let record = self.get_thread_by_post(&input.post_id).await?;
-                match record {
-                    Some(r) => r.thread_id,
-                    None => return Ok(()), // Not a tracked thread, skip
-                }
-            }
-        };
-
-        sqlx::query(
-            r#"
-            INSERT INTO thread_reactions (thread_id, post_id, user_id, emoji_name, action, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            "#,
-        )
-        .bind(&thread_id)
-        .bind(&input.post_id)
-        .bind(&input.user_id)
-        .bind(&input.emoji_name)
-        .bind(action)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    async fn list_thread_reactions(
-        &self,
-        thread_id: &str,
-    ) -> Result<Vec<ThreadReaction>, ThreadBotError> {
-        let rows: Vec<ReactionRow> = sqlx::query_as(
-            r#"
-            SELECT post_id, user_id, emoji_name, action, created_at
-            FROM thread_reactions
-            WHERE thread_id = $1
-            ORDER BY created_at ASC
-            "#,
-        )
-        .bind(thread_id)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows.into_iter().map(Into::into).collect())
-    }
-
     // ── Channel checkpoints ─────────────────────────────────────────────
 
     async fn list_channel_checkpoints(&self) -> Result<Vec<ChannelCheckpoint>, ThreadBotError> {
         let rows: Vec<CheckpointRow> = sqlx::query_as(
-            "SELECT channel_id, last_seen_post_at, updated_at, is_reconciled FROM channel_checkpoints",
+            "SELECT channel_id, last_seen_post_id, last_seen_post_at, updated_at, is_reconciled FROM channel_checkpoints",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -510,20 +480,27 @@ impl ThreadStore for PgThreadStore {
     async fn upsert_channel_checkpoint(
         &self,
         channel_id: &str,
+        last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
         let now = Utc::now();
 
         sqlx::query(
             r#"
-            INSERT INTO channel_checkpoints (channel_id, last_seen_post_at, updated_at, is_reconciled)
-            VALUES ($1, $2, $3, true)
+            INSERT INTO channel_checkpoints (channel_id, last_seen_post_id, last_seen_post_at, updated_at, is_reconciled)
+            VALUES ($1, $2, $3, $4, true)
             ON CONFLICT (channel_id) DO UPDATE SET
+                last_seen_post_id = CASE
+                    WHEN EXCLUDED.last_seen_post_at >= channel_checkpoints.last_seen_post_at
+                    THEN EXCLUDED.last_seen_post_id
+                    ELSE channel_checkpoints.last_seen_post_id
+                END,
                 last_seen_post_at = GREATEST(channel_checkpoints.last_seen_post_at, EXCLUDED.last_seen_post_at),
                 updated_at = EXCLUDED.updated_at
             "#,
         )
         .bind(channel_id)
+        .bind(last_seen_post_id)
         .bind(last_seen_post_at)
         .bind(now)
         .execute(&self.pool)
@@ -535,6 +512,7 @@ impl ThreadStore for PgThreadStore {
     async fn advance_channel_checkpoint(
         &self,
         channel_id: &str,
+        last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
         let now = Utc::now();
@@ -542,12 +520,16 @@ impl ThreadStore for PgThreadStore {
         sqlx::query(
             r#"
             UPDATE channel_checkpoints
-            SET last_seen_post_at = GREATEST(last_seen_post_at, $2),
-                updated_at = $3
-            WHERE channel_id = $1 AND is_reconciled = true
+            SET last_seen_post_id = $2,
+                last_seen_post_at = GREATEST(last_seen_post_at, $3),
+                updated_at = $4
+            WHERE channel_id = $1
+              AND is_reconciled = true
+              AND $3 >= last_seen_post_at
             "#,
         )
         .bind(channel_id)
+        .bind(last_seen_post_id)
         .bind(last_seen_post_at)
         .bind(now)
         .execute(&self.pool)
@@ -582,6 +564,7 @@ impl ThreadStore for PgThreadStore {
 #[derive(FromRow)]
 struct CheckpointRow {
     channel_id: String,
+    last_seen_post_id: String,
     last_seen_post_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     is_reconciled: bool,
@@ -591,6 +574,7 @@ impl From<CheckpointRow> for ChannelCheckpoint {
     fn from(row: CheckpointRow) -> Self {
         Self {
             channel_id: row.channel_id,
+            last_seen_post_id: row.last_seen_post_id,
             last_seen_post_at: row.last_seen_post_at,
             updated_at: row.updated_at,
             is_reconciled: row.is_reconciled,

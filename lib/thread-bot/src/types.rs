@@ -1,20 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Thread status in the lifecycle
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ThreadStatus {
-    /// Transient state: thread is tracked but first handler run hasn't completed
-    New,
-    /// Thread is actively tracked and processed
-    Active,
-    /// Thread was resolved (e.g., by ✅ reaction)
-    Resolved,
-    /// Thread was stopped (e.g., by 🛑 reaction)
-    Stopped,
-}
-
 /// Lightweight thread record from database (without messages)
 #[derive(Debug, Clone)]
 pub struct ThreadRecord {
@@ -22,7 +8,7 @@ pub struct ThreadRecord {
     pub root_post_id: String,
     pub channel_id: String,
     pub creator_user_id: String,
-    pub status: ThreadStatus,
+    pub thread_kind: Option<String>,
     pub metadata: serde_json::Value,
     pub last_seen_post_id: Option<String>,
     pub last_seen_post_at: Option<DateTime<Utc>>,
@@ -32,20 +18,58 @@ pub struct ThreadRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Normalized typed link between two tracked threads.
+#[derive(Debug, Clone)]
+pub struct ThreadLink {
+    pub source_thread_id: String,
+    pub link_kind: String,
+    pub target_thread_id: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Input for creating or updating a thread link.
+#[derive(Debug, Clone)]
+pub struct UpsertThreadLink {
+    pub source_thread_id: String,
+    pub link_kind: String,
+    pub target_thread_id: String,
+}
+
+/// Lightweight handler invocation.
+///
+/// Contains the persisted thread record plus the reason the actor invoked the
+/// handler. It intentionally does not include messages or reactions; handlers
+/// that need the transcript can call
+/// [`ThreadContext::build_thread_snapshot`](crate::handler::ThreadContext::build_thread_snapshot).
+#[derive(Debug, Clone)]
+pub struct ThreadInvocation {
+    pub thread: ThreadRecord,
+    pub trigger: ThreadTrigger,
+}
+
+/// Reason a thread handler was invoked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreadTrigger {
+    /// A new non-bot message was saved for this thread.
+    NewMessage { post_id: String },
+    /// Handler requested another run with [`ThreadEffect::Reschedule`](crate::handler::ThreadEffect::Reschedule).
+    Reschedule,
+    /// External wake from [`ThreadBotHandle::wake_thread`](crate::handle::ThreadBotHandle::wake_thread).
+    Wake,
+}
+
 /// Full thread snapshot for handler (expensive to build).
 ///
-/// Contains all messages and reactions in the thread. Each item has an
-/// [`is_new`](ThreadMessage::is_new) flag indicating whether it arrived
-/// since the last handler run.
+/// Contains all messages in the thread. Each item has an
+/// [`is_new`](ThreadMessage::is_new) flag indicating whether it arrived since
+/// the last handler run.
 #[derive(Debug, Clone)]
 pub struct Thread {
     pub info: ThreadInfo,
 
     /// All messages in the thread, ordered by creation time.
     pub messages: Vec<ThreadMessage>,
-
-    /// All reactions in the thread, ordered by creation time.
-    pub reactions: Vec<ThreadReaction>,
 }
 
 /// Thread metadata (converted from ThreadRecord)
@@ -55,7 +79,7 @@ pub struct ThreadInfo {
     pub root_post_id: String,
     pub channel_id: String,
     pub creator_user_id: String,
-    pub status: ThreadStatus,
+    pub thread_kind: Option<String>,
     pub metadata: serde_json::Value,
     pub last_seen_post_id: Option<String>,
     pub last_seen_post_at: Option<DateTime<Utc>>,
@@ -72,7 +96,7 @@ impl From<ThreadRecord> for ThreadInfo {
             root_post_id: record.root_post_id,
             channel_id: record.channel_id,
             creator_user_id: record.creator_user_id,
-            status: record.status,
+            thread_kind: record.thread_kind,
             metadata: record.metadata,
             last_seen_post_id: record.last_seen_post_id,
             last_seen_post_at: record.last_seen_post_at,
@@ -98,18 +122,6 @@ pub struct ThreadMessage {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// `true` if this message arrived since the last handler run.
-    pub is_new: bool,
-}
-
-/// Thread reaction event
-#[derive(Debug, Clone)]
-pub struct ThreadReaction {
-    pub post_id: String,
-    pub user_id: String,
-    pub emoji_name: String,
-    pub action: ReactionAction,
-    pub created_at: DateTime<Utc>,
-    /// `true` if this reaction arrived since the last handler run.
     pub is_new: bool,
 }
 
@@ -155,7 +167,7 @@ pub struct UpsertThread {
     pub root_post_id: String,
     pub channel_id: String,
     pub creator_user_id: String,
-    pub status: ThreadStatus,
+    pub thread_kind: Option<String>,
     pub metadata: serde_json::Value,
 }
 
@@ -182,17 +194,8 @@ pub struct UpsertThreadMessage {
 #[derive(Debug, Clone)]
 pub struct ChannelCheckpoint {
     pub channel_id: String,
+    pub last_seen_post_id: String,
     pub last_seen_post_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub is_reconciled: bool,
-}
-
-/// Input for appending a reaction
-#[derive(Debug, Clone)]
-pub struct AppendReaction {
-    pub thread_id: Option<String>,
-    pub post_id: String,
-    pub user_id: String,
-    pub emoji_name: String,
-    pub action: ReactionAction,
 }

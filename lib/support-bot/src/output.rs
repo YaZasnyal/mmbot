@@ -9,6 +9,7 @@ pub(crate) fn sanitize_user_visible_message(message: String) -> Option<String> {
     for (open, close) in HIDDEN_REASONING_TAGS {
         sanitized = strip_tagged_blocks(sanitized, open, close);
     }
+    sanitized = strip_leading_thread_context_markers(sanitized);
 
     let sanitized = sanitized.trim().to_string();
     if sanitized.is_empty() {
@@ -34,34 +35,30 @@ fn strip_tagged_blocks(mut value: String, open: &str, close: &str) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn strip_leading_thread_context_markers(mut value: String) -> String {
+    loop {
+        let trimmed_start = value.trim_start();
+        let leading_whitespace = value.len() - trimmed_start.len();
+        if !trimmed_start.starts_with("[post_id=") {
+            return value;
+        }
 
-    #[test]
-    fn strips_think_blocks_from_user_visible_message() {
-        assert_eq!(
-            sanitize_user_visible_message(
-                "<think>private chain</think>\nPlease restart the service.".to_string()
-            )
-            .as_deref(),
-            Some("Please restart the service.")
-        );
-    }
+        let Some(end) = trimmed_start.find(']') else {
+            return value;
+        };
+        let marker = &trimmed_start[..=end];
+        if !is_thread_context_marker(marker) {
+            return value;
+        }
 
-    #[test]
-    fn strips_unclosed_think_block() {
-        assert_eq!(
-            sanitize_user_visible_message("Useful answer\n<think>private".to_string()).as_deref(),
-            Some("Useful answer")
-        );
-    }
-
-    #[test]
-    fn returns_none_when_message_is_only_hidden_reasoning() {
-        assert_eq!(
-            sanitize_user_visible_message("<thinking>private</thinking>".to_string()),
-            None
-        );
+        value.drain(..leading_whitespace + end + 1);
     }
 }
+
+fn is_thread_context_marker(marker: &str) -> bool {
+    marker.starts_with("[post_id=") && marker.contains(", user_id=") && marker.ends_with(']')
+}
+
+#[cfg(test)]
+#[path = "tests/output.rs"]
+mod tests;

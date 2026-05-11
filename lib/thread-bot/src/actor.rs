@@ -16,11 +16,13 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::time::Instant;
 
 use mattermost_api::apis::configuration::Configuration;
-use mattermost_api::apis::{posts_api, reactions_api};
+use mattermost_api::apis::posts_api;
 use mattermost_api::models;
 
 use crate::error::ThreadBotError;
-use crate::handler::{ThreadCloseReason, ThreadContext, ThreadEffect, ThreadHandler};
+use crate::handler::{
+    ThreadContext, ThreadEffect, ThreadHandler, ThreadMetadataTarget, ThreadTarget,
+};
 use crate::metrics::ThreadBotMetricsHandle;
 use crate::store::ThreadStore;
 use crate::types::*;
@@ -28,6 +30,7 @@ use crate::types::*;
 // ─── Public (crate) types ────────────────────────────────────────────────────
 
 /// Command sent to a per-thread actor via mpsc channel.
+#[derive(Debug, Clone)]
 pub(crate) enum ThreadCommand {
     /// New message posted in the thread — triggers debounced handler run.
     NewMessage { post: models::Post },
@@ -39,21 +42,12 @@ pub(crate) enum ThreadCommand {
         change: ReactionChange,
     },
 
-    /// Startup reconciliation — triggers a debounced handler run to pick up
-    /// messages that arrived while the bot was offline.
-    Reconcile,
-
     /// Graceful shutdown signal.
     Shutdown,
 
     /// External wake — triggers a handler re-run without cancelling
     /// a currently running handler. Sent from [`ThreadBotHandle::wake_thread`].
     Wake,
-
-    /// External close — closes the thread from outside the actor
-    /// (e.g. cron job). Sent from [`ThreadBotHandle::resolve_thread`]
-    /// or [`ThreadBotHandle::stop_thread`].
-    Close { reason: ThreadCloseReason },
 }
 
 /// Shared context passed to the per-thread actor.
@@ -63,6 +57,7 @@ pub(crate) struct ActorCtx<H: ThreadHandler> {
     pub ctx: ThreadContext,
     pub mm_config: Arc<Configuration>,
     pub debounce: Duration,
+    pub actor_idle_timeout: Duration,
     pub thread_id: String,
     pub bot_user_id: Arc<RwLock<Option<String>>>,
     pub metrics: ThreadBotMetricsHandle,
@@ -70,16 +65,13 @@ pub(crate) struct ActorCtx<H: ThreadHandler> {
 
 // ─── Private types ───────────────────────────────────────────────────────────
 
-/// Tracks whether a close effect originated from a reaction or the handler.
-#[derive(Clone, Copy)]
-enum CloseSource {
-    Reaction,
-    Handler,
-}
-
-/// Output of the boxed handler future: snapshot is returned alongside the
+/// Output of the boxed handler future: invocation is returned alongside the
 /// measured handler duration and result so it can be used for post-processing.
-type HandlerResult = (Thread, Duration, Result<Vec<ThreadEffect>, ThreadBotError>);
+type HandlerResult = (
+    ThreadInvocation,
+    Duration,
+    Result<Vec<ThreadEffect>, ThreadBotError>,
+);
 
 /// A boxed, Send future that yields [`HandlerResult`].
 type HandlerFuture = Pin<Box<dyn Future<Output = HandlerResult> + Send>>;
@@ -88,16 +80,6 @@ type HandlerFuture = Pin<Box<dyn Future<Output = HandlerResult> + Send>>;
 /// handler is running.
 fn pending_handler() -> HandlerFuture {
     Box::pin(std::future::pending())
-}
-
-/// Result of [`handle_reconcile`] — tells the actor what to do next.
-pub(crate) enum ReconcileOutcome {
-    /// Thread was closed by a control reaction found during reconciliation.
-    ThreadClosed,
-    /// New non-bot messages found — handler should run with this snapshot.
-    RunHandler(Box<Thread>),
-    /// Nothing to do.
-    NoAction,
 }
 
 // ─── Actor main loop ─────────────────────────────────────────────────────────
@@ -114,35 +96,42 @@ pub(crate) enum ReconcileOutcome {
 /// 3. **Debounce timer**: fires after no new messages for the configured
 ///    duration. Builds a snapshot and starts the handler future.
 pub(crate) async fn thread_actor<H: ThreadHandler>(
-    mut rx: mpsc::Receiver<ThreadCommand>,
-    a: ActorCtx<H>,
+    rx: &mut mpsc::Receiver<ThreadCommand>,
+    a: &ActorCtx<H>,
 ) {
-    let mut has_pending = false;
+    let mut pending_run: Option<ThreadTrigger> = None;
+    let mut reschedule_trigger: Option<ThreadTrigger> = None;
     let mut debounce_deadline = Instant::now() + a.debounce;
     let mut handler_fut: HandlerFuture = pending_handler();
     let mut handler_running = false;
+    let mut idle_deadline = None;
 
     tracing::debug!(thread_id = %a.thread_id, "Thread actor started");
     a.metrics.actor_started("success");
-    let mut stop_reason = "channel_closed";
 
     loop {
         tokio::select! {
             biased;
 
             cmd = rx.recv() => {
+                idle_deadline = None;
                 match cmd {
                     Some(ThreadCommand::NewMessage { post }) => {
                         a.metrics.actor_command("new_message", "received");
-                        let should_trigger = save_incoming_message(&a, &post).await;
+                        let should_trigger = save_incoming_message(a, &post).await;
                         if should_trigger {
-                            has_pending = true;
+                            pending_run = Some(ThreadTrigger::NewMessage {
+                                post_id: post.id.clone(),
+                            });
                             debounce_deadline = Instant::now() + a.debounce;
                             // Cancel running handler — will re-run with fresh snapshot
                             if handler_running {
                                 handler_fut = pending_handler();
                                 handler_running = false;
                             }
+                        }
+                        if pending_run.is_none() && !handler_running {
+                            idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                         }
                     }
 
@@ -153,108 +142,24 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
                             handler_fut = pending_handler();
                             handler_running = false;
                         }
-                        if handle_control_reaction(&effect, &change, &a).await {
-                            stop_reason = "control_reaction";
-                            break;
-                        }
-                    }
-
-                    Some(ThreadCommand::Reconcile) => {
-                        a.metrics.actor_command("reconcile", "received");
-                        if handler_running {
-                            handler_fut = pending_handler();
-                            handler_running = false;
-                        }
-                        let reconcile_started = std::time::Instant::now();
-                        match handle_reconcile(&a).await {
-                            ReconcileOutcome::ThreadClosed => {
-                                a.metrics.reconcile("thread_closed", reconcile_started.elapsed());
-                                stop_reason = "reconcile_closed";
-                                break;
-                            }
-                            ReconcileOutcome::RunHandler(snapshot) => {
-                                a.metrics.reconcile("run_handler", reconcile_started.elapsed());
-                                let handler = Arc::clone(&a.handler);
-                                let ctx = a.ctx.clone();
-                                handler_fut = Box::pin(async move {
-                                    let started = std::time::Instant::now();
-                                    let result = handler.handle(&snapshot, &ctx).await;
-                                    (*snapshot, started.elapsed(), result)
-                                });
-                                handler_running = true;
-                            }
-                            ReconcileOutcome::NoAction => {
-                                a.metrics.reconcile("no_action", reconcile_started.elapsed());
-                            }
+                        handle_control_reaction(&effect, &change, a).await;
+                        if pending_run.is_none() && !handler_running {
+                            idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                         }
                     }
 
                     Some(ThreadCommand::Shutdown) => {
                         a.metrics.actor_command("shutdown", "received");
                         tracing::info!(thread_id = %a.thread_id, "Thread actor shutting down");
-                        stop_reason = "shutdown";
                         break;
                     }
 
                     Some(ThreadCommand::Wake) => {
                         a.metrics.actor_command("wake", "received");
                         // Don't cancel running handler — just ensure re-run after it completes
-                        has_pending = true;
+                        pending_run.get_or_insert(ThreadTrigger::Wake);
                         debounce_deadline = Instant::now();
                         tracing::debug!(thread_id = %a.thread_id, "Thread woken by external trigger");
-                    }
-
-                    Some(ThreadCommand::Close { reason }) => {
-                        a.metrics.actor_command("close", "received");
-                        tracing::info!(
-                            thread_id = %a.thread_id,
-                            reason = ?reason,
-                            "Thread closed by external trigger"
-                        );
-
-                        // Running handler (if any) will be dropped when we break.
-
-                        let target_status = match reason {
-                            ThreadCloseReason::ResolvedExternally => ThreadStatus::Resolved,
-                            _ => ThreadStatus::Stopped,
-                        };
-
-                        if let Err(e) = a.store
-                            .update_thread_status(&a.thread_id, target_status)
-                            .await
-                        {
-                            tracing::error!(
-                                thread_id = %a.thread_id,
-                                error = %e,
-                                "Failed to update thread status on external close"
-                            );
-                        }
-
-                        match build_thread_snapshot(&a.thread_id, &*a.store, &a.mm_config).await {
-                            Ok(snapshot) => {
-                                if let Err(e) = a.handler
-                                    .on_thread_closed(&snapshot, reason, &a.ctx)
-                                    .await
-                                {
-                                    tracing::error!(
-                                        thread_id = %a.thread_id,
-                                        reason = ?reason,
-                                        error = %e,
-                                        "on_thread_closed failed"
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    thread_id = %a.thread_id,
-                                    error = %e,
-                                    "Failed to build snapshot for on_thread_closed"
-                                );
-                            }
-                        }
-
-                        stop_reason = thread_close_reason_label(reason);
-                        break;
                     }
 
                     None => {
@@ -265,83 +170,95 @@ pub(crate) async fn thread_actor<H: ThreadHandler>(
             }
 
             result = &mut handler_fut, if handler_running => {
-                handler_running = false;
                 handler_fut = pending_handler();
-                if handle_handler_result(result, &a, &mut has_pending, &mut debounce_deadline).await {
-                    stop_reason = "handler_closed";
-                    break;
+                if handle_handler_result(result, a, &mut debounce_deadline).await {
+                    pending_run = reschedule_trigger.clone();
+                    continue;
+                }
+                handler_running = false;
+                if pending_run.is_none() {
+                    idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                 }
             }
 
-            _ = tokio::time::sleep_until(debounce_deadline), if has_pending => {
-                has_pending = false;
+            _ = tokio::time::sleep_until(debounce_deadline), if pending_run.is_some() => {
+                reschedule_trigger = pending_run.clone();
+                let trigger = pending_run
+                    .take()
+                    .expect("pending_run is Some when debounce branch is enabled");
 
-                let snapshot = match build_thread_snapshot(
-                    &a.thread_id, &*a.store, &a.mm_config,
-                ).await {
-                    Ok(s) => s,
+                let thread_record = match a.store.get_thread(&a.thread_id).await {
+                    Ok(Some(record)) => record,
+                    Ok(None) => {
+                        tracing::error!(
+                            thread_id = %a.thread_id,
+                            "Cannot invoke handler for missing thread record"
+                        );
+                        idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
+                        continue;
+                    }
                     Err(e) => {
                         tracing::error!(
                             thread_id = %a.thread_id,
                             error = %e,
-                            "Failed to build thread snapshot"
+                            "Failed to load thread record for handler invocation"
                         );
+                        idle_deadline = Some(next_idle_deadline(a.actor_idle_timeout));
                         continue;
                     }
                 };
+                let invocation = ThreadInvocation {
+                    thread: thread_record,
+                    trigger,
+                };
 
-                // Check for control reactions before running handler.
-                // User might have added ✅/🛑 during the debounce window
-                // but the WebSocket event hasn't arrived yet.
-                if let Some(effect) = check_api_control_reactions(&a, &snapshot).await {
-                    tracing::info!(
-                        thread_id = %a.thread_id,
-                        effect = ?effect,
-                        "Control reaction found before handler run, closing thread"
-                    );
-                    let (should_exit, _) =
-                        execute_effects(vec![effect], &snapshot, &a, CloseSource::Reaction).await;
-                    if should_exit {
-                        break;
-                    }
-                }
-
-                // Start handler — move snapshot in, get it back with the result
+                // Start handler — move invocation in, get it back with the result
                 let handler = Arc::clone(&a.handler);
                 let ctx = a.ctx.clone();
                 handler_fut = Box::pin(async move {
                     let started = std::time::Instant::now();
-                    let result = handler.handle(&snapshot, &ctx).await;
-                    (snapshot, started.elapsed(), result)
+                    let result = handler.handle(&invocation, &ctx).await;
+                    (invocation, started.elapsed(), result)
                 });
                 handler_running = true;
+            }
+
+            _ = idle_sleep_until(idle_deadline), if pending_run.is_none() && !handler_running => {
+                tracing::debug!(thread_id = %a.thread_id, "Thread actor idle timeout elapsed");
+                break;
             }
         }
     }
 
     tracing::debug!(thread_id = %a.thread_id, "Thread actor stopped");
-    a.metrics.actor_stopped(stop_reason);
+    a.metrics.actor_stopped("stopped");
+}
+
+fn next_idle_deadline(timeout: Duration) -> Instant {
+    Instant::now() + timeout
+}
+
+async fn idle_sleep_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
 }
 
 // ─── Handler result processing ───────────────────────────────────────────────
 
 /// Process the completed handler result: execute effects, update DB state.
 ///
-/// Returns `true` if the actor should exit (thread closed).
 async fn handle_handler_result<H: ThreadHandler>(
-    (snapshot, handler_duration, result): HandlerResult,
+    (invocation, handler_duration, result): HandlerResult,
     a: &ActorCtx<H>,
-    has_pending: &mut bool,
     debounce_deadline: &mut Instant,
 ) -> bool {
     match result {
         Ok(effects) => {
             let effect_count = effects.len();
-            let (should_exit, should_reschedule) =
-                execute_effects(effects, &snapshot, a, CloseSource::Handler).await;
-            let outcome = if should_exit {
-                "closed"
-            } else if should_reschedule {
+            let should_reschedule = execute_effects(effects, &invocation.thread, a).await;
+            let outcome = if should_reschedule {
                 "rescheduled"
             } else {
                 "success"
@@ -351,11 +268,16 @@ async fn handle_handler_result<H: ThreadHandler>(
                 a.metrics.effect("none", "success");
             }
 
-            // Update processed position to the last message
-            if let Some(last_msg) = snapshot.messages.last() {
+            // Mark the invocation's seen cursor as processed. Messages that
+            // arrive during a running handler cancel it or schedule a follow-up
+            // run, so they are handled by a later invocation.
+            if let (Some(last_seen_post_id), Some(last_seen_post_at)) = (
+                invocation.thread.last_seen_post_id.as_deref(),
+                invocation.thread.last_seen_post_at,
+            ) {
                 if let Err(e) = a
                     .store
-                    .update_thread_processed(&a.thread_id, &last_msg.post_id, last_msg.created_at)
+                    .update_thread_processed(&a.thread_id, last_seen_post_id, last_seen_post_at)
                     .await
                 {
                     tracing::error!(
@@ -366,27 +288,12 @@ async fn handle_handler_result<H: ThreadHandler>(
                 }
             }
 
-            // Transition New → Active after first successful handler run
-            if matches!(snapshot.info.status, ThreadStatus::New) && !should_exit {
-                if let Err(e) = a
-                    .store
-                    .update_thread_status(&a.thread_id, ThreadStatus::Active)
-                    .await
-                {
-                    tracing::error!(
-                        thread_id = %a.thread_id,
-                        error = %e,
-                        "Failed to update thread status to Active"
-                    );
-                }
-            }
-
-            if should_reschedule && !should_exit {
-                *has_pending = true;
+            if should_reschedule {
                 *debounce_deadline = Instant::now();
+                return true;
             }
 
-            should_exit
+            false
         }
         Err(e) => {
             a.metrics.handler_run("error", handler_duration);
@@ -402,12 +309,12 @@ async fn handle_handler_result<H: ThreadHandler>(
 
 // ─── Control reaction handling ───────────────────────────────────────────────
 
-/// Process a control reaction. Returns `true` if the actor should exit.
+/// Process a control reaction effect.
 async fn handle_control_reaction<H: ThreadHandler>(
     effect: &ThreadEffect,
     change: &ReactionChange,
     a: &ActorCtx<H>,
-) -> bool {
+) {
     tracing::info!(
         thread_id = %a.thread_id,
         emoji = %change.emoji_name,
@@ -415,157 +322,39 @@ async fn handle_control_reaction<H: ThreadHandler>(
         "Processing control reaction"
     );
 
-    let is_close = matches!(
-        effect,
-        ThreadEffect::MarkResolved | ThreadEffect::MarkStopped
-    );
-
-    if is_close {
-        let snapshot = match build_thread_snapshot(&a.thread_id, &*a.store, &a.mm_config).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(
-                    thread_id = %a.thread_id,
-                    error = %e,
-                    "Failed to build snapshot for control reaction"
-                );
-                return false;
-            }
-        };
-
-        let (should_exit, _) =
-            execute_effects(vec![effect.clone()], &snapshot, a, CloseSource::Reaction).await;
-
-        return should_exit;
-    }
-
-    false
-}
-
-// ─── Reconciliation ─────────────────────────────────────────────────────────
-
-/// Check Mattermost API for control reactions on the root post.
-///
-/// Fetches live reactions and checks each against
-/// [`ThreadHandler::on_control_reaction`]. Returns the first closing effect
-/// found (`MarkResolved` or `MarkStopped`), or `None`.
-///
-/// Used both before handler runs (debounce path) and during reconciliation
-/// to catch reactions that arrived before the WebSocket event was processed.
-async fn check_api_control_reactions<H: ThreadHandler>(
-    a: &ActorCtx<H>,
-    snapshot: &Thread,
-) -> Option<ThreadEffect> {
-    let reactions =
-        match reactions_api::get_reactions(&a.mm_config, &snapshot.info.root_post_id).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::debug!(
-                    thread_id = %a.thread_id,
-                    error = %e,
-                    "Failed to fetch reactions for control check"
-                );
-                return None;
-            }
-        };
-
     let thread_record = match a.store.get_thread(&a.thread_id).await {
-        Ok(Some(r)) => r,
-        _ => return None,
-    };
-
-    for reaction in &reactions {
-        if let (Some(user_id), Some(emoji_name)) = (&reaction.user_id, &reaction.emoji_name) {
-            let change = ReactionChange {
-                post_id: snapshot.info.root_post_id.clone(),
-                user_id: user_id.clone(),
-                emoji_name: emoji_name.clone(),
-                action: ReactionAction::Added,
-                created_at: reaction
-                    .create_at
-                    .map(ms_to_datetime)
-                    .unwrap_or_else(Utc::now),
-            };
-            if let Some(effect) = a.handler.on_control_reaction(&thread_record, &change) {
-                if matches!(
-                    effect,
-                    ThreadEffect::MarkResolved | ThreadEffect::MarkStopped
-                ) {
-                    return Some(effect);
-                }
-            }
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            tracing::error!(
+                thread_id = %a.thread_id,
+                "Cannot execute control reaction for missing thread record"
+            );
+            return;
         }
-    }
-
-    None
-}
-
-/// Reconcile a thread after (re)connection.
-///
-/// 1. Build snapshot from Mattermost API.
-/// 2. Fetch reactions on the root post — if a control reaction (✅ / 🛑)
-///    is found, close the thread immediately.
-/// 3. Otherwise check for new non-bot messages and schedule a handler run.
-pub(crate) async fn handle_reconcile<H: ThreadHandler>(a: &ActorCtx<H>) -> ReconcileOutcome {
-    // Build snapshot
-    let snapshot = match build_thread_snapshot(&a.thread_id, &*a.store, &a.mm_config).await {
-        Ok(s) => s,
         Err(e) => {
             tracing::error!(
                 thread_id = %a.thread_id,
                 error = %e,
-                "Failed to build snapshot for reconciliation"
+                "Failed to load thread record for control reaction"
             );
-            return ReconcileOutcome::NoAction;
+            return;
         }
     };
 
-    // Check control reactions on root post (may have arrived during downtime)
-    if let Some(effect) = check_api_control_reactions(a, &snapshot).await {
-        tracing::info!(
-            thread_id = %a.thread_id,
-            effect = ?effect,
-            "Reconciliation: control reaction found, closing thread"
-        );
-        let (exit, _) = execute_effects(vec![effect], &snapshot, a, CloseSource::Reaction).await;
-        if exit {
-            return ReconcileOutcome::ThreadClosed;
-        }
-    }
-
-    // Check for new non-bot messages
-    let bot_id = a.bot_user_id.read().await;
-    let has_new = snapshot
-        .messages
-        .iter()
-        .any(|m| m.is_new && bot_id.as_deref() != Some(m.user_id.as_str()));
-    drop(bot_id);
-
-    if has_new {
-        tracing::info!(
-            thread_id = %a.thread_id,
-            "Reconciliation: unprocessed messages found, scheduling handler"
-        );
-        ReconcileOutcome::RunHandler(Box::new(snapshot))
-    } else {
-        tracing::debug!(thread_id = %a.thread_id, "Reconciliation: nothing new");
-        ReconcileOutcome::NoAction
-    }
+    let _ = execute_effects(vec![effect.clone()], &thread_record, a).await;
 }
 
 // ─── Effect execution ────────────────────────────────────────────────────────
 
 /// Execute a list of effects returned by the handler or a control reaction.
 ///
-/// Returns `(should_exit, should_reschedule)`.
+/// Returns `should_reschedule`.
 #[tracing::instrument(level = "debug", skip_all, fields(thread_id = %a.thread_id))]
 async fn execute_effects<H: ThreadHandler>(
     effects: Vec<ThreadEffect>,
-    thread: &Thread,
+    thread: &ThreadRecord,
     a: &ActorCtx<H>,
-    close_source: CloseSource,
-) -> (bool, bool) {
-    let mut should_exit = false;
+) -> bool {
     let mut should_reschedule = false;
     let total_effects = effects.len();
 
@@ -573,7 +362,7 @@ async fn execute_effects<H: ThreadHandler>(
         let effect_label = thread_effect_label(&effect);
         tracing::info!(
             thread_id = %a.thread_id,
-            root_post_id = %thread.info.root_post_id,
+            root_post_id = %thread.root_post_id,
             effect = effect_label,
             effect_idx,
             total_effects,
@@ -584,42 +373,51 @@ async fn execute_effects<H: ThreadHandler>(
                 a.metrics.effect(effect_label, "success");
             }
 
-            ThreadEffect::Reply { message, metadata } => {
-                let message_bytes = message.len();
-                let metadata_bytes = if metadata != serde_json::Value::Null {
-                    metadata.to_string().len()
-                } else {
-                    0
-                };
-                let mut req =
-                    models::CreatePostRequest::new(thread.info.channel_id.clone(), message);
-                req.root_id = Some(thread.info.root_post_id.clone());
-                if metadata != serde_json::Value::Null {
-                    req.props = Some(metadata);
-                }
-
-                match posts_api::create_post(&a.mm_config, req, None).await {
-                    Ok(created) => {
-                        a.metrics.effect(effect_label, "success");
-                        tracing::debug!(
-                            thread_id = %a.thread_id,
-                            post_id = %created.id,
-                            message_bytes,
-                            metadata_bytes,
-                            "Posted reply"
-                        );
-                        // Bot reply is saved to DB when the WebSocket Posted
-                        // event arrives back in handle_thread_reply.
-                    }
-                    Err(e) => {
+            ThreadEffect::Reply {
+                target,
+                message,
+                metadata,
+            } => {
+                let target_threads = match resolve_thread_target(thread, a, target).await {
+                    Ok(target_threads) => target_threads,
+                    Err(error) => {
                         a.metrics.effect(effect_label, "error");
                         tracing::error!(
                             thread_id = %a.thread_id,
-                            error = %e,
-                            "Failed to post reply"
+                            error = %error,
+                            "Failed to resolve reply target"
                         );
+                        stop_after_critical_effect_failure(thread, a, "reply");
+                        break;
+                    }
+                };
+
+                let mut posted_all = true;
+                for target_thread in target_threads {
+                    match post_reply_to_thread(&target_thread, a, message.clone(), metadata.clone())
+                        .await
+                    {
+                        Ok(created_post_id) => {
+                            tracing::info!(
+                                thread_id = %a.thread_id,
+                                target_thread_id = %target_thread.thread_id,
+                                post_id = %created_post_id,
+                                "Posted targeted reply"
+                            );
+                        }
+                        Err(error) => {
+                            posted_all = false;
+                            tracing::error!(
+                                thread_id = %a.thread_id,
+                                target_thread_id = %target_thread.thread_id,
+                                error = %error,
+                                "Failed to post targeted reply"
+                            );
+                        }
                     }
                 }
+                a.metrics
+                    .effect(effect_label, if posted_all { "success" } else { "error" });
             }
 
             ThreadEffect::UpdateMessage {
@@ -646,14 +444,32 @@ async fn execute_effects<H: ThreadHandler>(
                 }
             }
 
-            ThreadEffect::SetThreadMetadata { metadata } => {
+            ThreadEffect::SetThreadMetadata { target, metadata } => {
+                let target_thread = match resolve_thread_metadata_target(thread, a, target).await {
+                    Ok(target_thread) => target_thread,
+                    Err(error) => {
+                        a.metrics.effect(effect_label, "error");
+                        tracing::error!(
+                            thread_id = %a.thread_id,
+                            error = %error,
+                            "Failed to resolve thread metadata target"
+                        );
+                        stop_after_critical_effect_failure(thread, a, "set_thread_metadata");
+                        break;
+                    }
+                };
                 tracing::info!(
                     thread_id = %a.thread_id,
+                    target_thread_id = %target_thread.thread_id,
                     metadata_key = "thread",
                     metadata_bytes = metadata.to_string().len(),
                     "Persisting thread metadata"
                 );
-                if let Err(e) = a.store.set_thread_metadata(&a.thread_id, metadata).await {
+                if let Err(e) = a
+                    .store
+                    .set_thread_metadata(&target_thread.thread_id, metadata)
+                    .await
+                {
                     a.metrics.effect(effect_label, "error");
                     tracing::error!(
                         thread_id = %a.thread_id,
@@ -661,8 +477,7 @@ async fn execute_effects<H: ThreadHandler>(
                         error = %e,
                         "Critical thread effect failed"
                     );
-                    stop_after_critical_effect_failure(thread, a, "set_thread_metadata").await;
-                    should_exit = true;
+                    stop_after_critical_effect_failure(thread, a, "set_thread_metadata");
                     break;
                 } else {
                     a.metrics.effect(effect_label, "success");
@@ -686,11 +501,48 @@ async fn execute_effects<H: ThreadHandler>(
                         error = %e,
                         "Critical thread effect failed"
                     );
-                    stop_after_critical_effect_failure(thread, a, "set_message_metadata").await;
-                    should_exit = true;
+                    stop_after_critical_effect_failure(thread, a, "set_message_metadata");
                     break;
                 } else {
                     a.metrics.effect(effect_label, "success");
+                }
+            }
+
+            ThreadEffect::EnsureLinkedThread {
+                link_kind,
+                channel_id,
+                thread_kind,
+                message,
+                metadata,
+                thread_metadata,
+            } => {
+                let result = ensure_linked_thread(
+                    thread,
+                    a,
+                    EnsureLinkedThreadRequest {
+                        link_kind,
+                        channel_id,
+                        thread_kind,
+                        message,
+                        metadata,
+                        thread_metadata,
+                    },
+                )
+                .await;
+                match result {
+                    Ok(()) => {
+                        a.metrics.effect(effect_label, "success");
+                    }
+                    Err(error) => {
+                        a.metrics.effect(effect_label, "error");
+                        tracing::error!(
+                            thread_id = %a.thread_id,
+                            error = %error,
+                            "Critical linked thread effect failed"
+                        );
+                        stop_after_critical_effect_failure(thread, a, "ensure_linked_thread");
+                        break;
+                    }
                 }
             }
 
@@ -698,94 +550,10 @@ async fn execute_effects<H: ThreadHandler>(
                 a.metrics.effect(effect_label, "success");
                 should_reschedule = true;
             }
-
-            ThreadEffect::MarkResolved => {
-                if effect_idx < total_effects.saturating_sub(1) {
-                    tracing::warn!(
-                        thread_id = %a.thread_id,
-                        effect_idx,
-                        total_effects,
-                        "MarkResolved executed before final effect in batch"
-                    );
-                }
-                let reason = match close_source {
-                    CloseSource::Reaction => ThreadCloseReason::ResolvedByReaction,
-                    CloseSource::Handler => ThreadCloseReason::ResolvedByHandler,
-                };
-
-                if let Err(e) = a
-                    .store
-                    .update_thread_status(&a.thread_id, ThreadStatus::Resolved)
-                    .await
-                {
-                    a.metrics.effect(effect_label, "error");
-                    tracing::error!(
-                        thread_id = %a.thread_id,
-                        error = %e,
-                        "Failed to update thread status to Resolved"
-                    );
-                } else {
-                    a.metrics.effect(effect_label, "success");
-                }
-
-                if let Err(e) = a.handler.on_thread_closed(thread, reason, &a.ctx).await {
-                    tracing::error!(
-                        thread_id = %a.thread_id,
-                        reason = ?reason,
-                        error = %e,
-                        "on_thread_closed failed"
-                    );
-                }
-
-                tracing::info!(thread_id = %a.thread_id, reason = ?reason, "Thread closed");
-                should_exit = true;
-            }
-
-            ThreadEffect::MarkStopped => {
-                if effect_idx < total_effects.saturating_sub(1) {
-                    tracing::warn!(
-                        thread_id = %a.thread_id,
-                        effect_idx,
-                        total_effects,
-                        "MarkStopped executed before final effect in batch"
-                    );
-                }
-                let reason = match close_source {
-                    CloseSource::Reaction => ThreadCloseReason::StoppedByReaction,
-                    CloseSource::Handler => ThreadCloseReason::StoppedByHandler,
-                };
-
-                if let Err(e) = a
-                    .store
-                    .update_thread_status(&a.thread_id, ThreadStatus::Stopped)
-                    .await
-                {
-                    a.metrics.effect(effect_label, "error");
-                    tracing::error!(
-                        thread_id = %a.thread_id,
-                        error = %e,
-                        "Failed to update thread status to Stopped"
-                    );
-                } else {
-                    a.metrics.effect(effect_label, "success");
-                }
-
-                if let Err(e) = a.handler.on_thread_closed(thread, reason, &a.ctx).await {
-                    tracing::error!(
-                        thread_id = %a.thread_id,
-                        reason = ?reason,
-                        error = %e,
-                        "on_thread_closed failed"
-                    );
-                }
-
-                tracing::info!(thread_id = %a.thread_id, reason = ?reason, "Thread closed");
-                should_exit = true;
-            }
         }
     }
 
-    (should_exit, should_reschedule)
+    should_reschedule
 }
 
 fn thread_effect_label(effect: &ThreadEffect) -> &'static str {
@@ -795,61 +563,208 @@ fn thread_effect_label(effect: &ThreadEffect) -> &'static str {
         ThreadEffect::UpdateMessage { .. } => "update_message",
         ThreadEffect::SetThreadMetadata { .. } => "set_thread_metadata",
         ThreadEffect::SetMessageMetadata { .. } => "set_message_metadata",
+        ThreadEffect::EnsureLinkedThread { .. } => "ensure_linked_thread",
         ThreadEffect::Reschedule => "reschedule",
-        ThreadEffect::MarkResolved => "mark_resolved",
-        ThreadEffect::MarkStopped => "mark_stopped",
     }
 }
 
-fn thread_close_reason_label(reason: ThreadCloseReason) -> &'static str {
-    match reason {
-        ThreadCloseReason::ResolvedByReaction => "resolved_by_reaction",
-        ThreadCloseReason::StoppedByReaction => "stopped_by_reaction",
-        ThreadCloseReason::ResolvedByHandler => "resolved_by_handler",
-        ThreadCloseReason::StoppedByHandler => "stopped_by_handler",
-        ThreadCloseReason::ResolvedExternally => "resolved_externally",
-        ThreadCloseReason::StoppedExternally => "stopped_externally",
+struct EnsureLinkedThreadRequest {
+    link_kind: String,
+    channel_id: String,
+    thread_kind: Option<String>,
+    message: String,
+    metadata: serde_json::Value,
+    thread_metadata: serde_json::Value,
+}
+
+async fn resolve_thread_target<H: ThreadHandler>(
+    current_thread: &ThreadRecord,
+    a: &ActorCtx<H>,
+    target: ThreadTarget,
+) -> Result<Vec<ThreadRecord>, ThreadBotError> {
+    match target {
+        ThreadTarget::CurrentThread => Ok(vec![current_thread.clone()]),
+        ThreadTarget::Thread { thread_id } => {
+            let thread = a
+                .store
+                .get_thread(&thread_id)
+                .await?
+                .ok_or_else(|| ThreadBotError::ThreadNotFound(thread_id))?;
+            Ok(vec![thread])
+        }
+        ThreadTarget::LinkedThreads { link_kind } => {
+            let links = a.store.list_thread_links(&current_thread.thread_id).await?;
+            let linked_thread_ids = links
+                .into_iter()
+                .filter(|link| link.link_kind == link_kind)
+                .map(|link| link.target_thread_id)
+                .collect::<Vec<_>>();
+            if linked_thread_ids.is_empty() {
+                return Err(ThreadBotError::InvalidState(format!(
+                    "linked threads not found: source_thread_id={}, link_kind={}",
+                    current_thread.thread_id, link_kind
+                )));
+            }
+
+            let mut threads = Vec::with_capacity(linked_thread_ids.len());
+            for thread_id in linked_thread_ids {
+                let thread = a
+                    .store
+                    .get_thread(&thread_id)
+                    .await?
+                    .ok_or_else(|| ThreadBotError::ThreadNotFound(thread_id.clone()))?;
+                threads.push(thread);
+            }
+            Ok(threads)
+        }
     }
 }
 
-async fn stop_after_critical_effect_failure<H: ThreadHandler>(
-    thread: &Thread,
+async fn resolve_thread_metadata_target<H: ThreadHandler>(
+    current_thread: &ThreadRecord,
+    a: &ActorCtx<H>,
+    target: ThreadMetadataTarget,
+) -> Result<ThreadRecord, ThreadBotError> {
+    match target {
+        ThreadMetadataTarget::CurrentThread => Ok(current_thread.clone()),
+        ThreadMetadataTarget::ThreadId(thread_id) => a
+            .store
+            .get_thread(&thread_id)
+            .await?
+            .ok_or(ThreadBotError::ThreadNotFound(thread_id)),
+        ThreadMetadataTarget::RootPostId(root_post_id) => a
+            .store
+            .get_thread_by_post(&root_post_id)
+            .await?
+            .ok_or(ThreadBotError::ThreadNotFound(root_post_id)),
+    }
+}
+
+async fn post_reply_to_thread<H: ThreadHandler>(
+    target_thread: &ThreadRecord,
+    a: &ActorCtx<H>,
+    message: String,
+    metadata: serde_json::Value,
+) -> Result<String, ThreadBotError> {
+    let mut req = models::CreatePostRequest::new(target_thread.channel_id.clone(), message);
+    req.root_id = Some(target_thread.root_post_id.clone());
+    if metadata != serde_json::Value::Null {
+        req.props = Some(metadata.clone());
+    }
+
+    let created = posts_api::create_post(&a.mm_config, req, None)
+        .await
+        .map_err(ThreadBotError::mattermost_api)?;
+    let created_at = created
+        .create_at
+        .map(ms_to_datetime)
+        .unwrap_or_else(Utc::now);
+    let user_id = created
+        .user_id
+        .clone()
+        .or_else(|| a.ctx.bot_user_id.clone())
+        .unwrap_or_default();
+    let post_id = created.id;
+    a.store
+        .upsert_message(UpsertThreadMessage {
+            post_id: post_id.clone(),
+            thread_id: target_thread.thread_id.clone(),
+            user_id,
+            is_bot_message: true,
+            root_id: created
+                .root_id
+                .clone()
+                .or_else(|| Some(target_thread.root_post_id.clone())),
+            parent_post_id: created
+                .root_id
+                .clone()
+                .or_else(|| Some(target_thread.root_post_id.clone())),
+            metadata,
+            post_created_at: created_at,
+            post_updated_at: created.update_at.map(ms_to_datetime),
+            post_deleted_at: created.delete_at.and_then(nonzero_ms_to_datetime),
+        })
+        .await?;
+
+    Ok(post_id)
+}
+
+async fn ensure_linked_thread<H: ThreadHandler>(
+    source_thread: &ThreadRecord,
+    a: &ActorCtx<H>,
+    request: EnsureLinkedThreadRequest,
+) -> Result<(), ThreadBotError> {
+    let mut create_request =
+        models::CreatePostRequest::new(request.channel_id.clone(), request.message);
+    if request.metadata != serde_json::Value::Null {
+        create_request.props = Some(request.metadata.clone());
+    }
+    let created = posts_api::create_post(&a.mm_config, create_request, None)
+        .await
+        .map_err(ThreadBotError::mattermost_api)?;
+    let created_at = created
+        .create_at
+        .map(ms_to_datetime)
+        .unwrap_or_else(Utc::now);
+    let created_user_id = created
+        .user_id
+        .clone()
+        .or_else(|| a.ctx.bot_user_id.clone())
+        .unwrap_or_default();
+
+    a.store
+        .upsert_thread(UpsertThread {
+            thread_id: created.id.clone(),
+            root_post_id: created.id.clone(),
+            channel_id: request.channel_id,
+            creator_user_id: created_user_id.clone(),
+            thread_kind: request.thread_kind,
+            metadata: request.thread_metadata,
+        })
+        .await?;
+    a.store
+        .upsert_message(UpsertThreadMessage {
+            post_id: created.id.clone(),
+            thread_id: created.id.clone(),
+            user_id: created_user_id,
+            is_bot_message: true,
+            root_id: None,
+            parent_post_id: None,
+            metadata: request.metadata,
+            post_created_at: created_at,
+            post_updated_at: created.update_at.map(ms_to_datetime),
+            post_deleted_at: created.delete_at.and_then(nonzero_ms_to_datetime),
+        })
+        .await?;
+    a.store
+        .upsert_thread_link(UpsertThreadLink {
+            source_thread_id: source_thread.thread_id.clone(),
+            link_kind: request.link_kind,
+            target_thread_id: created.id,
+        })
+        .await?;
+
+    Ok(())
+}
+
+fn nonzero_ms_to_datetime(ms: i64) -> Option<DateTime<Utc>> {
+    if ms == 0 {
+        None
+    } else {
+        Some(ms_to_datetime(ms))
+    }
+}
+
+fn stop_after_critical_effect_failure<H: ThreadHandler>(
+    thread: &ThreadRecord,
     a: &ActorCtx<H>,
     effect_type: &'static str,
 ) {
-    if let Err(e) = a
-        .store
-        .update_thread_status(&a.thread_id, ThreadStatus::Stopped)
-        .await
-    {
-        tracing::error!(
-            thread_id = %a.thread_id,
-            effect_type,
-            error = %e,
-            "Failed to stop thread after critical effect failure"
-        );
-        return;
-    }
-
-    if let Err(e) = a
-        .handler
-        .on_thread_closed(thread, ThreadCloseReason::StoppedByHandler, &a.ctx)
-        .await
-    {
-        tracing::error!(
-            thread_id = %a.thread_id,
-            effect_type,
-            reason = ?ThreadCloseReason::StoppedByHandler,
-            error = %e,
-            "on_thread_closed failed after critical effect failure"
-        );
-    }
-
     tracing::info!(
         thread_id = %a.thread_id,
         effect_type,
-        reason = ?ThreadCloseReason::StoppedByHandler,
-        "Thread stopped after critical effect failure"
+        root_post_id = %thread.root_post_id,
+        "Thread actor stopped after critical effect failure"
     );
 }
 
@@ -857,8 +772,8 @@ async fn stop_after_critical_effect_failure<H: ThreadHandler>(
 
 /// Build a full [`Thread`] snapshot from Mattermost API and DB.
 ///
-/// Each message and reaction is marked with `is_new = true` if it arrived
-/// after `last_processed_post_at`.
+/// Each message is marked with `is_new = true` if it arrived after
+/// `last_processed_post_at`.
 pub async fn build_thread_snapshot(
     thread_id: &str,
     store: &dyn ThreadStore,
@@ -907,19 +822,9 @@ pub async fn build_thread_snapshot(
             .then_with(|| left.post_id.cmp(&right.post_id))
     });
 
-    // Get reactions from DB, mark is_new
-    let mut reactions = store.list_thread_reactions(thread_id).await?;
-    for reaction in &mut reactions {
-        reaction.is_new = match &processed_at {
-            Some(ts) => reaction.created_at > *ts,
-            None => true,
-        };
-    }
-
     Ok(Thread {
         info: record.into(),
         messages,
-        reactions,
     })
 }
 
@@ -938,24 +843,7 @@ async fn save_incoming_message(a: &ActorCtx<impl ThreadHandler>, post: &models::
     let is_bot = bot_id.as_deref() == post.user_id.as_deref();
     drop(bot_id);
 
-    let msg = UpsertThreadMessage {
-        post_id: post.id.clone(),
-        thread_id: a.thread_id.clone(),
-        user_id: post.user_id.clone().unwrap_or_default(),
-        is_bot_message: is_bot,
-        root_id: post.root_id.clone(),
-        parent_post_id: post.root_id.clone(),
-        metadata: post.props.clone().unwrap_or(serde_json::Value::Null),
-        post_created_at: post.create_at.map(ms_to_datetime).unwrap_or_else(Utc::now),
-        post_updated_at: post.update_at.map(ms_to_datetime),
-        post_deleted_at: post.delete_at.and_then(|ts| {
-            if ts == 0 {
-                None
-            } else {
-                Some(ms_to_datetime(ts))
-            }
-        }),
-    };
+    let msg = post_to_upsert_thread_message(post, &a.thread_id, is_bot);
 
     if let Err(e) = a.store.upsert_message(msg).await {
         tracing::error!(
@@ -1006,6 +894,26 @@ pub(crate) fn post_to_thread_message(post: &models::Post, thread_id: &str) -> Th
         created_at: post.create_at.map(ms_to_datetime).unwrap_or_default(),
         updated_at: post.update_at.map(ms_to_datetime).unwrap_or_default(),
         is_new: false,
+    }
+}
+
+/// Convert a Mattermost API [`Post`](models::Post) to a store upsert.
+pub(crate) fn post_to_upsert_thread_message(
+    post: &models::Post,
+    thread_id: &str,
+    is_bot_message: bool,
+) -> UpsertThreadMessage {
+    UpsertThreadMessage {
+        post_id: post.id.clone(),
+        thread_id: thread_id.to_string(),
+        user_id: post.user_id.clone().unwrap_or_default(),
+        is_bot_message,
+        root_id: post.root_id.clone(),
+        parent_post_id: post.root_id.clone(),
+        metadata: post.props.clone().unwrap_or(serde_json::Value::Null),
+        post_created_at: post.create_at.map(ms_to_datetime).unwrap_or_else(Utc::now),
+        post_updated_at: post.update_at.map(ms_to_datetime),
+        post_deleted_at: post.delete_at.and_then(nonzero_ms_to_datetime),
     }
 }
 

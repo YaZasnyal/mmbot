@@ -1,21 +1,19 @@
-use crate::config::EngineerNotificationTarget;
-use crate::conversation::STATE_KEY;
-use crate::notifier::MattermostSupportNotifier;
+use crate::handler::ENGINEER_LINK_KIND;
+use crate::metadata::{metadata_value, SupportMetadata, SupportMetadataKind};
+use crate::notifier::{status_update_message, support_post_props};
 use crate::output::sanitize_user_visible_message;
 use crate::tools::{SupportAction, ToolResult};
 use crate::user_thread_run::UserThreadRun;
 use serde_json::json;
-use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect};
-use tracing::{info, warn};
+use thread_bot::{Thread, ThreadBotError, ThreadEffect, ThreadTarget};
+use tracing::info;
 
 #[tracing::instrument(
     level = "info",
     skip_all,
     fields(thread_id = %thread.info.thread_id, tool_call_id = %call_id, action = tracing::field::Empty)
 )]
-pub(crate) async fn apply_action(
-    target: &EngineerNotificationTarget,
-    ctx: &ThreadContext,
+pub(crate) fn apply_action(
     thread: &Thread,
     run: &mut UserThreadRun,
     call_id: &str,
@@ -31,52 +29,22 @@ pub(crate) async fn apply_action(
                 ));
             };
             run.reply(
-                target,
-                ctx,
                 thread,
                 message,
-                json!({
-                    STATE_KEY: {
-                        "kind": "tool_action",
-                        "tool_call_id": call_id,
-                        "action": "send_user_message"
-                    }
-                }),
-            )
-            .await?;
+                metadata_value(&SupportMetadata::tool_action(call_id, "send_user_message"))?,
+            );
+            run.await_next_user_message();
             sent_result(call_id)
         }
         SupportAction::NotifyEngineer { message } => {
             tracing::Span::current().record("action", tracing::field::display("notify_engineer"));
-            match target {
-                EngineerNotificationTarget::SameThread => {
-                    run.push_effect(ThreadEffect::Reply {
-                        message: message.clone(),
-                        metadata: json!({
-                            STATE_KEY: {
-                                "kind": "engineer_notification",
-                                "tool_call_id": call_id
-                            }
-                        }),
-                    });
-                }
-                EngineerNotificationTarget::MattermostChannel { .. } => {
-                    let notify_result = engineer_notifier(ctx, target)
-                        .notify_engineer(thread, run.engineer_thread(), message.clone())
-                        .await;
-
-                    let thread_ref = match notify_result {
-                        Ok(Some(thread_ref)) => thread_ref,
-                        Ok(None) => {
-                            return Ok(failed_result(call_id, "engineer thread was not created"));
-                        }
-                        Err(error) => {
-                            return Ok(failed_result(call_id, error.to_string()));
-                        }
-                    };
-                    run.set_engineer_thread(thread_ref);
-                }
-            }
+            run.push_effect(ThreadEffect::Reply {
+                target: ThreadTarget::LinkedThreads {
+                    link_kind: ENGINEER_LINK_KIND.to_string(),
+                },
+                message: message.clone(),
+                metadata: support_post_props(SupportMetadataKind::EngineerNotification, thread),
+            });
 
             ToolResult {
                 call_id: call_id.to_string(),
@@ -90,41 +58,18 @@ pub(crate) async fn apply_action(
         SupportAction::FinishRequest { summary } => {
             tracing::Span::current().record("action", tracing::field::display("finish_request"));
             run.finish_request(summary.clone());
-            let notification_result = engineer_notifier(ctx, target)
-                .notify_status_update(
-                    thread,
-                    run.engineer_thread(),
-                    run.status(),
-                    run.finished_summary(),
-                )
-                .await;
-
-            match notification_result {
-                Ok(Some(engineer_thread)) => {
-                    run.set_engineer_thread(engineer_thread);
-                    finished_result(call_id, summary, "sent", None)
-                }
-                Ok(None) => finished_result(call_id, summary, "skipped", None),
-                Err(error) => {
-                    warn!(
-                        thread_id = %thread.info.thread_id,
-                        error = %error,
-                        "support-bot: finish status notification failed after state transition"
-                    );
-                    finished_result(call_id, summary, "failed", Some(error.to_string()))
-                }
-            }
+            run.push_effect(ThreadEffect::Reply {
+                target: ThreadTarget::LinkedThreads {
+                    link_kind: ENGINEER_LINK_KIND.to_string(),
+                },
+                message: status_update_message(thread, run.status(), run.finished_summary()),
+                metadata: support_post_props(SupportMetadataKind::StatusUpdate, thread),
+            });
+            finished_result(call_id, summary, "queued", None)
         }
     };
     info!("support-bot: workflow action applied");
     Ok(result)
-}
-
-pub(crate) fn engineer_notifier(
-    ctx: &ThreadContext,
-    target: &EngineerNotificationTarget,
-) -> MattermostSupportNotifier {
-    MattermostSupportNotifier::new(ctx.config.clone(), target.clone())
 }
 
 fn sent_result(call_id: &str) -> ToolResult {

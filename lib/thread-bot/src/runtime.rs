@@ -23,14 +23,13 @@
 //!
 //! ```no_run
 //! # use std::sync::Arc;
-//! # use thread_bot::{async_trait, ThreadHandler, ThreadEffect, ThreadBotError, Thread, ThreadContext};
+//! # use thread_bot::{async_trait, ThreadHandler, ThreadEffect, ThreadBotError, ThreadContext, ThreadInvocation};
 //! # struct MyHandler;
 //! # impl MyHandler { fn new() -> Self { Self } }
 //! # #[async_trait]
 //! # impl ThreadHandler for MyHandler {
 //! #     fn id(&self) -> &'static str { "my" }
-//! #     async fn should_track(&self, _: &Thread, _: &ThreadContext) -> Result<bool, ThreadBotError> { Ok(true) }
-//! #     async fn handle(&self, _: &Thread, _: &ThreadContext) -> Result<Vec<ThreadEffect>, ThreadBotError> { Ok(vec![]) }
+//! #     async fn handle(&self, _: &ThreadInvocation, _: &ThreadContext) -> Result<Vec<ThreadEffect>, ThreadBotError> { Ok(vec![]) }
 //! # }
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! # let pool: thread_bot::sqlx::PgPool = todo!();
@@ -49,14 +48,14 @@
 //! # }
 //! ```
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Mutex, RwLock};
+use futures_util::StreamExt;
+use tokio::sync::{Mutex, RwLock};
 
 use mattermost_api::apis::configuration::Configuration;
-use mattermost_api::apis::{posts_api, users_api};
+use mattermost_api::apis::users_api;
 use mattermost_api::models;
 use mattermost_bot::plugin::Event;
 use mattermost_bot::types::EventType;
@@ -65,10 +64,12 @@ use mattermost_bot::{chrono, cron_tab};
 use crate::handle::ThreadBotHandle;
 
 use crate::actor::{
-    get_root_post_id, is_root_post, ms_to_datetime, post_to_thread_message, thread_actor, ActorCtx,
-    ThreadCommand,
+    get_root_post_id, is_root_post, ms_to_datetime, post_to_upsert_thread_message, ThreadCommand,
 };
-use crate::handler::{ThreadContext, ThreadHandler};
+use crate::actor_registry::{ActorRegistry, ActorSpawnConfig};
+use crate::channel_messages::{channel_messages_after, latest_channel_post};
+use crate::error::ThreadBotError;
+use crate::handler::{ThreadEffect, ThreadHandler};
 use crate::metrics::ThreadBotMetricsHandle;
 use crate::store::ThreadStore;
 use crate::types::*;
@@ -93,12 +94,19 @@ pub struct ThreadBotConfig {
 
     /// Maximum gap since the last seen message to attempt reconciliation.
     ///
-    /// If the bot was offline longer than this window, active threads are
-    /// force-closed (status → Stopped) instead of reconciled, and the bot
-    /// starts fresh from the current moment.
+    /// If the bot was offline longer than this window, the channel backlog is
+    /// skipped and the checkpoint is advanced to the latest channel post.
     ///
     /// Default: `None` (no limit — always reconcile)
     pub max_reconcile_window: Option<Duration>,
+
+    /// How long an idle per-thread actor stays alive after all work completes.
+    ///
+    /// `Duration::ZERO` means the actor exits as soon as it has no pending
+    /// work, running handler, or reschedule.
+    ///
+    /// Default: 0 seconds
+    pub actor_idle_timeout: Duration,
 }
 
 impl Default for ThreadBotConfig {
@@ -107,6 +115,7 @@ impl Default for ThreadBotConfig {
             debounce: Duration::from_secs(2),
             channel_buffer: 64,
             max_reconcile_window: None,
+            actor_idle_timeout: Duration::ZERO,
         }
     }
 }
@@ -122,11 +131,14 @@ pub struct ThreadBotPlugin<H: ThreadHandler> {
     store: Arc<dyn ThreadStore>,
     config: ThreadBotConfig,
 
-    /// Per-thread command senders, keyed by root_post_id.
-    actors: Arc<Mutex<HashMap<String, mpsc::Sender<ThreadCommand>>>>,
+    /// Per-thread actor command registry, keyed by root_post_id.
+    registry: ActorRegistry,
 
     /// Bot's own user ID, fetched in [`Plugin::on_start`].
     bot_user_id: Arc<RwLock<Option<String>>>,
+
+    /// Ensures reconnect storms cannot run overlapping reconciliation scans.
+    reconciliation_gate: Arc<Mutex<()>>,
 
     metrics: ThreadBotMetricsHandle,
 }
@@ -138,8 +150,9 @@ impl<H: ThreadHandler> Clone for ThreadBotPlugin<H> {
             handler: Arc::clone(&self.handler),
             store: Arc::clone(&self.store),
             config: self.config.clone(),
-            actors: Arc::clone(&self.actors),
+            registry: self.registry.clone(),
             bot_user_id: Arc::clone(&self.bot_user_id),
+            reconciliation_gate: Arc::clone(&self.reconciliation_gate),
             metrics: self.metrics.clone(),
         }
     }
@@ -152,8 +165,9 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             handler: Arc::new(handler),
             store,
             config: ThreadBotConfig::default(),
-            actors: Arc::new(Mutex::new(HashMap::new())),
+            registry: ActorRegistry::new(),
             bot_user_id: Arc::new(RwLock::new(None)),
+            reconciliation_gate: Arc::new(Mutex::new(())),
             metrics: ThreadBotMetricsHandle::noop(),
         }
     }
@@ -172,10 +186,15 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
 
     /// Set the maximum reconciliation window.
     ///
-    /// If the bot was offline longer than this, active threads are
-    /// force-closed instead of reconciled.
+    /// If the bot was offline longer than this, channel backlog is skipped.
     pub fn with_max_reconcile_window(mut self, window: Duration) -> Self {
         self.config.max_reconcile_window = Some(window);
+        self
+    }
+
+    /// Set how long idle per-thread actors stay alive after work completes.
+    pub fn with_actor_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.config.actor_idle_timeout = timeout;
         self
     }
 
@@ -192,8 +211,11 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
         posted: &mattermost_bot::types::PostedEvent,
         mm_config: &Arc<Configuration>,
     ) {
-        let post = &posted.post.inner;
+        self.route_post(&posted.post.inner, mm_config).await;
+    }
 
+    /// Route a Mattermost post to the appropriate thread actor.
+    async fn route_post(&self, post: &models::Post, mm_config: &Arc<Configuration>) {
         if is_root_post(post) {
             self.handle_new_thread(post, mm_config).await;
         } else {
@@ -203,7 +225,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
         }
     }
 
-    /// Handle a new root post — decide whether to track this thread.
+    /// Handle a new root post by persisting and routing the thread.
     async fn handle_new_thread(&self, post: &models::Post, mm_config: &Arc<Configuration>) {
         let thread_id = post.id.clone();
         let channel_id = post.channel_id.clone().unwrap_or_default();
@@ -215,85 +237,26 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
 
         // Check if thread already exists in DB (idempotency for reconnection replays)
         match self.store.get_thread(&thread_id).await {
-            Ok(Some(record)) => {
-                match record.status {
-                    ThreadStatus::New | ThreadStatus::Active => {
-                        // Already tracked — ensure actor exists (may be a new session)
-                        self.ensure_or_spawn_actor(&thread_id, mm_config).await;
-                        // Advance channel checkpoint (harmless if replayed — GREATEST keeps max)
-                        if let Err(e) = self
-                            .store
-                            .advance_channel_checkpoint(&channel_id, post_at)
-                            .await
-                        {
-                            tracing::error!(channel_id = %channel_id, error = %e, "Failed to advance channel checkpoint");
-                        }
-                        return;
-                    }
-                    ThreadStatus::Resolved | ThreadStatus::Stopped => {
-                        return;
-                    }
-                }
+            Ok(Some(_)) => {
+                // Already tracked — this is an idempotent replay, so only move
+                // the channel checkpoint. Replies/reactions spawn actors when
+                // there is actual work to route.
+                self.advance_channel_if_reconciled(&channel_id, post, post_at)
+                    .await;
+                return;
             }
-            Ok(None) => {
-                // Not tracked yet — proceed with should_track
-            }
+            Ok(None) => {}
             Err(e) => {
                 tracing::error!(thread_id = %thread_id, error = %e, "Failed to check thread existence");
                 return;
             }
         }
 
-        // Build a minimal Thread snapshot for should_track
-        let now = chrono::Utc::now();
-        let thread = Thread {
-            info: ThreadInfo {
-                thread_id: thread_id.clone(),
-                root_post_id: thread_id.clone(),
-                channel_id: channel_id.clone(),
-                creator_user_id: user_id.clone(),
-                status: ThreadStatus::New,
-                metadata: serde_json::Value::Null,
-                last_seen_post_id: None,
-                last_seen_post_at: None,
-                last_processed_post_id: None,
-                last_processed_post_at: None,
-                created_at: now,
-                updated_at: now,
-            },
-            messages: vec![{
-                let mut msg = post_to_thread_message(post, &thread_id);
-                msg.is_new = true;
-                msg
-            }],
-            reactions: vec![],
-        };
-
-        let ctx = ThreadContext {
-            config: Arc::clone(mm_config),
-            store: Arc::clone(&self.store),
-            plugin_id: self.handler.id(),
-            bot_user_id: self.bot_user_id.read().await.clone(),
-        };
-
-        // Ask handler if it wants to track this thread
-        match self.handler.should_track(&thread, &ctx).await {
-            Ok(true) => {
-                tracing::info!(
-                    thread_id = %thread_id,
-                    channel_id = %channel_id,
-                    "Tracking new thread"
-                );
-            }
-            Ok(false) => {
-                tracing::debug!(thread_id = %thread_id, "Handler declined to track thread");
-                return;
-            }
-            Err(e) => {
-                tracing::error!(thread_id = %thread_id, error = %e, "should_track failed");
-                return;
-            }
-        }
+        tracing::info!(
+            thread_id = %thread_id,
+            channel_id = %channel_id,
+            "Persisting new thread"
+        );
 
         // Create thread record in DB
         let upsert = UpsertThread {
@@ -301,7 +264,7 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             root_post_id: thread_id.clone(),
             channel_id: channel_id.clone(),
             creator_user_id: user_id,
-            status: ThreadStatus::New,
+            thread_kind: None,
             metadata: serde_json::Value::Null,
         };
 
@@ -310,27 +273,15 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             return;
         }
 
-        // Register channel checkpoint (first tracked message in this channel)
+        self.register_channel_if_needed(&channel_id, post, post_at)
+            .await;
+
         if let Err(e) = self
-            .store
-            .upsert_channel_checkpoint(&channel_id, post_at)
-            .await
-        {
-            tracing::error!(channel_id = %channel_id, error = %e, "Failed to upsert channel checkpoint");
-        }
-
-        // Spawn actor and send the initial message
-        let tx = {
-            let mut actors = self.actors.lock().await;
-            let tx = self
-                .spawn_actor(thread_id.clone(), Arc::clone(mm_config))
-                .await;
-            actors.insert(thread_id.clone(), tx.clone());
-            tx
-        };
-
-        if let Err(e) = tx
-            .send(ThreadCommand::NewMessage { post: post.clone() })
+            .registry
+            .send_or_spawn(
+                ThreadCommand::NewMessage { post: post.clone() },
+                self.actor_spawn_config(&thread_id, mm_config),
+            )
             .await
         {
             tracing::error!(thread_id = %thread_id, error = %e, "Failed to send initial message to actor");
@@ -354,60 +305,22 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             }
         };
 
-        // Only process active threads
-        if !matches!(
-            thread_record.status,
-            ThreadStatus::New | ThreadStatus::Active
-        ) {
-            return;
-        }
-
         // Advance channel checkpoint (covers both bot and user messages)
         let post_at = post
             .create_at
             .map(ms_to_datetime)
             .unwrap_or_else(chrono::Utc::now);
-        if let Err(e) = self
-            .store
-            .advance_channel_checkpoint(&thread_record.channel_id, post_at)
-            .await
-        {
-            tracing::error!(
-                channel_id = %thread_record.channel_id,
-                error = %e,
-                "Failed to advance channel checkpoint"
-            );
-        }
+        self.advance_channel_if_reconciled(&thread_record.channel_id, post, post_at)
+            .await;
 
         // Bot's own messages: save to DB but don't trigger handler re-run
         {
             let bot_user_id = self.bot_user_id.read().await;
             if let Some(bot_id) = bot_user_id.as_ref() {
                 if post.user_id.as_deref() == Some(bot_id.as_str()) {
-                    let bot_id = bot_id.clone();
                     drop(bot_user_id);
 
-                    let msg = UpsertThreadMessage {
-                        post_id: post.id.clone(),
-                        thread_id: root_post_id.to_string(),
-                        user_id: bot_id,
-                        is_bot_message: true,
-                        root_id: post.root_id.clone(),
-                        parent_post_id: post.root_id.clone(),
-                        metadata: serde_json::Value::Null,
-                        post_created_at: post
-                            .create_at
-                            .map(ms_to_datetime)
-                            .unwrap_or_else(chrono::Utc::now),
-                        post_updated_at: post.update_at.map(ms_to_datetime),
-                        post_deleted_at: post.delete_at.and_then(|ts| {
-                            if ts == 0 {
-                                None
-                            } else {
-                                Some(ms_to_datetime(ts))
-                            }
-                        }),
-                    };
+                    let msg = post_to_upsert_thread_message(post, root_post_id, true);
 
                     if let Err(e) = self.store.upsert_message(msg).await {
                         tracing::error!(post_id = %post.id, error = %e, "Failed to save bot message");
@@ -417,10 +330,12 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             }
         }
 
-        // Send to actor (creates one if needed)
-        let tx = self.ensure_or_spawn_actor(root_post_id, mm_config).await;
-        if let Err(e) = tx
-            .send(ThreadCommand::NewMessage { post: post.clone() })
+        if let Err(e) = self
+            .registry
+            .send_or_spawn(
+                ThreadCommand::NewMessage { post: post.clone() },
+                self.actor_spawn_config(root_post_id, mm_config),
+            )
             .await
         {
             tracing::error!(
@@ -428,7 +343,6 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
                 error = %e,
                 "Failed to send message to actor"
             );
-            self.actors.lock().await.remove(root_post_id);
         }
     }
 
@@ -452,14 +366,6 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             }
         };
 
-        // Only process active threads
-        if !matches!(
-            thread_record.status,
-            ThreadStatus::New | ThreadStatus::Active
-        ) {
-            return;
-        }
-
         let created_at = ms_to_datetime(create_at);
         let change = ReactionChange {
             post_id: post_id.to_string(),
@@ -469,63 +375,34 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             created_at,
         };
 
-        let is_root_reaction = post_id == thread_record.root_post_id;
-
-        if is_root_reaction {
-            // Control reaction on root post
-            let effect = self.handler.on_control_reaction(&thread_record, &change);
-
-            // Always save the reaction to DB
-            let append = AppendReaction {
-                thread_id: Some(thread_record.thread_id.clone()),
-                post_id: post_id.to_string(),
-                user_id: user_id.to_string(),
-                emoji_name: emoji_name.to_string(),
-                action,
-            };
-            if let Err(e) = self.store.append_reaction(append).await {
-                tracing::error!(post_id = %post_id, error = %e, "Failed to save control reaction");
-            }
-
-            // If handler returned an effect, send it to the actor
-            if let Some(effect) = effect {
-                let tx = self
-                    .ensure_or_spawn_actor(&thread_record.root_post_id, mm_config)
+        if change.post_id == thread_record.root_post_id {
+            if let Some(effect) = self.handler.on_control_reaction(&thread_record, &change) {
+                self.dispatch_control_reaction(&thread_record, change, effect, mm_config)
                     .await;
-                if let Err(e) = tx
-                    .send(ThreadCommand::ControlReaction { effect, change })
-                    .await
-                {
-                    tracing::error!(
-                        thread_id = %thread_record.thread_id,
-                        error = %e,
-                        "Failed to send control reaction to actor"
-                    );
-                    self.actors.lock().await.remove(&thread_record.root_post_id);
-                }
             }
-        } else {
-            // Non-root reaction — save feedback reactions on bot messages to DB
-            if self.handler.is_feedback_reaction(emoji_name) {
-                if let Ok(Some(msg_record)) = self.store.get_message(post_id).await {
-                    if msg_record.is_bot_message {
-                        let append = AppendReaction {
-                            thread_id: Some(thread_record.thread_id.clone()),
-                            post_id: post_id.to_string(),
-                            user_id: user_id.to_string(),
-                            emoji_name: emoji_name.to_string(),
-                            action,
-                        };
-                        if let Err(e) = self.store.append_reaction(append).await {
-                            tracing::error!(
-                                post_id = %post_id,
-                                error = %e,
-                                "Failed to save feedback reaction"
-                            );
-                        }
-                    }
-                }
-            }
+        }
+    }
+
+    async fn dispatch_control_reaction(
+        &self,
+        thread_record: &ThreadRecord,
+        change: ReactionChange,
+        effect: ThreadEffect,
+        mm_config: &Arc<Configuration>,
+    ) {
+        if let Err(e) = self
+            .registry
+            .send_or_spawn(
+                ThreadCommand::ControlReaction { effect, change },
+                self.actor_spawn_config(&thread_record.root_post_id, mm_config),
+            )
+            .await
+        {
+            tracing::error!(
+                thread_id = %thread_record.thread_id,
+                error = %e,
+                "Failed to send control reaction to actor"
+            );
         }
     }
 
@@ -533,15 +410,19 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
 
     /// Reconcile state after a (re)connection.
     ///
-    /// Called on every `Hello` event — i.e. on initial connect **and** on
-    /// every WebSocket reconnect.  Because `process_event` blocks the WS
-    /// read loop, incoming events are buffered by the TCP/WS layer while
-    /// reconciliation runs and are processed normally afterwards.
+    /// Called after a `Hello` event — i.e. on initial connect **and** on every
+    /// WebSocket reconnect.
+    ///
+    /// Reconciliation runs in a background task so live events may still route
+    /// while this scan is active. Channel checkpoints are marked unreconciled
+    /// before scanning so normal live processing does not advance them until
+    /// each channel is finalized. A single-flight gate prevents overlapping
+    /// reconciliation tasks during reconnect storms.
     ///
     /// 1. Snapshot channel checkpoints from DB (timestamps won't move during
     ///    reconciliation because `is_reconciled` is set to `false`).
-    /// 2. Load active threads → ensure actors exist → send `Reconcile`.
-    /// 3. Scan each checkpointed channel for root posts missed during downtime.
+    /// 2. Scan each checkpointed channel for posts missed during downtime.
+    /// 3. Replay each missed post through the normal post routing path.
     /// 4. Mark each channel as reconciled — normal processing resumes advancing
     ///    the checkpoint.
     async fn reconcile(&self, config: &Arc<Configuration>) {
@@ -561,209 +442,214 @@ impl<H: ThreadHandler> ThreadBotPlugin<H> {
             tracing::error!(error = %e, "Failed to mark channels as not reconciled");
         }
 
-        let threads = match self
-            .store
-            .list_threads_by_status(&[ThreadStatus::New, ThreadStatus::Active], None, None)
-            .await
-        {
-            Ok(threads) => threads,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to load active threads for reconciliation");
-                // Still mark channels reconciled so normal flow resumes
-                self.mark_all_channels_reconciled(&checkpoints).await;
-                return;
-            }
-        };
-
-        // Use the oldest checkpoint timestamp for max_reconcile_window check
-        let oldest_checkpoint = checkpoints.iter().map(|cp| cp.last_seen_post_at).min();
-
-        // If the gap exceeds max_reconcile_window, force-close everything
-        // and start fresh instead of replaying a huge backlog.
-        if let (Some(window), Some(since)) = (self.config.max_reconcile_window, oldest_checkpoint) {
-            let gap = chrono::Utc::now() - since;
-            if let Ok(window_chrono) = chrono::Duration::from_std(window) {
-                if gap > window_chrono {
-                    tracing::warn!(
-                        gap_secs = gap.num_seconds(),
-                        window_secs = window_chrono.num_seconds(),
-                        threads = threads.len(),
-                        "Reconciliation gap exceeds max window, force-closing active threads"
-                    );
-                    for thread in &threads {
-                        if let Err(e) = self
-                            .store
-                            .update_thread_status(&thread.thread_id, ThreadStatus::Stopped)
-                            .await
-                        {
-                            tracing::error!(
-                                thread_id = %thread.thread_id,
-                                error = %e,
-                                "Failed to force-close thread"
-                            );
-                        }
-                    }
-                    // Mark all channels reconciled so normal flow resumes
-                    self.mark_all_channels_reconciled(&checkpoints).await;
-                    return;
-                }
-            }
-        }
-
-        // Ensure actors exist (idempotent on reconnect) and send Reconcile
-        if !threads.is_empty() {
-            let mut senders = Vec::with_capacity(threads.len());
-            for thread in &threads {
-                let tx = self.ensure_or_spawn_actor(&thread.thread_id, config).await;
-                senders.push((thread.thread_id.clone(), tx));
-            }
-
-            for (thread_id, tx) in &senders {
-                if let Err(e) = tx.send(ThreadCommand::Reconcile).await {
-                    tracing::error!(
-                        thread_id = %thread_id,
-                        error = %e,
-                        "Failed to send reconcile to actor"
-                    );
-                }
-            }
-
-            tracing::info!(count = senders.len(), "Reconciled active threads");
-        }
-
-        // Scan each checkpointed channel for new threads missed during downtime
+        // Scan each checkpointed channel for posts missed during downtime.
+        // Reconciliation is proportional to missed posts, not tracked threads:
+        // old closed/stale/debug threads do not spawn actors unless a new
+        // message for that specific thread is replayed.
         if !checkpoints.is_empty() {
             tracing::info!(
                 channels = checkpoints.len(),
-                "Scanning channels for missed threads"
+                "Scanning channels for missed posts"
             );
 
             for cp in &checkpoints {
-                let since_ms = cp.last_seen_post_at.timestamp_millis();
-
-                let post_list = match posts_api::get_posts_for_channel(
-                    config,
-                    &cp.channel_id,
-                    None,
-                    Some(200),
-                    Some(since_ms),
-                    None,
-                    None,
-                    None,
-                )
-                .await
-                {
-                    Ok(pl) => pl,
-                    Err(e) => {
-                        tracing::error!(
-                            channel_id = %cp.channel_id,
-                            error = %e,
-                            "Failed to scan channel for missed threads"
-                        );
-                        // Mark this channel reconciled anyway to unblock normal flow
-                        if let Err(e) = self.store.set_channel_reconciled(&cp.channel_id).await {
-                            tracing::error!(channel_id = %cp.channel_id, error = %e, "Failed to mark channel reconciled");
-                        }
-                        continue;
-                    }
-                };
-
-                if let (Some(order), Some(posts)) = (post_list.order, post_list.posts) {
-                    for post_id in &order {
-                        if let Some(post) = posts.get(post_id) {
-                            if !is_root_post(post) {
-                                continue;
-                            }
-                            match self.store.get_thread(&post.id).await {
-                                Ok(Some(_)) => continue,
-                                Ok(None) => {}
-                                Err(e) => {
-                                    tracing::error!(
-                                        post_id = %post.id,
-                                        error = %e,
-                                        "Failed to check thread existence during scan"
-                                    );
-                                    continue;
-                                }
-                            }
-                            self.handle_new_thread(post, config).await;
-                        }
-                    }
-                }
-
-                // Channel scanned — mark reconciled so normal flow can advance it
-                if let Err(e) = self.store.set_channel_reconciled(&cp.channel_id).await {
-                    tracing::error!(channel_id = %cp.channel_id, error = %e, "Failed to mark channel reconciled");
-                }
+                self.reconcile_channel(config, cp).await;
             }
         }
     }
 
-    /// Helper: mark all checkpointed channels as reconciled.
-    async fn mark_all_channels_reconciled(&self, checkpoints: &[crate::types::ChannelCheckpoint]) {
-        for cp in checkpoints {
-            if let Err(e) = self.store.set_channel_reconciled(&cp.channel_id).await {
-                tracing::error!(channel_id = %cp.channel_id, error = %e, "Failed to mark channel reconciled");
-            }
+    async fn reconcile_channel(&self, config: &Arc<Configuration>, checkpoint: &ChannelCheckpoint) {
+        if self.reconcile_gap_exceeds_window(checkpoint) {
+            self.skip_channel_backlog(config, checkpoint).await;
+            return;
+        }
+
+        let (replayed_count, last_replayed) = self.replay_channel_posts(config, checkpoint).await;
+
+        tracing::info!(
+            channel_id = %checkpoint.channel_id,
+            count = replayed_count,
+            "Replayed missed posts"
+        );
+
+        self.finish_channel_reconciliation(checkpoint, last_replayed.as_ref())
+            .await;
+    }
+
+    async fn skip_channel_backlog(
+        &self,
+        config: &Arc<Configuration>,
+        checkpoint: &ChannelCheckpoint,
+    ) {
+        let now = chrono::Utc::now();
+        tracing::warn!(
+            channel_id = %checkpoint.channel_id,
+            last_seen_post_at = %checkpoint.last_seen_post_at,
+            skipped_to = %now,
+            "Reconciliation gap exceeds max window, skipping backlog"
+        );
+        if let Err(e) = self
+            .advance_skipped_reconciliation_checkpoint(config, checkpoint, now)
+            .await
+        {
+            tracing::error!(channel_id = %checkpoint.channel_id, error = %e, "Failed to advance skipped reconciliation checkpoint");
+        }
+        self.mark_channel_reconciled(&checkpoint.channel_id).await;
+    }
+
+    async fn replay_channel_posts(
+        &self,
+        config: &Arc<Configuration>,
+        checkpoint: &ChannelCheckpoint,
+    ) -> (usize, Option<models::Post>) {
+        let mut channel_messages = channel_messages_after(Arc::clone(config), checkpoint);
+        let mut replayed_count = 0usize;
+        let mut last_replayed = None;
+
+        while let Some(result) = channel_messages.next().await {
+            let post = match result {
+                Ok(post) => post,
+                Err(e) => {
+                    tracing::error!(
+                        channel_id = %checkpoint.channel_id,
+                        error = %e,
+                        "Failed to scan channel for missed posts"
+                    );
+                    break;
+                }
+            };
+            self.route_post(&post, config).await;
+            replayed_count += 1;
+            last_replayed = Some(post);
+        }
+
+        (replayed_count, last_replayed)
+    }
+
+    async fn finish_channel_reconciliation(
+        &self,
+        checkpoint: &ChannelCheckpoint,
+        last_replayed: Option<&models::Post>,
+    ) {
+        if let Some(post) = last_replayed {
+            let post_at = post
+                .create_at
+                .map(ms_to_datetime)
+                .unwrap_or_else(chrono::Utc::now);
+            self.force_checkpoint_to_post(&checkpoint.channel_id, post, post_at)
+                .await;
+        }
+
+        // Channel scanned — mark reconciled so normal flow can advance it.
+        self.mark_channel_reconciled(&checkpoint.channel_id).await;
+    }
+
+    async fn mark_channel_reconciled(&self, channel_id: &str) {
+        if let Err(e) = self.store.set_channel_reconciled(channel_id).await {
+            tracing::error!(channel_id = %channel_id, error = %e, "Failed to mark channel reconciled");
+        }
+    }
+
+    async fn reconcile_single_flight(&self, config: &Arc<Configuration>) {
+        let Ok(_guard) = self.reconciliation_gate.try_lock() else {
+            tracing::info!("Reconciliation already running, skipping duplicate start");
+            return;
+        };
+
+        tracing::info!("Starting reconcile");
+        self.reconcile(config).await;
+    }
+
+    fn reconcile_gap_exceeds_window(&self, checkpoint: &ChannelCheckpoint) -> bool {
+        let Some(window) = self.config.max_reconcile_window else {
+            return false;
+        };
+
+        let Ok(window_chrono) = chrono::Duration::from_std(window) else {
+            return false;
+        };
+
+        chrono::Utc::now() - checkpoint.last_seen_post_at > window_chrono
+    }
+
+    async fn advance_skipped_reconciliation_checkpoint(
+        &self,
+        config: &Arc<Configuration>,
+        checkpoint: &ChannelCheckpoint,
+        skipped_to: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), ThreadBotError> {
+        let Some(post) = latest_channel_post(config, &checkpoint.channel_id).await? else {
+            return Ok(());
+        };
+        let post_at = post.create_at.map(ms_to_datetime).unwrap_or(skipped_to);
+        self.store
+            .upsert_channel_checkpoint(&checkpoint.channel_id, &post.id, post_at)
+            .await
+    }
+
+    async fn register_channel_if_needed(
+        &self,
+        channel_id: &str,
+        post: &models::Post,
+        post_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        if let Err(e) = self
+            .store
+            .upsert_channel_checkpoint(channel_id, &post.id, post_at)
+            .await
+        {
+            tracing::error!(channel_id = %channel_id, error = %e, "Failed to upsert channel checkpoint");
+        }
+    }
+
+    async fn advance_channel_if_reconciled(
+        &self,
+        channel_id: &str,
+        post: &models::Post,
+        post_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        if let Err(e) = self
+            .store
+            .advance_channel_checkpoint(channel_id, &post.id, post_at)
+            .await
+        {
+            tracing::error!(channel_id = %channel_id, error = %e, "Failed to advance channel checkpoint");
+        }
+    }
+
+    async fn force_checkpoint_to_post(
+        &self,
+        channel_id: &str,
+        post: &models::Post,
+        post_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        if let Err(e) = self
+            .store
+            .upsert_channel_checkpoint(channel_id, &post.id, post_at)
+            .await
+        {
+            tracing::error!(channel_id = %channel_id, error = %e, "Failed to advance reconciled channel checkpoint");
         }
     }
 
     // ── Actor management ─────────────────────────────────────────────────
 
-    /// Get an existing actor or spawn a new one for the given thread.
-    async fn ensure_or_spawn_actor(
+    fn actor_spawn_config(
         &self,
         thread_id: &str,
         mm_config: &Arc<Configuration>,
-    ) -> mpsc::Sender<ThreadCommand> {
-        let mut actors = self.actors.lock().await;
-
-        if let Some(tx) = actors.get(thread_id) {
-            if !tx.is_closed() {
-                return tx.clone();
-            }
-            actors.remove(thread_id);
-        }
-
-        let tx = self
-            .spawn_actor(thread_id.to_string(), Arc::clone(mm_config))
-            .await;
-        actors.insert(thread_id.to_string(), tx.clone());
-        tx
-    }
-
-    /// Spawn a new per-thread actor task.
-    async fn spawn_actor(
-        &self,
-        thread_id: String,
-        mm_config: Arc<Configuration>,
-    ) -> mpsc::Sender<ThreadCommand> {
-        let (tx, rx) = mpsc::channel(self.config.channel_buffer);
-
-        let actors = Arc::clone(&self.actors);
-
-        let actor_ctx = ActorCtx {
+    ) -> ActorSpawnConfig<H> {
+        ActorSpawnConfig {
             handler: Arc::clone(&self.handler),
             store: Arc::clone(&self.store),
-            ctx: ThreadContext {
-                config: Arc::clone(&mm_config),
-                store: Arc::clone(&self.store),
-                plugin_id: self.handler.id(),
-                bot_user_id: self.bot_user_id.read().await.clone(),
-            },
-            mm_config,
+            mm_config: Arc::clone(mm_config),
             debounce: self.config.debounce,
-            thread_id: thread_id.clone(),
+            channel_buffer: self.config.channel_buffer,
+            actor_idle_timeout: self.config.actor_idle_timeout,
+            thread_id: thread_id.to_string(),
             bot_user_id: Arc::clone(&self.bot_user_id),
             metrics: self.metrics.clone(),
-        };
-
-        tokio::spawn(async move {
-            thread_actor(rx, actor_ctx).await;
-            actors.lock().await.remove(&thread_id);
-        });
-
-        tx
+        }
     }
 }
 
@@ -798,19 +684,9 @@ impl<H: ThreadHandler> mattermost_bot::Plugin for ThreadBotPlugin<H> {
     }
 
     async fn on_shutdown(&self, _config: &Arc<Configuration>) -> mattermost_bot::Result<()> {
-        let senders: Vec<mpsc::Sender<ThreadCommand>> = {
-            let actors = self.actors.lock().await;
-            actors.values().cloned().collect()
-        };
+        let actor_count = self.registry.send_shutdown_to_all().await;
 
-        tracing::info!(
-            actor_count = senders.len(),
-            "Sending shutdown to thread actors"
-        );
-
-        for tx in senders {
-            let _ = tx.send(ThreadCommand::Shutdown).await;
-        }
+        tracing::info!(actor_count, "Sending shutdown to thread actors");
 
         Ok(())
     }
@@ -831,8 +707,7 @@ impl<H: ThreadHandler> mattermost_bot::Plugin for ThreadBotPlugin<H> {
                 let plugin = self.clone();
                 let config = Arc::clone(config);
                 tokio::spawn(async move {
-                    tracing::info!("Starting reconcile");
-                    plugin.reconcile(&config).await;
+                    plugin.reconcile_single_flight(&config).await;
                 });
             }
             EventType::Posted(posted) => {
@@ -882,7 +757,7 @@ impl<H: ThreadHandler> mattermost_bot::Plugin for ThreadBotPlugin<H> {
         let handle = ThreadBotHandle::new(
             Arc::clone(&self.store),
             config,
-            Arc::clone(&self.actors),
+            self.registry.clone(),
             Arc::clone(&self.bot_user_id),
         );
         Arc::clone(&self.handler).setup_cron(scheduler, handle);

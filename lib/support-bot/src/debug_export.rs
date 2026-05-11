@@ -1,26 +1,37 @@
-use crate::config::EngineerNotificationTarget;
-use crate::conversation::{load_state, load_trace, STATE_KEY};
+use crate::handler::ENGINEER_LINK_KIND;
 use crate::llm::{ChatMessage, ChatRole};
+use crate::metadata::{
+    load_message_trace, load_thread_state, metadata_value, SupportMetadata, SupportMetadataKind,
+};
 use crate::notifier::{
-    render_thread_html_report, MattermostSupportNotifier, SupportReportPost, SupportReportSummary,
+    render_thread_html_report, DebugReportPoster, SupportReportPost, SupportReportSummary,
     SupportReportToolCall, SupportReportTrace,
 };
 use crate::state::SupportThreadStatus;
-use serde_json::json;
-use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadStatus};
+use thread_bot::{Thread, ThreadBotError, ThreadContext, ThreadEffect, ThreadTarget};
 use tracing::{info, warn};
 
+// NOTE: This module is the only intentional direct Mattermost side-effect path.
+// We upload an HTML attachment and create a post via API here because
+// ThreadEffect currently has no file-attachment variant.
 pub(crate) async fn handle_debug_export_html(
-    target: &EngineerNotificationTarget,
     engineer_thread: &Thread,
     ctx: &ThreadContext,
 ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
-    let Some(source_thread_id) = source_user_thread_id(engineer_thread) else {
+    let source_links = ctx
+        .store
+        .list_reverse_thread_links(&engineer_thread.info.thread_id)
+        .await?;
+    let source_link = source_links
+        .iter()
+        .find(|link| link.link_kind == ENGINEER_LINK_KIND);
+    let Some(source_thread_id) = source_link.map(|link| link.source_thread_id.as_str()) else {
         warn!(
             engineer_thread_id = %engineer_thread.info.thread_id,
-            "support-bot: debug-report source thread id missing in engineer thread props"
+            "support-bot: debug-report source thread link is missing"
         );
         return Ok(vec![ThreadEffect::Reply {
+            target: ThreadTarget::CurrentThread,
             message: "Cannot find source support thread for this engineer thread.".to_string(),
             metadata: debug_response_metadata(),
         }]);
@@ -30,12 +41,13 @@ pub(crate) async fn handle_debug_export_html(
         source_thread_id = %source_thread_id,
         "support-bot: exporting debug-report"
     );
-    let Some(record) = ctx.store.get_thread(&source_thread_id).await? else {
+    let Some(record) = ctx.store.get_thread(source_thread_id).await? else {
         warn!(
             source_thread_id = %source_thread_id,
             "support-bot: debug-report source thread not found in store"
         );
         return Ok(vec![ThreadEffect::Reply {
+            target: ThreadTarget::CurrentThread,
             message: format!("Source support thread not found: {source_thread_id}"),
             metadata: debug_response_metadata(),
         }]);
@@ -59,7 +71,7 @@ pub(crate) async fn handle_debug_export_html(
         .await?
         .into_iter()
         .filter_map(|message| {
-            let trace = load_trace(&message.metadata).ok()?;
+            let trace = load_message_trace(&message.metadata).ok()?;
             if trace.is_empty() {
                 return None;
             }
@@ -74,7 +86,7 @@ pub(crate) async fn handle_debug_export_html(
             })
         })
         .collect::<Vec<_>>();
-    let summary = build_report_summary(record.status, &record.metadata, &traces_by_post);
+    let summary = build_report_summary(&record.metadata, &traces_by_post);
 
     let html = render_thread_html_report(
         &record.thread_id,
@@ -85,7 +97,7 @@ pub(crate) async fn handle_debug_export_html(
         &traces_by_post,
     );
     let html_size = html.len();
-    MattermostSupportNotifier::new(ctx.config.clone(), target.clone())
+    DebugReportPoster::new(ctx.config.clone())
         .post_html_attachment_to_thread(
             &engineer_thread.info.channel_id,
             &engineer_thread.info.root_post_id,
@@ -95,13 +107,7 @@ pub(crate) async fn handle_debug_export_html(
                 "Attached: support thread HTML export for `{}`.",
                 record.thread_id
             ),
-            json!({
-                STATE_KEY: {
-                    "kind": "thread_html_report",
-                    "source_thread_id": record.thread_id,
-                    "reason": "engineer_request"
-                }
-            }),
+            metadata_value(&SupportMetadata::thread_html_report(&record.thread_id))?,
         )
         .await?;
     info!(
@@ -112,6 +118,7 @@ pub(crate) async fn handle_debug_export_html(
     );
 
     Ok(vec![ThreadEffect::Reply {
+        target: ThreadTarget::CurrentThread,
         message: format!(
             "Debug report exported for support thread `{}`.",
             record.thread_id
@@ -120,24 +127,9 @@ pub(crate) async fn handle_debug_export_html(
     }])
 }
 
-pub(crate) fn source_user_thread_id(thread: &Thread) -> Option<String> {
-    thread
-        .messages
-        .iter()
-        .find(|message| message.post_id == thread.info.root_post_id)
-        .or_else(|| thread.messages.first())
-        .and_then(|message| message.props.get(STATE_KEY))
-        .and_then(|props| props.get("source_thread_id"))
-        .and_then(serde_json::Value::as_str)
-        .map(ToString::to_string)
-}
-
 pub(crate) fn debug_response_metadata() -> serde_json::Value {
-    json!({
-        STATE_KEY: {
-            "kind": "debug_response"
-        }
-    })
+    metadata_value(&SupportMetadata::new(SupportMetadataKind::DebugResponse))
+        .unwrap_or(serde_json::Value::Null)
 }
 
 fn report_post_from_thread_message(message: &thread_bot::ThreadMessage) -> SupportReportPost {
@@ -150,11 +142,10 @@ fn report_post_from_thread_message(message: &thread_bot::ThreadMessage) -> Suppo
 }
 
 fn build_report_summary(
-    thread_status: ThreadStatus,
     thread_metadata: &serde_json::Value,
     traces: &[SupportReportTrace],
 ) -> SupportReportSummary {
-    let decoded_state = load_state(thread_metadata);
+    let decoded_state = load_thread_state(thread_metadata);
     let support_status = decoded_state
         .as_ref()
         .map(|state| support_status_label(&state.status).to_string())
@@ -163,10 +154,7 @@ fn build_report_summary(
         Ok(state) => serde_json::to_string_pretty(&state).unwrap_or_else(|_| "{}".to_string()),
         Err(error) => format!("failed to decode support state: {error}"),
     };
-    let thread_status = serde_json::to_value(thread_status)
-        .ok()
-        .and_then(|value| value.as_str().map(ToString::to_string))
-        .unwrap_or_else(|| format!("{thread_status:?}"));
+    let thread_status = "tracked".to_string();
 
     let mut tool_calls = Vec::new();
     let mut tool_errors = 0;
@@ -226,6 +214,7 @@ fn support_status_label(status: &SupportThreadStatus) -> &'static str {
     match status {
         SupportThreadStatus::Active => "active",
         SupportThreadStatus::Finished => "finished",
+        SupportThreadStatus::Stopped => "stopped",
     }
 }
 

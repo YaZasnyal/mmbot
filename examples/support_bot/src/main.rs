@@ -1,22 +1,15 @@
 use anyhow::{Context, Result};
 use mattermost_api::apis::configuration::Configuration;
 use mattermost_bot::{Bot, MattermostBotMetrics, tokio_graceful};
-use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use support_bot::{
-    DEFAULT_SUPPORT_SYSTEM_PROMPT, EngineerNotificationConfig, EngineerNotificationTarget,
-    InstructionConfig, InstructionManifest, InstructionRepository, LlmConfig,
-    OpenAiChatCompletionsClient, SupportBotBuilder, SupportBotConfig, SupportBotLimits,
-    SupportBotMetrics, SupportRouteConfig, ToolConfig,
+    DEFAULT_SUPPORT_SYSTEM_PROMPT, EngineerNotificationConfig, InstructionConfig,
+    InstructionRepository, LlmConfig, OpenAiChatCompletionsClient, SupportBotBuilder,
+    SupportBotConfig, SupportBotLimits, SupportBotMetrics, SupportRouteConfig, ToolConfig,
 };
 use thread_bot::{PgThreadStore, ThreadBotMetrics, ThreadBotPlugin, ThreadStore};
-
-#[derive(Debug, Deserialize)]
-struct ManifestFile {
-    documents: Vec<support_bot::InstructionDocument>,
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -94,12 +87,7 @@ fn load_support_config() -> Result<SupportBotConfig> {
     let max_instruction_bytes: usize =
         read_env("SUPPORT_MAX_INSTRUCTION_BYTES", "16384")?.parse()?;
 
-    let engineer_notification_target = match std::env::var("SUPPORT_ENGINEER_CHANNEL_ID") {
-        Ok(channel_id) if !channel_id.trim().is_empty() => {
-            EngineerNotificationTarget::MattermostChannel { channel_id }
-        }
-        _ => EngineerNotificationTarget::SameThread,
-    };
+    let engineer_channel_id = read_required_env("SUPPORT_ENGINEER_CHANNEL_ID")?;
 
     let remote_mcp_endpoints = load_remote_mcp_endpoints()?;
 
@@ -126,47 +114,35 @@ fn load_support_config() -> Result<SupportBotConfig> {
         },
         routes: SupportRouteConfig {
             user_channel_ids: read_csv_env("SUPPORT_USER_CHANNEL_IDS"),
-            engineer_channel_id: std::env::var("SUPPORT_ENGINEER_CHANNEL_ID").ok(),
+            engineer_channel_id: Some(engineer_channel_id.clone()),
             ..SupportRouteConfig::default()
         },
         engineer_notifications: EngineerNotificationConfig {
-            target: engineer_notification_target,
+            channel_id: engineer_channel_id,
         },
     })
 }
 
 fn load_instruction_repository(config: &InstructionConfig) -> Result<InstructionRepository> {
-    let manifest_path = read_env(
-        "SUPPORT_INSTRUCTIONS_MANIFEST",
-        "examples/support_bot/instructions/manifest.yaml",
-    )?;
-    let manifest = load_manifest(&manifest_path)?;
+    for issue in InstructionRepository::lint(&config.root_path)? {
+        let path = issue
+            .path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let id = issue.id.as_deref().unwrap_or("-");
+        tracing::error!(
+            issue_kind = ?issue.kind,
+            path = %path,
+            id = %id,
+            message = %issue.message,
+            "support-bot: instruction repository lint issue"
+        );
+    }
 
-    Ok(InstructionRepository::new(
-        config.root_path.clone(),
-        InstructionManifest {
-            documents: manifest.documents,
-        },
-    )
-    .with_max_instruction_bytes(config.max_instruction_bytes)
-    .with_max_load_documents(config.max_context_instructions))
-}
-
-fn load_manifest(path: impl AsRef<Path>) -> Result<ManifestFile> {
-    let path_ref = path.as_ref();
-    let raw = std::fs::read_to_string(path_ref).with_context(|| {
-        format!(
-            "failed to read instruction manifest: {}",
-            path_ref.display()
-        )
-    })?;
-
-    serde_yaml::from_str(&raw).with_context(|| {
-        format!(
-            "failed to parse instruction manifest yaml: {}",
-            path_ref.display()
-        )
-    })
+    Ok(InstructionRepository::new(config.root_path.clone())?
+        .with_max_instruction_bytes(config.max_instruction_bytes)
+        .with_max_load_documents(config.max_context_instructions))
 }
 
 fn load_remote_mcp_endpoints() -> Result<Vec<support_bot::RemoteMcpEndpoint>> {

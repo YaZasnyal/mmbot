@@ -5,7 +5,7 @@ Runnable `support-bot` example on top of `thread-bot`.
 ## What this example wires
 
 - `SupportBotBuilder` with default workflow tools.
-- `InstructionRepository` loaded from `instructions/manifest.yaml`.
+- `InstructionRepository` loaded from Markdown files under `instructions/`.
 - Optional remote MCP tool registration from env-driven `ToolConfig`.
 - Optional Prometheus/OpenMetrics metric families for Mattermost WS,
   thread actors, and support workflow counters/durations.
@@ -44,7 +44,6 @@ export SUPPORT_USER_CHANNEL_IDS=YOUR_SUPPORT_CHANNEL_ID
 export SUPPORT_ENGINEER_CHANNEL_ID=YOUR_ENGINEER_CHANNEL_ID
 
 export SUPPORT_INSTRUCTIONS_ROOT=examples/support_bot/instructions
-export SUPPORT_INSTRUCTIONS_MANIFEST=examples/support_bot/instructions/manifest.yaml
 
 # Optional remote MCP tools
 # export SUPPORT_REMOTE_MCP_NAMES=logs,metrics
@@ -74,6 +73,9 @@ cargo run -p support-bot-example
   notifications, and debug report exports require a separate engineer channel.
 - `SUPPORT_REMOTE_MCP_NAMES` is a comma-separated list. For each name `x`, provide `SUPPORT_REMOTE_MCP_X_URL` and optionally `SUPPORT_REMOTE_MCP_X_AUTH_HEADER` / `SUPPORT_REMOTE_MCP_X_TIMEOUT_SECS` (name is uppercased, `-` becomes `_`).
 - The included instruction files are placeholders; replace them with your runbooks.
+- Instruction repository lint issues are logged at `error` during startup, but
+  they do not stop the example process. Invalid documents are skipped by the
+  repository until fixed.
 - Support thread state is stored in thread metadata under `support_bot`. The
   current request status is `active` until the model calls `finish_request`,
   then it is persisted as `finished` with the optional finish summary.

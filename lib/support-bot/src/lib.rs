@@ -12,6 +12,7 @@ pub mod error;
 pub mod handler;
 pub mod instructions;
 pub mod llm;
+mod metadata;
 pub mod metrics;
 pub mod notifier;
 mod output;
@@ -27,23 +28,22 @@ mod testutil;
 pub use async_trait::async_trait;
 pub use builder::{SupportBotBuilder, DEFAULT_SUPPORT_SYSTEM_PROMPT};
 pub use config::{
-    DebugCommandConfig, EngineerNotificationConfig, EngineerNotificationTarget, InstructionConfig,
-    LlmConfig, RemoteMcpEndpoint, SupportBotConfig, SupportBotLimits, SupportRouteConfig,
-    ToolConfig,
+    DebugCommandConfig, EngineerNotificationConfig, InstructionConfig, LlmConfig,
+    RemoteMcpEndpoint, SupportBotConfig, SupportBotLimits, SupportRouteConfig, ToolConfig,
 };
 pub use debug::{DebugCommand, DebugCommandHandler, DebugCommandMatch, DebugResponse};
 pub use error::{Result, SupportBotError};
 pub use handler::SupportBotHandler;
 pub use instructions::{
-    InstructionDocument, InstructionManifest, InstructionRepository, LoadedInstruction,
+    InstructionDocument, InstructionLintIssue, InstructionLintIssueKind, InstructionRepository,
+    LoadedInstruction,
 };
 pub use llm::{
     ChatMessage, ChatRole, LlmClient, LlmRequest, LlmResponse, OpenAiChatCompletionsClient,
 };
 pub use metrics::{SupportBotMetrics, SupportBotMetricsHandle};
-pub use notifier::MattermostSupportNotifier;
 pub use prometheus_client;
-pub use state::{EngineerThreadRef, SupportThreadState, SupportThreadStatus};
+pub use state::{SupportThreadState, SupportThreadStatus};
 pub use tools::{
     register_default_workflow_tools, register_remote_mcp_tools, SupportAction, SupportTool,
     ToolCall, ToolContext, ToolExecutionOutcome, ToolKind, ToolRegistry, ToolResult, ToolSpec,

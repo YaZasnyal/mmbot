@@ -9,7 +9,7 @@
 use chrono::Utc;
 use serde_json::json;
 use sqlx::PgPool;
-use thread_bot::{PgThreadStore, ThreadStatus, UpsertThread, UpsertThreadMessage};
+use thread_bot::{PgThreadStore, UpsertThread, UpsertThreadMessage};
 use uuid::Uuid;
 
 /// Returns the base Postgres URL (without database name).
@@ -103,7 +103,7 @@ pub fn make_thread(suffix: &str) -> UpsertThread {
         root_post_id: format!("root_post_{}", suffix),
         channel_id: format!("channel_{}", suffix),
         creator_user_id: format!("user_{}", suffix),
-        status: ThreadStatus::New,
+        thread_kind: Some("test_thread".to_string()),
         metadata: json!({}),
     }
 }

@@ -1,10 +1,33 @@
 use crate::actor::build_thread_snapshot;
 use crate::error::ThreadBotError;
 use crate::handle::ThreadBotHandle;
-use crate::types::{ReactionChange, Thread, ThreadRecord};
+use crate::types::{ReactionChange, Thread, ThreadInvocation, ThreadRecord};
 use async_trait::async_trait;
 use mattermost_bot::{chrono, cron_tab};
 use std::sync::Arc;
+
+/// Target thread for effects that can address another tracked thread.
+#[derive(Debug, Clone)]
+pub enum ThreadTarget {
+    /// The thread currently being handled.
+    CurrentThread,
+    /// A specific tracked thread.
+    Thread { thread_id: String },
+    /// All threads linked from the current thread by `link_kind`.
+    LinkedThreads { link_kind: String },
+}
+
+/// Target thread for metadata effects.
+#[derive(Debug, Clone, Default)]
+pub enum ThreadMetadataTarget {
+    /// The thread currently being handled.
+    #[default]
+    CurrentThread,
+    /// A specific tracked thread.
+    ThreadId(String),
+    /// A tracked thread identified by its root post id.
+    RootPostId(String),
+}
 
 /// Context provided to thread handlers
 #[derive(Clone)]
@@ -32,8 +55,9 @@ impl ThreadContext {
 pub enum ThreadEffect {
     /// No operation
     Noop,
-    /// Reply to the thread
+    /// Reply to a target thread.
     Reply {
+        target: ThreadTarget,
         message: String,
         metadata: serde_json::Value,
     },
@@ -44,11 +68,26 @@ pub enum ThreadEffect {
         metadata: Option<serde_json::Value>,
     },
     /// Set thread-level metadata
-    SetThreadMetadata { metadata: serde_json::Value },
+    SetThreadMetadata {
+        target: ThreadMetadataTarget,
+        metadata: serde_json::Value,
+    },
     /// Set message-level metadata in DB (full replacement)
     SetMessageMetadata {
         post_id: String,
         metadata: serde_json::Value,
+    },
+    /// Create a typed linked root thread.
+    ///
+    /// Layer 3 creates a root post in `channel_id`, tracks it as a thread,
+    /// stores the created root message, and records the link.
+    EnsureLinkedThread {
+        link_kind: String,
+        channel_id: String,
+        thread_kind: Option<String>,
+        message: String,
+        metadata: serde_json::Value,
+        thread_metadata: serde_json::Value,
     },
     /// Reschedule handler run after applying effects
     ///
@@ -60,23 +99,6 @@ pub enum ThreadEffect {
     /// After applying all effects in the batch, Layer 3 will schedule
     /// a new handler run (respecting debounce if new messages arrive).
     Reschedule,
-    /// Mark thread as resolved
-    MarkResolved,
-    /// Mark thread as stopped
-    MarkStopped,
-}
-
-/// Reason why thread was closed
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThreadCloseReason {
-    ResolvedByReaction,
-    StoppedByReaction,
-    ResolvedByHandler,
-    StoppedByHandler,
-    /// Thread resolved via ThreadBotHandle (cron job, admin, etc.)
-    ResolvedExternally,
-    /// Thread stopped via ThreadBotHandle (cron job, admin, etc.)
-    StoppedExternally,
 }
 
 /// Thread handler trait - implement this to create a thread-based bot
@@ -85,27 +107,22 @@ pub trait ThreadHandler: Send + Sync + 'static {
     /// Unique identifier for this handler
     fn id(&self) -> &'static str;
 
-    /// Decide whether to start tracking this thread
-    async fn should_track(
-        &self,
-        thread: &Thread,
-        ctx: &ThreadContext,
-    ) -> Result<bool, ThreadBotError>;
-
-    /// Main thread processing logic
+    /// Main thread processing logic.
     ///
-    /// Called after debounce with full thread snapshot from Mattermost API.
+    /// Called after debounce with a lightweight thread record and trigger.
+    /// Build a full snapshot explicitly with
+    /// [`ThreadContext::build_thread_snapshot`] only when message/reaction
+    /// history is needed.
     /// Returns a list of effects to apply.
     async fn handle(
         &self,
-        thread: &Thread,
+        invocation: &ThreadInvocation,
         ctx: &ThreadContext,
     ) -> Result<Vec<ThreadEffect>, ThreadBotError>;
 
-    /// Synchronous control reaction handler for root post
+    /// Synchronous control reaction handler for root post.
     ///
-    /// Called ONLY if thread is in New or Active status.
-    /// Cannot do async work - return ThreadEffect for that.
+    /// Cannot do async work directly; return effects for Layer 3 to execute.
     ///
     /// # Parameters
     /// - `thread_record`: lightweight thread record from DB (no messages)
@@ -117,30 +134,9 @@ pub trait ThreadHandler: Send + Sync + 'static {
     fn on_control_reaction(
         &self,
         _thread_record: &ThreadRecord,
-        change: &ReactionChange,
+        _change: &ReactionChange,
     ) -> Option<ThreadEffect> {
-        default_control_reactions(change)
-    }
-
-    /// Determine if an emoji is a feedback reaction
-    ///
-    /// Feedback reactions are saved to DB only for bot messages
-    /// (with is_bot_message = true) for later analytics.
-    ///
-    /// Default: 👍 and 👎
-    fn is_feedback_reaction(&self, emoji_name: &str) -> bool {
-        matches!(emoji_name, "thumbsup" | "thumbsdown" | "+1" | "-1")
-    }
-
-    /// Called when thread is closed (resolved or stopped)
-    async fn on_thread_closed(
-        &self,
-        thread: &Thread,
-        reason: ThreadCloseReason,
-        ctx: &ThreadContext,
-    ) -> Result<(), ThreadBotError> {
-        let _ = (thread, reason, ctx);
-        Ok(())
+        None
     }
 
     /// Configure periodic tasks for this handler.
@@ -158,21 +154,6 @@ pub trait ThreadHandler: Send + Sync + 'static {
         _handle: ThreadBotHandle,
     ) {
         // Default: no cron jobs
-    }
-}
-
-/// Default control reaction logic
-///
-/// - ✅ (white_check_mark) on Added → MarkResolved
-/// - 🛑 (stop_sign) on Added → MarkStopped
-/// - Everything else → None
-pub fn default_control_reactions(change: &ReactionChange) -> Option<ThreadEffect> {
-    use crate::types::ReactionAction;
-
-    match (&change.action, change.emoji_name.as_str()) {
-        (ReactionAction::Added, "white_check_mark") => Some(ThreadEffect::MarkResolved),
-        (ReactionAction::Added, "stop_sign") => Some(ThreadEffect::MarkStopped),
-        _ => None,
     }
 }
 

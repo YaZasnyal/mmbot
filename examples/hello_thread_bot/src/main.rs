@@ -6,7 +6,7 @@
 //! This bot:
 //! - Tracks threads in channels where it's added
 //! - Replies with "Processed" to the root post
-//! - Marks the thread as resolved
+//! - Stores example lifecycle metadata on finished/stale threads
 
 use std::{ops::Sub, sync::Arc};
 
@@ -14,7 +14,8 @@ use async_trait::async_trait;
 use mattermost_api::{apis::configuration::Configuration, models::CreatePostRequest};
 use mattermost_bot::{Bot, tokio_graceful};
 use thread_bot::{
-    ThreadBotHandle, ThreadEffect, ThreadHandler, ThreadStatus, ThreadStore, cron_tab,
+    ThreadBotHandle, ThreadEffect, ThreadHandler, ThreadMetadataTarget, ThreadStore, ThreadTarget,
+    cron_tab,
 };
 
 struct HelloWorldHandler;
@@ -25,19 +26,14 @@ impl ThreadHandler for HelloWorldHandler {
         "hello_world_handler"
     }
 
-    async fn should_track(
-        &self,
-        _thread: &thread_bot::Thread,
-        _ctx: &thread_bot::ThreadContext,
-    ) -> Result<bool, thread_bot::ThreadBotError> {
-        Ok(true)
-    }
-
     async fn handle(
         &self,
-        thread: &thread_bot::Thread,
+        invocation: &thread_bot::ThreadInvocation,
         ctx: &thread_bot::ThreadContext,
     ) -> Result<Vec<ThreadEffect>, thread_bot::ThreadBotError> {
+        let thread = ctx
+            .build_thread_snapshot(&invocation.thread.thread_id)
+            .await?;
         tracing::info!(
             thread_id = %thread.info.thread_id,
             message_count = thread.messages.len(),
@@ -50,6 +46,7 @@ impl ThreadHandler for HelloWorldHandler {
 
         if thread.messages.len() < 3 {
             effects.push(ThreadEffect::Reply {
+                target: ThreadTarget::CurrentThread,
                 message: "Processed".to_string(),
                 metadata: serde_json::json!({
                     "handler": self.id(),
@@ -58,10 +55,19 @@ impl ThreadHandler for HelloWorldHandler {
             });
         } else {
             effects.push(ThreadEffect::Reply {
+                target: ThreadTarget::CurrentThread,
                 message: "Finished".to_string(),
                 metadata: serde_json::json!({
                     "handler": self.id(),
                     "root_post_id": root_id
+                }),
+            });
+            effects.push(ThreadEffect::SetThreadMetadata {
+                target: ThreadMetadataTarget::CurrentThread,
+                metadata: serde_json::json!({
+                    "hello_thread_bot": {
+                        "status": "finished"
+                    }
                 }),
             });
 
@@ -77,8 +83,6 @@ impl ThreadHandler for HelloWorldHandler {
             .await
             .ok();
         }
-
-        // effects.push(ThreadEffect::MarkResolved);
 
         Ok(effects)
     }
@@ -98,26 +102,43 @@ impl ThreadHandler for HelloWorldHandler {
 }
 
 async fn close_stale_threads(handle: ThreadBotHandle) {
-    let Ok(opened_threads) = handle
-        .list_threads(&[ThreadStatus::Active, ThreadStatus::New], None, None)
+    let Ok(tracked_threads) = handle
+        .list_threads(None, None)
         .await
-        .inspect_err(|e| tracing::error!("unable to list active threads: {e:?}"))
+        .inspect_err(|e| tracing::error!("unable to list tracked threads: {e:?}"))
     else {
         return;
     };
 
     let now = chrono::Utc::now();
-    for thread in opened_threads {
+    for thread in tracked_threads {
+        if thread
+            .metadata
+            .get("hello_thread_bot")
+            .and_then(|value| value.get("status"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|status| status != "active")
+        {
+            continue;
+        }
+
         if let Some(ts) = &thread.last_processed_post_at
             && now.sub(ts).num_minutes() > 1
         {
             handle
-                .stop_thread(&thread.thread_id)
+                .set_thread_metadata(
+                    &thread.thread_id,
+                    serde_json::json!({
+                        "hello_thread_bot": {
+                            "status": "stale"
+                        }
+                    }),
+                )
                 .await
                 .inspect_err(|e| {
                     tracing::error!(
                         thread_id = thread.thread_id,
-                        "unable to close thread: {e:?}"
+                        "unable to mark thread stale: {e:?}"
                     );
                 })
                 .ok();

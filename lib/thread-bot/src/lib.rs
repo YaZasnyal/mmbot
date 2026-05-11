@@ -1,5 +1,7 @@
 // Public API
 mod actor;
+mod actor_registry;
+mod channel_messages;
 pub mod error;
 pub mod handle;
 pub mod handler;
@@ -17,17 +19,15 @@ mod testutil;
 // Re-exports for convenience
 pub use error::ThreadBotError;
 pub use handle::ThreadBotHandle;
-pub use handler::{
-    default_control_reactions, ThreadCloseReason, ThreadContext, ThreadEffect, ThreadHandler,
-};
+pub use handler::{ThreadContext, ThreadEffect, ThreadHandler, ThreadMetadataTarget, ThreadTarget};
 pub use metrics::{ThreadBotMetrics, ThreadBotMetricsHandle};
 pub use pg_store::PgThreadStore;
 pub use runtime::{ThreadBotConfig, ThreadBotPlugin};
 pub use store::ThreadStore;
 pub use types::{
-    AppendReaction, ChannelCheckpoint, ReactionAction, ReactionChange, Thread, ThreadInfo,
-    ThreadMessage, ThreadMessageRecord, ThreadReaction, ThreadRecord, ThreadStatus, UpsertThread,
-    UpsertThreadMessage,
+    ChannelCheckpoint, ReactionAction, ReactionChange, Thread, ThreadInfo, ThreadInvocation,
+    ThreadLink, ThreadMessage, ThreadMessageRecord, ThreadRecord, ThreadTrigger, UpsertThread,
+    UpsertThreadLink, UpsertThreadMessage,
 };
 
 // Re-export async_trait for convenience

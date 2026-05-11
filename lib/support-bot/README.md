@@ -8,7 +8,7 @@ The crate owns support-specific concerns:
 - OpenAI-compatible LLM integration through a `LlmClient` abstraction.
 - Local Rust tools and remote MCP tools behind one `ToolRegistry`.
 - Compact per-thread resume state stored in `thread-bot` thread metadata.
-- Instruction/runbook selection from a documented filesystem manifest.
+- Markdown instruction/runbook loading from a documented filesystem tree.
 - Separate user and engineer notification sinks, including engineer-channel
   mirroring, status updates, and debug exports.
 
@@ -34,19 +34,18 @@ This crate now includes a concrete `SupportBotHandler`:
 - routes user-channel threads into the LLM/tool loop;
 - routes engineer-channel threads through debug command handling before LLM;
 - persists compact `SupportThreadState` under the `support_bot` thread metadata
-  key, including `active`/`finished` request state and optional finish summary;
+  key, including `active`/`finished`/`stopped` request state and optional finish
+  summary;
 - executes local tools through `ToolRegistry` with bounded tool rounds.
 - provides default workflow tools for user replies, engineer notifications,
   and finishing a request.
 - mirrors user and bot messages into a dedicated engineer channel thread when
   configured.
 - posts support status updates to the engineer thread when `finish_request`
-  marks a request as `finished`, then emits `ThreadEffect::MarkResolved`.
+  marks a request as `finished`.
 - supports on-demand engineer diagnostics with `!support debug-report`, which
   uploads an HTML report containing support state, source posts, and captured
   tool traces.
-- notifies the engineer thread when a support thread is closed by handler,
-  reaction, or external close reason.
 - notifies the engineer thread on tool-loop limit failures and tells engineers
   to run `!support debug-report` for the full HTML snapshot.
 - can register remote MCP tools from `ToolConfig.remote_mcp_endpoints` via
@@ -68,13 +67,8 @@ Default workflow tools return structured actions:
 - `notify_engineer`: sends diagnostic context or escalation notes to the
   engineer sink.
 - `finish_request`: stores `status = "finished"` and `finished_summary`,
-  posts a status update to the engineer thread when a separate engineer channel
-  is configured, and resolves the underlying `thread-bot` thread.
-
-If `EngineerNotificationTarget::SameThread` is used, explicit
-`notify_engineer` calls become ordinary reply effects in the user thread.
-Message mirroring and status-update posts are only emitted for a separate
-Mattermost engineer channel.
+  posts a status update to the engineer thread, and resolves the underlying
+  `thread-bot` thread.
 
 ## Engineer Debug Commands
 
@@ -91,6 +85,7 @@ regular LLM flow. The default prefixes are `/support` and `!support`.
 ## Instruction Format
 
 Instruction and runbook trees are documented in
-[`docs/instructions.md`](docs/instructions.md). The manifest is the source of
-truth; generated indexes such as embeddings may be added later, but should be
-derived from the manifest rather than maintained by hand.
+[`docs/instructions.md`](docs/instructions.md). Documents are ordinary `.md`
+files with YAML frontmatter. The default entry point is `/index`, and generated
+indexes such as embeddings may be added later as derived artifacts rather than
+maintained by hand.

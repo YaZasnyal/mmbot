@@ -1,7 +1,7 @@
 use crate::error::ThreadBotError;
 use crate::types::{
-    AppendReaction, ChannelCheckpoint, ThreadMessageRecord, ThreadReaction, ThreadRecord,
-    ThreadStatus, UpsertThread, UpsertThreadMessage,
+    ChannelCheckpoint, ThreadLink, ThreadMessageRecord, ThreadRecord, UpsertThread,
+    UpsertThreadLink, UpsertThreadMessage,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -23,25 +23,17 @@ pub trait ThreadStore: Send + Sync + 'static {
         post_id: &str,
     ) -> Result<Option<ThreadRecord>, ThreadBotError>;
 
-    /// List threads by status, optionally filtered by `updated_at` range.
+    /// List tracked threads, optionally filtered by `updated_at` range.
     ///
     /// - `updated_after`  — only threads updated **after** this timestamp.
     /// - `updated_before` — only threads updated **before** this timestamp.
     ///
     /// Pass `None` to skip a bound.
-    async fn list_threads_by_status(
+    async fn list_threads(
         &self,
-        statuses: &[ThreadStatus],
         updated_after: Option<DateTime<Utc>>,
         updated_before: Option<DateTime<Utc>>,
     ) -> Result<Vec<ThreadRecord>, ThreadBotError>;
-
-    /// Update thread status
-    async fn update_thread_status(
-        &self,
-        thread_id: &str,
-        status: ThreadStatus,
-    ) -> Result<(), ThreadBotError>;
 
     /// Set thread metadata (full replacement)
     async fn set_thread_metadata(
@@ -49,6 +41,31 @@ pub trait ThreadStore: Send + Sync + 'static {
         thread_id: &str,
         metadata: serde_json::Value,
     ) -> Result<(), ThreadBotError>;
+
+    /// Create or update a typed link from one tracked thread to another.
+    async fn upsert_thread_link(
+        &self,
+        input: UpsertThreadLink,
+    ) -> Result<ThreadLink, ThreadBotError>;
+
+    /// Get one forward link by source and target thread.
+    async fn get_thread_link(
+        &self,
+        source_thread_id: &str,
+        target_thread_id: &str,
+    ) -> Result<Option<ThreadLink>, ThreadBotError>;
+
+    /// List links originating from a thread.
+    async fn list_thread_links(
+        &self,
+        source_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError>;
+
+    /// List links pointing at a thread.
+    async fn list_reverse_thread_links(
+        &self,
+        target_thread_id: &str,
+    ) -> Result<Vec<ThreadLink>, ThreadBotError>;
 
     /// Update thread seen position
     async fn update_thread_seen(
@@ -91,15 +108,6 @@ pub trait ThreadStore: Send + Sync + 'static {
         metadata: serde_json::Value,
     ) -> Result<(), ThreadBotError>;
 
-    /// Append a reaction event
-    async fn append_reaction(&self, input: AppendReaction) -> Result<(), ThreadBotError>;
-
-    /// Get list of reactions for a thread (for building Thread snapshot)
-    async fn list_thread_reactions(
-        &self,
-        thread_id: &str,
-    ) -> Result<Vec<ThreadReaction>, ThreadBotError>;
-
     // ── Channel checkpoints ─────────────────────────────────────────────
 
     /// List all channel checkpoints.
@@ -108,14 +116,16 @@ pub trait ThreadStore: Send + Sync + 'static {
     /// Insert or update a channel checkpoint.
     ///
     /// On insert, sets `is_reconciled = true` (normal operation).
-    /// On conflict, updates `last_seen_post_at` only if it's newer.
+    /// On conflict, updates the post cursor when `last_seen_post_at` is not
+    /// older than the stored checkpoint.
     async fn upsert_channel_checkpoint(
         &self,
         channel_id: &str,
+        last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError>;
 
-    /// Advance checkpoint timestamp, but only when `is_reconciled = true`.
+    /// Advance checkpoint cursor, but only when `is_reconciled = true`.
     ///
     /// During reconciliation (`is_reconciled = false`) updates are skipped
     /// to prevent normal message processing from moving the checkpoint
@@ -123,6 +133,7 @@ pub trait ThreadStore: Send + Sync + 'static {
     async fn advance_channel_checkpoint(
         &self,
         channel_id: &str,
+        last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError>;
 

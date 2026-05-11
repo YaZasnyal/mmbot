@@ -7,12 +7,12 @@ use mattermost_api::models;
 
 use crate::actor::{
     build_thread_snapshot, get_root_post_id, is_root_post, ms_to_datetime, post_to_thread_message,
-    ThreadCommand,
+    post_to_upsert_thread_message, ThreadCommand,
 };
-use crate::handler::{ThreadCloseReason, ThreadEffect};
+use crate::handler::{ThreadEffect, ThreadMetadataTarget, ThreadTarget};
 use crate::store::ThreadStore;
 use crate::testutil::{
-    make_mm_post, make_mm_reaction, mount_reactions, setup_mm_mock, spawn_test_actor, MockHandler,
+    make_mm_post, setup_mm_mock, spawn_test_actor, spawn_test_actor_with_idle_timeout, MockHandler,
     MockStore,
 };
 use crate::types::*;
@@ -118,6 +118,32 @@ fn post_to_thread_message_defaults_for_missing() {
     assert_eq!(msg.props, serde_json::Value::Null);
 }
 
+#[test]
+fn post_to_upsert_thread_message_preserves_persistence_fields() {
+    let post = models::Post {
+        id: "p1".into(),
+        user_id: Some("bot".into()),
+        root_id: Some("root".into()),
+        create_at: Some(1_700_000_000_000),
+        update_at: Some(1_700_000_001_000),
+        delete_at: Some(0),
+        props: Some(serde_json::json!({"key": "val"})),
+        ..Default::default()
+    };
+
+    let msg = post_to_upsert_thread_message(&post, "t1", true);
+    assert_eq!(msg.post_id, "p1");
+    assert_eq!(msg.thread_id, "t1");
+    assert_eq!(msg.user_id, "bot");
+    assert!(msg.is_bot_message);
+    assert_eq!(msg.root_id, Some("root".into()));
+    assert_eq!(msg.parent_post_id, Some("root".into()));
+    assert_eq!(msg.metadata, serde_json::json!({"key": "val"}));
+    assert_eq!(msg.post_created_at, ms_to_datetime(1_700_000_000_000));
+    assert_eq!(msg.post_updated_at, Some(ms_to_datetime(1_700_000_001_000)));
+    assert_eq!(msg.post_deleted_at, None);
+}
+
 #[tokio::test]
 async fn build_thread_snapshot_orders_messages_and_merges_metadata() {
     let mut second = make_mm_post("post-2", "user_1", "second", Some("thread1"));
@@ -133,7 +159,7 @@ async fn build_thread_snapshot_orders_messages_and_merges_metadata() {
             root_post_id: "thread1".to_string(),
             channel_id: "test_channel".to_string(),
             creator_user_id: "user_1".to_string(),
-            status: ThreadStatus::Active,
+            thread_kind: None,
             metadata: serde_json::Value::Null,
         })
         .await
@@ -176,9 +202,20 @@ async fn settle() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 }
 
+async fn wait_actor_closed(tx: &tokio::sync::mpsc::Sender<ThreadCommand>) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !tx.is_closed() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("actor did not close in time");
+}
+
 #[tokio::test]
 async fn actor_basic_handler_flow() {
     let handler = MockHandler::new().with_default_effects(vec![ThreadEffect::Reply {
+        target: ThreadTarget::CurrentThread,
         message: "response".into(),
         metadata: serde_json::Value::Null,
     }]);
@@ -193,8 +230,14 @@ async fn actor_basic_handler_flow() {
     assert_eq!(handler.call_count(), 1);
 
     let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Active));
     assert!(thread.last_processed_post_id.is_some());
+    let reply = store
+        .message_snapshot("reply_post_id")
+        .await
+        .expect("bot reply should be persisted immediately");
+    assert_eq!(reply.thread_id, "thread1");
+    assert!(reply.is_bot_message);
+    assert_eq!(reply.metadata, serde_json::Value::Null);
 
     drop(tx);
 }
@@ -295,87 +338,94 @@ async fn actor_channel_closed_exits() {
 }
 
 #[tokio::test]
-async fn actor_control_reaction_resolved() {
+async fn actor_idle_timeout_zero_exits_after_handler() {
     let handler = MockHandler::new();
-    let post = make_mm_post("thread1", "user_1", "root", None);
-    let (tx, store, handler, _server) =
-        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
-
-    tx.send(ThreadCommand::ControlReaction {
-        effect: ThreadEffect::MarkResolved,
-        change: ReactionChange {
-            post_id: "thread1".into(),
-            user_id: "user_2".into(),
-            emoji_name: "white_check_mark".into(),
-            action: ReactionAction::Added,
-            created_at: Utc::now(),
-        },
-    })
-    .await
-    .unwrap();
-
-    settle().await;
-
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Resolved));
-
-    let reasons = handler.closed_reasons.lock().await;
-    assert_eq!(reasons.len(), 1);
-    assert_eq!(reasons[0], ThreadCloseReason::ResolvedByReaction);
-
-    assert!(tx.is_closed());
-}
-
-#[tokio::test]
-async fn actor_control_reaction_stopped() {
-    let handler = MockHandler::new();
-    let post = make_mm_post("thread1", "user_1", "root", None);
-    let (tx, store, handler, _server) =
-        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
-
-    tx.send(ThreadCommand::ControlReaction {
-        effect: ThreadEffect::MarkStopped,
-        change: ReactionChange {
-            post_id: "thread1".into(),
-            user_id: "user_2".into(),
-            emoji_name: "stop_sign".into(),
-            action: ReactionAction::Added,
-            created_at: Utc::now(),
-        },
-    })
-    .await
-    .unwrap();
-
-    settle().await;
-
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Stopped));
-
-    let reasons = handler.closed_reasons.lock().await;
-    assert_eq!(reasons.len(), 1);
-    assert_eq!(reasons[0], ThreadCloseReason::StoppedByReaction);
-
-    assert!(tx.is_closed());
-}
-
-#[tokio::test]
-async fn actor_handler_returns_mark_resolved() {
-    let handler = MockHandler::new().with_default_effects(vec![ThreadEffect::MarkResolved]);
-
     let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
-    let (tx, store, handler, _server) =
-        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
+
+    let (tx, _store, handler, _server) = spawn_test_actor_with_idle_timeout(
+        handler,
+        "thread1",
+        vec![post.clone()],
+        TEST_DEBOUNCE,
+        Duration::ZERO,
+    )
+    .await;
 
     tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
-    settle().await;
+    handler.wait_handle_entered().await;
+    wait_actor_closed(&tx).await;
 
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Resolved));
+    assert_eq!(handler.call_count(), 1);
+}
 
-    let reasons = handler.closed_reasons.lock().await;
-    assert_eq!(reasons[0], ThreadCloseReason::ResolvedByHandler);
+#[tokio::test]
+async fn actor_idle_timeout_waits_for_configured_delay() {
+    let handler = MockHandler::new();
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
 
-    assert!(tx.is_closed());
+    let (tx, _store, handler, _server) = spawn_test_actor_with_idle_timeout(
+        handler,
+        "thread1",
+        vec![post.clone()],
+        TEST_DEBOUNCE,
+        Duration::from_millis(200),
+    )
+    .await;
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    handler.wait_handle_entered().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert!(!tx.is_closed());
+
+    wait_actor_closed(&tx).await;
+}
+
+#[tokio::test]
+async fn actor_idle_timeout_does_not_fire_while_pending() {
+    let handler = MockHandler::new();
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+
+    let (tx, _store, handler, _server) = spawn_test_actor_with_idle_timeout(
+        handler,
+        "thread1",
+        vec![post.clone()],
+        Duration::from_millis(200),
+        Duration::from_millis(10),
+    )
+    .await;
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert!(!tx.is_closed());
+    assert_eq!(handler.call_count(), 0);
+
+    handler.wait_handle_entered().await;
+    wait_actor_closed(&tx).await;
+}
+
+#[tokio::test]
+async fn actor_idle_timeout_does_not_fire_while_handler_runs() {
+    let handler = MockHandler::new().with_handle_delay(Duration::from_millis(200));
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+
+    let (tx, _store, handler, _server) = spawn_test_actor_with_idle_timeout(
+        handler,
+        "thread1",
+        vec![post.clone()],
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+    )
+    .await;
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    handler.wait_handle_entered().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert!(!tx.is_closed());
+
+    wait_actor_closed(&tx).await;
 }
 
 #[tokio::test]
@@ -395,25 +445,6 @@ async fn actor_reschedule_runs_handler_again() {
     handler.wait_handle_entered().await; // reschedule
 
     assert_eq!(handler.call_count(), 2);
-
-    drop(tx);
-}
-
-#[tokio::test]
-async fn actor_new_to_active_transition() {
-    let handler = MockHandler::new();
-    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
-    let (tx, store, _handler, _server) =
-        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
-
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::New));
-
-    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
-    settle().await;
-
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Active));
 
     drop(tx);
 }
@@ -475,6 +506,7 @@ async fn actor_bot_message_does_not_trigger_handler() {
 #[tokio::test]
 async fn actor_set_thread_metadata_effect() {
     let handler = MockHandler::new().with_default_effects(vec![ThreadEffect::SetThreadMetadata {
+        target: ThreadMetadataTarget::CurrentThread,
         metadata: serde_json::json!({"llm_model": "gpt-4"}),
     }]);
 
@@ -492,31 +524,85 @@ async fn actor_set_thread_metadata_effect() {
 }
 
 #[tokio::test]
-async fn actor_stops_thread_when_critical_metadata_effect_fails() {
+async fn actor_set_thread_metadata_effect_supports_explicit_targets() {
+    let handler = MockHandler::new().with_default_effects(vec![
+        ThreadEffect::SetThreadMetadata {
+            target: ThreadMetadataTarget::ThreadId("target-thread".into()),
+            metadata: serde_json::json!({"target": "thread_id"}),
+        },
+        ThreadEffect::SetThreadMetadata {
+            target: ThreadMetadataTarget::RootPostId("target-root".into()),
+            metadata: serde_json::json!({"target": "root_post_id"}),
+        },
+    ]);
+
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+    let (tx, store, _handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
+    store
+        .upsert_thread(UpsertThread {
+            thread_id: "target-thread".into(),
+            root_post_id: "target-thread".into(),
+            channel_id: "target-channel".into(),
+            creator_user_id: "bot_user".into(),
+            thread_kind: Some("target".into()),
+            metadata: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+    store
+        .upsert_thread(UpsertThread {
+            thread_id: "root-target-thread".into(),
+            root_post_id: "target-root".into(),
+            channel_id: "target-channel".into(),
+            creator_user_id: "bot_user".into(),
+            thread_kind: Some("target".into()),
+            metadata: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    settle().await;
+
+    let target_by_id = store.thread_snapshot("target-thread").await.unwrap();
+    assert_eq!(
+        target_by_id.metadata,
+        serde_json::json!({"target": "thread_id"})
+    );
+    let target_by_root = store.thread_snapshot("root-target-thread").await.unwrap();
+    assert_eq!(
+        target_by_root.metadata,
+        serde_json::json!({"target": "root_post_id"})
+    );
+
+    drop(tx);
+}
+
+#[tokio::test]
+async fn actor_keeps_running_when_critical_metadata_effect_fails() {
     let handler = MockHandler::new().with_default_effects(vec![
         ThreadEffect::SetMessageMetadata {
             post_id: "missing-post".to_string(),
             metadata: serde_json::json!({"trace": []}),
         },
         ThreadEffect::SetThreadMetadata {
+            target: ThreadMetadataTarget::CurrentThread,
             metadata: serde_json::json!({"should_not": "run"}),
         },
     ]);
 
     let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
-    let (tx, store, handler, _server) =
+    let (tx, store, _handler, _server) =
         spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
 
     tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
     settle().await;
 
     let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Stopped));
     assert_eq!(thread.metadata, serde_json::Value::Null);
 
-    let reasons = handler.closed_reasons.lock().await;
-    assert_eq!(reasons.as_slice(), [ThreadCloseReason::StoppedByHandler]);
-    assert!(tx.is_closed());
+    assert!(!tx.is_closed());
 }
 
 #[tokio::test]
@@ -537,7 +623,14 @@ async fn actor_control_reaction_interrupts_handler() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     tx.send(ThreadCommand::ControlReaction {
-        effect: ThreadEffect::MarkResolved,
+        effect: ThreadEffect::SetThreadMetadata {
+            target: ThreadMetadataTarget::CurrentThread,
+            metadata: serde_json::json!({
+                "support_bot": {
+                    "status": "finished"
+                }
+            }),
+        },
         change: ReactionChange {
             post_id: "thread1".into(),
             user_id: "user_2".into(),
@@ -552,19 +645,56 @@ async fn actor_control_reaction_interrupts_handler() {
     settle().await;
 
     let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Resolved));
+    assert_eq!(thread.metadata["support_bot"]["status"], "finished");
 
-    assert!(tx.is_closed());
+    assert!(!tx.is_closed());
+}
+
+#[tokio::test]
+async fn actor_control_reaction_executes_metadata_effect() {
+    let handler = MockHandler::new();
+
+    let post = make_mm_post("thread1", "user_1", "root", None);
+    let (tx, store, _handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
+
+    tx.send(ThreadCommand::ControlReaction {
+        effect: ThreadEffect::SetThreadMetadata {
+            target: ThreadMetadataTarget::CurrentThread,
+            metadata: serde_json::json!({
+                "support_bot": {
+                    "status": "finished"
+                }
+            }),
+        },
+        change: ReactionChange {
+            post_id: "thread1".into(),
+            user_id: "user_2".into(),
+            emoji_name: "white_check_mark".into(),
+            action: ReactionAction::Added,
+            created_at: Utc::now(),
+        },
+    })
+    .await
+    .unwrap();
+
+    settle().await;
+
+    let thread = store.thread_snapshot("thread1").await.unwrap();
+    assert_eq!(thread.metadata["support_bot"]["status"], "finished");
+    assert!(!tx.is_closed());
 }
 
 #[tokio::test]
 async fn actor_multiple_effects_in_one_return() {
     let handler = MockHandler::new().with_default_effects(vec![
         ThreadEffect::Reply {
+            target: ThreadTarget::CurrentThread,
             message: "thinking...".into(),
             metadata: serde_json::Value::Null,
         },
         ThreadEffect::SetThreadMetadata {
+            target: ThreadMetadataTarget::CurrentThread,
             metadata: serde_json::json!({"step": 1}),
         },
     ]);
@@ -585,6 +715,151 @@ async fn actor_multiple_effects_in_one_return() {
 }
 
 #[tokio::test]
+async fn actor_ensure_linked_thread_creates_tracked_thread_and_link() {
+    let handler = MockHandler::new().with_default_effects(vec![ThreadEffect::EnsureLinkedThread {
+        link_kind: "engineer".into(),
+        channel_id: "engineer_channel".into(),
+        thread_kind: Some("support_engineer".into()),
+        message: "Engineer thread".into(),
+        metadata: serde_json::json!({"kind": "engineer_root"}),
+        thread_metadata: serde_json::json!({"status": "open"}),
+    }]);
+
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+    let (tx, store, handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    settle().await;
+
+    assert_eq!(handler.call_count(), 1);
+
+    let link = store
+        .list_thread_links("thread1")
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|link| link.link_kind == "engineer")
+        .expect("link should be stored");
+    assert_eq!(link.target_thread_id, "reply_post_id");
+
+    let linked_thread = store
+        .thread_snapshot("reply_post_id")
+        .await
+        .expect("linked thread should be tracked");
+    assert_eq!(linked_thread.channel_id, "engineer_channel");
+    assert_eq!(
+        linked_thread.thread_kind.as_deref(),
+        Some("support_engineer")
+    );
+    assert_eq!(
+        linked_thread.metadata,
+        serde_json::json!({"status": "open"})
+    );
+
+    let root_message = store
+        .message_snapshot("reply_post_id")
+        .await
+        .expect("linked root message should be stored");
+    assert_eq!(root_message.thread_id, "reply_post_id");
+    assert!(root_message.is_bot_message);
+    assert_eq!(
+        root_message.metadata,
+        serde_json::json!({"kind": "engineer_root"})
+    );
+
+    drop(tx);
+}
+
+#[tokio::test]
+async fn actor_reply_to_linked_threads_uses_stored_links() {
+    let handler = MockHandler::new().with_default_effects(vec![ThreadEffect::Reply {
+        target: ThreadTarget::LinkedThreads {
+            link_kind: "engineer".into(),
+        },
+        message: "linked reply".into(),
+        metadata: serde_json::json!({"kind": "linked_reply"}),
+    }]);
+
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+    let (tx, store, handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
+    store
+        .upsert_thread(UpsertThread {
+            thread_id: "engineer-thread".into(),
+            root_post_id: "engineer-root".into(),
+            channel_id: "engineer-channel".into(),
+            creator_user_id: "bot_user".into(),
+            thread_kind: Some("support_engineer".into()),
+            metadata: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+    store
+        .upsert_thread_link(UpsertThreadLink {
+            source_thread_id: "thread1".into(),
+            link_kind: "engineer".into(),
+            target_thread_id: "engineer-thread".into(),
+        })
+        .await
+        .unwrap();
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    settle().await;
+
+    assert_eq!(handler.call_count(), 1);
+    let reply = store
+        .message_snapshot("reply_post_id")
+        .await
+        .expect("linked reply should be persisted");
+    assert_eq!(reply.thread_id, "engineer-thread");
+    assert_eq!(reply.root_id.as_deref(), Some("engineer-root"));
+    assert_eq!(reply.metadata, serde_json::json!({"kind": "linked_reply"}));
+
+    drop(tx);
+}
+
+#[tokio::test]
+async fn actor_reply_to_thread_uses_explicit_thread_id() {
+    let handler = MockHandler::new().with_default_effects(vec![ThreadEffect::Reply {
+        target: ThreadTarget::Thread {
+            thread_id: "engineer-thread".into(),
+        },
+        message: "direct reply".into(),
+        metadata: serde_json::json!({"kind": "direct_reply"}),
+    }]);
+
+    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
+    let (tx, store, handler, _server) =
+        spawn_test_actor(handler, "thread1", vec![post.clone()], TEST_DEBOUNCE).await;
+    store
+        .upsert_thread(UpsertThread {
+            thread_id: "engineer-thread".into(),
+            root_post_id: "engineer-root".into(),
+            channel_id: "engineer-channel".into(),
+            creator_user_id: "bot_user".into(),
+            thread_kind: Some("support_engineer".into()),
+            metadata: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+
+    tx.send(ThreadCommand::NewMessage { post }).await.unwrap();
+    settle().await;
+
+    assert_eq!(handler.call_count(), 1);
+    let reply = store
+        .message_snapshot("reply_post_id")
+        .await
+        .expect("direct reply should be persisted");
+    assert_eq!(reply.thread_id, "engineer-thread");
+    assert_eq!(reply.root_id.as_deref(), Some("engineer-root"));
+    assert_eq!(reply.metadata, serde_json::json!({"kind": "direct_reply"}));
+
+    drop(tx);
+}
+
+#[tokio::test]
 async fn actor_seen_position_updated_on_message() {
     let handler = MockHandler::new();
     let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
@@ -599,195 +874,6 @@ async fn actor_seen_position_updated_on_message() {
 
     let thread = store.thread_snapshot("thread1").await.unwrap();
     assert_eq!(thread.last_seen_post_id.as_deref(), Some("p1"));
-
-    drop(tx);
-}
-
-// ── Reconciliation tests ─────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn actor_reconcile_triggers_handler() {
-    let handler = MockHandler::new();
-    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
-
-    let (tx, _store, handler, _server) =
-        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
-
-    // Reconcile (simulates startup recovery)
-    tx.send(ThreadCommand::Reconcile).await.unwrap();
-
-    handler.wait_handle_entered().await;
-    assert_eq!(handler.call_count(), 1);
-
-    drop(tx);
-}
-
-#[tokio::test]
-async fn actor_reconcile_transitions_new_to_active() {
-    let handler = MockHandler::new();
-    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
-
-    let (tx, store, _handler, _server) =
-        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
-
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::New));
-
-    tx.send(ThreadCommand::Reconcile).await.unwrap();
-    settle().await;
-
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Active));
-
-    drop(tx);
-}
-
-#[tokio::test]
-async fn actor_reconcile_no_new_messages_skips_handler() {
-    let handler = MockHandler::new();
-    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
-
-    let (tx, store, handler, _server) =
-        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
-
-    // Mark everything as already processed (timestamp far in the future)
-    let future = Utc::now() + chrono::Duration::hours(1);
-    store
-        .update_thread_processed("thread1", "p1", future)
-        .await
-        .unwrap();
-
-    tx.send(ThreadCommand::Reconcile).await.unwrap();
-    settle().await;
-
-    // Handler should NOT be called — no new messages
-    assert_eq!(handler.call_count(), 0);
-
-    drop(tx);
-}
-
-#[tokio::test]
-async fn actor_reconcile_only_bot_messages_skips_handler() {
-    let handler = MockHandler::new();
-    // Post is from the bot user (bot_user_id = "bot_user" in spawn_test_actor)
-    let post = make_mm_post("p1", "bot_user", "bot reply", Some("thread1"));
-
-    let (tx, _store, handler, _server) =
-        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
-
-    tx.send(ThreadCommand::Reconcile).await.unwrap();
-    settle().await;
-
-    // Handler should NOT be called — only bot messages are new
-    assert_eq!(handler.call_count(), 0);
-
-    drop(tx);
-}
-
-#[tokio::test]
-async fn actor_reconcile_detects_control_reaction_resolved() {
-    let handler = MockHandler::new();
-    let post = make_mm_post("thread1", "user_1", "root", None);
-
-    let (tx, store, handler, server) =
-        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
-
-    // Mount a ✅ reaction on the root post (arrived during downtime)
-    mount_reactions(
-        &server,
-        "thread1",
-        vec![make_mm_reaction("thread1", "user_2", "white_check_mark")],
-    )
-    .await;
-
-    tx.send(ThreadCommand::Reconcile).await.unwrap();
-    settle().await;
-
-    // Thread should be resolved
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Resolved));
-
-    // on_thread_closed should have been called
-    let reasons = handler.closed_reasons.lock().await;
-    assert_eq!(reasons.len(), 1);
-    assert_eq!(reasons[0], ThreadCloseReason::ResolvedByReaction);
-
-    // Actor should have exited
-    assert!(tx.is_closed());
-}
-
-#[tokio::test]
-async fn actor_reconcile_detects_control_reaction_stopped() {
-    let handler = MockHandler::new();
-    let post = make_mm_post("thread1", "user_1", "root", None);
-
-    let (tx, store, _handler, server) =
-        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
-
-    mount_reactions(
-        &server,
-        "thread1",
-        vec![make_mm_reaction("thread1", "user_2", "stop_sign")],
-    )
-    .await;
-
-    tx.send(ThreadCommand::Reconcile).await.unwrap();
-    settle().await;
-
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Stopped));
-    assert!(tx.is_closed());
-}
-
-#[tokio::test]
-async fn actor_reconcile_control_reaction_takes_priority_over_new_messages() {
-    // Even if there are new messages, a control reaction should close the thread
-    let handler = MockHandler::new();
-    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
-
-    let (tx, store, handler, server) =
-        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
-
-    // ✅ on root post
-    mount_reactions(
-        &server,
-        "thread1",
-        vec![make_mm_reaction("thread1", "user_2", "white_check_mark")],
-    )
-    .await;
-
-    tx.send(ThreadCommand::Reconcile).await.unwrap();
-    settle().await;
-
-    // Thread closed — handler never called
-    let thread = store.thread_snapshot("thread1").await.unwrap();
-    assert!(matches!(thread.status, ThreadStatus::Resolved));
-    assert_eq!(handler.call_count(), 0);
-    assert!(tx.is_closed());
-}
-
-#[tokio::test]
-async fn actor_reconcile_ignores_non_control_reactions() {
-    let handler = MockHandler::new();
-    let post = make_mm_post("p1", "user_1", "hello", Some("thread1"));
-
-    let (tx, _store, handler, server) =
-        spawn_test_actor(handler, "thread1", vec![post], TEST_DEBOUNCE).await;
-
-    // A thumbsup on root post is NOT a control reaction
-    mount_reactions(
-        &server,
-        "thread1",
-        vec![make_mm_reaction("thread1", "user_2", "thumbsup")],
-    )
-    .await;
-
-    tx.send(ThreadCommand::Reconcile).await.unwrap();
-    settle().await;
-
-    // Handler should be called (new messages exist, no control reaction)
-    assert_eq!(handler.call_count(), 1);
-    assert!(!tx.is_closed());
 
     drop(tx);
 }

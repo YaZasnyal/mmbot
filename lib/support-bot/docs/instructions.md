@@ -1,62 +1,85 @@
 # Instruction Repository Format
 
-`support-bot` uses a small filesystem format for runbooks, skills, and support
-instructions. The LLM should navigate this tree through instruction tools
-instead of receiving the whole tree in context.
+`support-bot` uses a small Markdown filesystem format for runbooks, skills, and
+support instructions. The LLM navigates this tree through the `instructions`
+tool instead of receiving the whole tree in context.
 
 ## Layout
 
 ```text
 support-instructions/
-├── README.md
-├── manifest.yaml
+├── index.md
 ├── diagnostics/
-│   ├── README.md
+│   ├── index.md
 │   ├── slow-requests.md
 │   └── auth-errors.md
 └── logs/
-    ├── README.md
+    ├── index.md
     └── search-playbook.md
 ```
 
-`README.md` files explain the purpose of a directory for humans. The bot uses
-`manifest.yaml` as the source of truth.
+`/index` is the default entry point. Section `index.md` files should link to
+more specific documents.
 
-## Manifest
+## Documents
 
-```yaml
-documents:
-  - id: diagnostics.slow_requests
-    path: diagnostics/slow-requests.md
-    title: Slow requests
-    summary: How to diagnose elevated latency in service requests.
-    parent: diagnostics
-    tags: [latency, timeout, performance]
+Each `.md` file must start with YAML frontmatter. Only `title` is required:
+
+```markdown
+---
+title: Slow requests
+---
+
+# Slow requests
+
+Use this runbook when a user reports elevated latency.
+
+Related:
+
+- [/logs/search-playbook]
 ```
 
-Fields:
+Document ids are derived from relative paths:
 
-- `id`: stable identifier stored in thread/message metadata.
-- `path`: relative Markdown path under the instruction root.
-- `title`: short human-readable name.
-- `summary`: one-sentence routing hint.
-- `parent`: optional parent document id for hierarchical navigation.
-- `tags`: normalized concepts shown to the LLM while browsing the tree.
+- `index.md` -> `/index`
+- `diagnostics/index.md` -> `/diagnostics/index`
+- `diagnostics/slow-requests.md` -> `/diagnostics/slow-requests`
 
-## Navigation Tools
+## Navigation Tool
 
-The repository is meant to back tools such as:
+The `instructions` tool loads one document at a time:
 
-- `list_runbooks(parent_id?)`: list children with title and summary.
-- `load_runbooks(ids)`: load full Markdown for one or more runbooks.
+```json
+{ "id": "/diagnostics/slow-requests" }
+```
 
-The LLM chooses which tree levels to inspect and which runbooks to load. The
-handler enforces `max_load_documents` and `max_instruction_bytes` when
-fulfilling tool calls.
+If `id` is omitted or `null`, the tool loads `/index`. Missing documents are
+reported as tool errors in the tool result so the LLM can recover and choose a
+valid linked document.
+
+## Linting
+
+Use `InstructionRepository::lint(root_path)` to validate authoring mistakes.
+The lint pass checks:
+
+- valid frontmatter and non-empty `title`;
+- existence of `/index`;
+- duplicate ids;
+- broken internal links shaped exactly like `[/some/id]`.
+
+Linting is a one-level static pass: it scans all files once, builds the set of
+known ids, and checks the links written in each body. It does not recursively
+follow links, so cycles between runbooks are safe.
+
+The repository constructor is tolerant of lint issues so applications can
+decide their own startup policy. The support-bot example logs lint issues at
+`error` during startup and continues running; documents with invalid
+frontmatter are skipped until fixed.
 
 ## Migrating Existing Skills
 
-Existing qwen-code skills should be converted into this format instead of read
-directly. Keep procedural details in Markdown files, then add concise tags,
-hierarchy, and summaries to the manifest. Large command outputs, historical
-logs, or generated indexes should not be committed as instruction content.
+Existing qwen-code skills should be converted into Markdown documents with
+frontmatter. Put navigation in `index.md` files and link to concrete runbooks
+with bracket links like `[/diagnostics/slow-requests]`. Large command outputs,
+historical logs, or generated indexes should not be committed as instruction
+content.
