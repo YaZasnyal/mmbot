@@ -26,3 +26,34 @@ fn returns_none_when_message_is_only_hidden_reasoning() {
         None
     );
 }
+
+#[test]
+fn strips_leading_thread_context_marker() {
+    assert_eq!(
+        sanitize_user_visible_message(
+            "[post_id=post-1, user_id=user-1]\nPlease share the request id.".to_string()
+        )
+        .as_deref(),
+        Some("Please share the request id.")
+    );
+}
+
+#[test]
+fn strips_multiple_leading_thread_context_markers() {
+    assert_eq!(
+        sanitize_user_visible_message(
+            "[post_id=post-1, user_id=bot] [post_id=post-2, user_id=user-1]\nDone."
+                .to_string()
+        )
+        .as_deref(),
+        Some("Done.")
+    );
+}
+
+#[test]
+fn returns_none_when_message_is_only_thread_context_marker() {
+    assert_eq!(
+        sanitize_user_visible_message("[post_id=post-1, user_id=user-1]".to_string()),
+        None
+    );
+}
