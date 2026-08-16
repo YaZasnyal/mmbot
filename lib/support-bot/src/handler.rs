@@ -119,7 +119,7 @@ impl SupportBotHandler {
 
         if command.name == "debug-report" {
             info!("support-bot: received debug-report command");
-            let effects = handle_debug_export_html(&thread, ctx).await;
+            let effects = handle_debug_export_html(&thread, ctx, self.acp_runtime.as_ref()).await;
             if effects.is_ok() {
                 self.metrics.record_reply("engineer", "success");
             } else {

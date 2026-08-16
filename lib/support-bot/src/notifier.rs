@@ -1,3 +1,4 @@
+use crate::acp::AcpSessionTrace;
 use crate::error::{Result, SupportBotError};
 use crate::metadata::{metadata_value, SupportMetadata, SupportMetadataKind};
 use mattermost_api::apis::posts_api;
@@ -73,37 +74,75 @@ pub fn render_thread_html_report(
     root_post_id: &str,
     summary: &SupportReportSummary,
     posts: &[SupportReportPost],
+    trace: Option<&AcpSessionTrace>,
 ) -> String {
-    let mut posts = posts.iter().collect::<Vec<_>>();
-    posts.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.post_id.cmp(&right.post_id))
-    });
     let post_count = posts.len();
-    let messages = posts
-        .into_iter()
+    let trace_count = trace.map_or(0, |trace| trace.events.len());
+    let mut timeline = posts
+        .iter()
         .map(|post| {
-            format!(
-                "<article><header><code>{}</code> · <code>{}</code> · <time>{}</time></header><pre>{}</pre></article>",
-                escape_html(&post.post_id),
-                escape_html(&post.user_id),
-                escape_html(&post.created_at),
-                escape_html(&post.message)
+            (
+                post.created_at.as_str(),
+                post.post_id.as_str(),
+                format!(
+                    "<article class=\"event mattermost\"><header><span class=\"badge\">Mattermost</span><time>{}</time></header><h3>{} <small>{}</small></h3><pre>{}</pre></article>",
+                    escape_html(&post.created_at),
+                    escape_html(&post.user_id),
+                    escape_html(&post.post_id),
+                    escape_html(&post.message)
+                ),
             )
         })
+        .collect::<Vec<_>>();
+    if let Some(trace) = trace {
+        timeline.extend(trace.events.iter().map(|event| {
+            let class = match event.kind.as_str() {
+                "tool_call" | "tool_result" => "tool",
+                "reasoning" => "reasoning",
+                "system" => "system",
+                _ => "agent",
+            };
+            (
+                event.timestamp.as_str(),
+                event.title.as_str(),
+                format!(
+                    "<article class=\"event {class}\"><header><span class=\"badge\">Qwen · {}</span><time>{}</time></header><h3>{}</h3><pre>{}</pre></article>",
+                    escape_html(&event.kind.replace('_', " ")),
+                    escape_html(&event.timestamp),
+                    escape_html(&event.title),
+                    escape_html(&event.body)
+                ),
+            )
+        }));
+    }
+    timeline.sort_by(|left, right| left.0.cmp(right.0).then_with(|| left.1.cmp(right.1)));
+    let timeline = timeline
+        .into_iter()
+        .map(|(_, _, html)| html)
         .collect::<Vec<_>>()
         .join("\n");
+    let warnings = trace
+        .filter(|trace| !trace.warnings.is_empty())
+        .map(|trace| {
+            format!(
+                "<section class=\"warning\"><b>Session warnings</b><pre>{}</pre></section>",
+                escape_html(&trace.warnings.join("\n"))
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Support Thread {}</title><style>body{{font-family:ui-monospace,Menlo,monospace;background:#f5f7fb;color:#16202a;padding:24px}}main{{max-width:1100px;margin:auto}}section,article{{background:white;border:1px solid #d8dee8;border-radius:10px;padding:12px;margin-bottom:10px}}header{{font-size:12px;color:#4b5563;margin-bottom:8px}}pre{{white-space:pre-wrap;word-wrap:break-word}}</style></head><body><main><h1>Support Thread Report</h1><section><b>thread_id:</b> <code>{}</code><br><b>channel_id:</b> <code>{}</code><br><b>root_post_id:</b> <code>{}</code><br><b>support_status:</b> <code>{}</code><h2>Runtime state</h2><pre>{}</pre></section><h2>Messages ({})</h2>{}</main></body></html>",
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Support Thread {}</title><style>:root{{color-scheme:light;font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#172033;background:#eef2f7}}*{{box-sizing:border-box}}body{{margin:0}}main{{max-width:1120px;margin:auto;padding:36px 20px 80px}}h1{{margin:0 0 6px;font-size:30px}}h2{{margin:30px 0 14px}}h3{{margin:9px 0 0;font-size:15px}}small,time{{color:#667085;font-weight:400}}.subtitle{{color:#667085;margin-bottom:24px}}section,.event{{background:#fff;border:1px solid #dce3ec;border-radius:14px;box-shadow:0 2px 8px #1822300a}}.summary{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1px;overflow:hidden;background:#dce3ec}}.summary div{{padding:16px;background:#fff}}.summary b{{display:block;color:#667085;font-size:12px;margin-bottom:5px}}code{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}details{{margin-top:16px}}details pre{{max-height:360px;overflow:auto}}.event{{padding:15px 17px;margin:0 0 12px;border-left:5px solid #98a2b3}}.event.mattermost{{border-left-color:#3b82f6}}.event.agent{{border-left-color:#8b5cf6}}.event.tool{{border-left-color:#f59e0b}}.event.reasoning{{border-left-color:#64748b}}.event.system{{border-left-color:#94a3b8}}header{{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px}}.badge{{background:#f2f4f7;border-radius:999px;padding:4px 8px;text-transform:capitalize}}pre{{font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0 0}}.warning{{margin-top:16px;padding:14px;border-color:#f5c76b;background:#fffbeb}}@media(max-width:600px){{main{{padding:22px 12px}}header{{align-items:flex-start;flex-direction:column;gap:5px}}}}</style></head><body><main><h1>Support debug report</h1><div class=\"subtitle\">Mattermost conversation and Qwen session trace in one timeline</div><section class=\"summary\"><div><b>support_status</b><code>{}</code></div><div><b>Thread</b><code>{}</code></div><div><b>Channel</b><code>{}</code></div><div><b>Root post</b><code>{}</code></div><div><b>Messages</b><code>{}</code></div><div><b>Agent events</b><code>{}</code></div></section><details><summary>Runtime state</summary><pre>{}</pre></details>{}<h2>Timeline ({})</h2>{}</main></body></html>",
         escape_html(thread_id),
+        escape_html(&summary.support_status),
         escape_html(thread_id),
         escape_html(channel_id),
         escape_html(root_post_id),
-        escape_html(&summary.support_status),
-        escape_html(&summary.state_json),
         post_count,
-        messages
+        trace_count,
+        escape_html(&summary.state_json),
+        warnings,
+        post_count + trace_count,
+        timeline
     )
 }
 

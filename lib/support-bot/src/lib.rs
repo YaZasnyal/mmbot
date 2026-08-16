@@ -19,7 +19,9 @@ pub mod state;
 #[cfg(test)]
 mod testutil;
 
-pub use acp::{AcpPrompt, AcpRuntime, AcpTurn, QwenAcpConfig, QwenAcpRuntime};
+pub use acp::{
+    AcpPrompt, AcpRuntime, AcpSessionEvent, AcpSessionTrace, AcpTurn, QwenAcpConfig, QwenAcpRuntime,
+};
 pub use admission::{
     FirstMessageTextAdmissionHook, SupportThreadAdmissionDecision, SupportThreadAdmissionHook,
 };

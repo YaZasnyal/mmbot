@@ -1,3 +1,4 @@
+use crate::acp::{AcpRuntime, AcpSessionTrace};
 use crate::handler::ENGINEER_LINK_KIND;
 use crate::metadata::{load_thread_state, metadata_value, SupportMetadata, SupportMetadataKind};
 use crate::notifier::{
@@ -12,6 +13,7 @@ use tracing::{info, warn};
 pub(crate) async fn handle_debug_export_html(
     engineer_thread: &Thread,
     ctx: &ThreadContext,
+    acp_runtime: &dyn AcpRuntime,
 ) -> Result<Vec<ThreadEffect>, ThreadBotError> {
     let source_thread_id = ctx
         .store
@@ -42,13 +44,31 @@ pub(crate) async fn handle_debug_export_html(
             created_at: message.created_at.to_rfc3339(),
         })
         .collect::<Vec<_>>();
-    let summary = report_summary(&record.metadata);
+    let (summary, session_id) = report_summary(&record.metadata);
+    let trace = match session_id {
+        Some(session_id) => match acp_runtime.session_trace(&session_id).await {
+            Ok(Some(trace)) => Some(trace),
+            Ok(None) => Some(AcpSessionTrace {
+                events: Vec::new(),
+                warnings: vec![format!("Qwen session file not found for {session_id}")],
+            }),
+            Err(error) => {
+                warn!(%session_id, %error, "support-bot: failed to load Qwen session trace");
+                Some(AcpSessionTrace {
+                    events: Vec::new(),
+                    warnings: vec![format!("Failed to load Qwen session: {error}")],
+                })
+            }
+        },
+        None => None,
+    };
     let html = render_thread_html_report(
         &record.thread_id,
         &record.channel_id,
         &record.root_post_id,
         &summary,
         &posts,
+        trace.as_ref(),
     );
     let html_size = html.len();
     DebugReportPoster::new(ctx.config.clone())
@@ -84,16 +104,29 @@ fn debug_reply(message: String) -> ThreadEffect {
     }
 }
 
-fn report_summary(thread_metadata: &serde_json::Value) -> SupportReportSummary {
+fn report_summary(thread_metadata: &serde_json::Value) -> (SupportReportSummary, Option<String>) {
     match load_thread_state(thread_metadata) {
-        Ok(state) => SupportReportSummary {
-            support_status: status_label(&state.status).to_string(),
-            state_json: serde_json::to_string_pretty(&state).unwrap_or_else(|_| "{}".to_string()),
-        },
-        Err(error) => SupportReportSummary {
-            support_status: format!("unknown: {error}"),
-            state_json: format!("failed to decode support state: {error}"),
-        },
+        Ok(state) => {
+            let session_id = state
+                .runtime
+                .as_ref()
+                .map(|runtime| runtime.acp_session_id.clone());
+            (
+                SupportReportSummary {
+                    support_status: status_label(&state.status).to_string(),
+                    state_json: serde_json::to_string_pretty(&state)
+                        .unwrap_or_else(|_| "{}".to_string()),
+                },
+                session_id,
+            )
+        }
+        Err(error) => (
+            SupportReportSummary {
+                support_status: format!("unknown: {error}"),
+                state_json: format!("failed to decode support state: {error}"),
+            },
+            None,
+        ),
     }
 }
 

@@ -1,4 +1,7 @@
-use super::{format_prompt, AcpPrompt, AcpRuntime, QwenAcpConfig, QwenAcpRuntime};
+use super::{
+    find_session_file, format_prompt, parse_session_trace, AcpPrompt, AcpRuntime, QwenAcpConfig,
+    QwenAcpRuntime,
+};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -15,6 +18,37 @@ fn support_prompt_contains_thread_post_and_untrusted_message() {
         prompt,
         "/support\n\nMattermost thread: thread-1\nMattermost post: post-2\nUser message:\nservice is slow"
     );
+}
+
+#[test]
+fn session_trace_parses_tools_and_redacts_secrets() {
+    let trace = parse_session_trace(
+        r#"{"timestamp":"2026-08-16T10:00:00Z","type":"assistant","message":{"parts":[{"functionCall":{"name":"curl","args":{"url":"https://example.com","authorization":"Bearer secret"}}}]}}
+{"timestamp":"2026-08-16T10:00:01Z","type":"user","message":{"parts":[{"functionResponse":{"name":"curl","response":{"status":200}}}]}}
+not-json"#,
+    );
+
+    assert_eq!(trace.events.len(), 2);
+    assert_eq!(trace.events[0].kind, "tool_call");
+    assert!(trace.events[0].body.contains("[REDACTED]"));
+    assert!(!trace.events[0].body.contains("Bearer secret"));
+    assert_eq!(trace.warnings.len(), 1);
+}
+
+#[test]
+fn session_file_is_found_across_qwen_projects() {
+    let root = std::env::temp_dir().join(format!("mmbot-qwen-session-{}", std::process::id()));
+    let chats = root.join("different-project").join("chats");
+    std::fs::create_dir_all(&chats).unwrap();
+    let expected = chats.join("session-1.jsonl");
+    std::fs::write(&expected, "{}").unwrap();
+
+    assert_eq!(
+        find_session_file(&root, "session-1").unwrap(),
+        Some(expected)
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]

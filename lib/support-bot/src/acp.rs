@@ -8,7 +8,7 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo};
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -40,14 +40,33 @@ pub struct AcpTurn {
     pub session_recovered: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpSessionTrace {
+    pub events: Vec<AcpSessionEvent>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpSessionEvent {
+    pub timestamp: String,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+}
+
 #[async_trait]
 pub trait AcpRuntime: Send + Sync {
     async fn prompt(&self, prompt: AcpPrompt) -> Result<AcpTurn>;
+
+    async fn session_trace(&self, _session_id: &str) -> Result<Option<AcpSessionTrace>> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone)]
 pub struct QwenAcpRuntime {
     commands: mpsc::Sender<RuntimeCommand>,
+    projects_dir: PathBuf,
 }
 
 struct RuntimeCommand {
@@ -62,6 +81,7 @@ impl QwenAcpRuntime {
                 .map_err(SupportBotError::internal)?
                 .join(&config.cwd);
         }
+        let projects_dir = qwen_runtime_dir()?.join("projects");
         let (commands, receiver) = mpsc::channel(16);
         let (ready_tx, ready_rx) = oneshot::channel();
         tokio::spawn(async move {
@@ -73,7 +93,10 @@ impl QwenAcpRuntime {
         ready_rx
             .await
             .map_err(|_| SupportBotError::Acp("Qwen ACP initialization failed".to_string()))??;
-        Ok(Self { commands })
+        Ok(Self {
+            commands,
+            projects_dir,
+        })
     }
 }
 
@@ -88,6 +111,183 @@ impl AcpRuntime for QwenAcpRuntime {
         receiver
             .await
             .map_err(|_| SupportBotError::Acp("Qwen ACP runtime stopped".to_string()))?
+    }
+
+    async fn session_trace(&self, session_id: &str) -> Result<Option<AcpSessionTrace>> {
+        if session_id.is_empty()
+            || !session_id
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+        {
+            return Err(SupportBotError::Acp("invalid Qwen session ID".to_string()));
+        }
+        let Some(path) = find_session_file(&self.projects_dir, session_id)? else {
+            return Ok(None);
+        };
+        match std::fs::read_to_string(path) {
+            Ok(jsonl) => Ok(Some(parse_session_trace(&jsonl))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(SupportBotError::internal(error)),
+        }
+    }
+}
+
+fn find_session_file(projects_dir: &Path, session_id: &str) -> Result<Option<PathBuf>> {
+    let projects = match std::fs::read_dir(projects_dir) {
+        Ok(projects) => projects,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(SupportBotError::internal(error)),
+    };
+    // ponytail: linear project scan; index sessions only if debug exports become frequent.
+    for project in projects.flatten() {
+        let path = project
+            .path()
+            .join("chats")
+            .join(format!("{session_id}.jsonl"));
+        if path.is_file() {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+fn qwen_runtime_dir() -> Result<PathBuf> {
+    let configured = std::env::var_os("QWEN_RUNTIME_DIR")
+        .or_else(|| std::env::var_os("QWEN_HOME"))
+        .map(PathBuf::from);
+    let Some(path) = configured else {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(".qwen"))
+            .ok_or_else(|| SupportBotError::Acp("cannot locate Qwen runtime directory".into()));
+    };
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    if path == Path::new("~") || path.starts_with("~/") {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| SupportBotError::Acp("cannot expand Qwen runtime directory".into()))?;
+        return Ok(home.join(path.strip_prefix("~").unwrap_or(Path::new(""))));
+    }
+    Ok(std::env::current_dir()
+        .map_err(SupportBotError::internal)?
+        .join(path))
+}
+
+fn parse_session_trace(jsonl: &str) -> AcpSessionTrace {
+    let mut trace = AcpSessionTrace {
+        events: Vec::new(),
+        warnings: Vec::new(),
+    };
+    for (index, line) in jsonl
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+    {
+        let record: serde_json::Value = match serde_json::from_str(line) {
+            Ok(record) => record,
+            Err(error) => {
+                trace
+                    .warnings
+                    .push(format!("line {} could not be decoded: {error}", index + 1));
+                continue;
+            }
+        };
+        append_session_events(&mut trace.events, &record);
+    }
+    trace
+}
+
+fn append_session_events(events: &mut Vec<AcpSessionEvent>, record: &serde_json::Value) {
+    let timestamp = record["timestamp"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let record_type = record["type"].as_str().unwrap_or("session");
+    if let Some(parts) = record["message"]["parts"].as_array() {
+        for part in parts {
+            let (kind, title, body) = if let Some(text) = part["text"].as_str() {
+                let thought = part["thought"].as_bool().unwrap_or(false);
+                (
+                    if thought { "reasoning" } else { record_type },
+                    if thought {
+                        "Agent reasoning"
+                    } else {
+                        record_type
+                    },
+                    text.to_string(),
+                )
+            } else if let Some(call) = part.get("functionCall") {
+                (
+                    "tool_call",
+                    call["name"].as_str().unwrap_or("Tool call"),
+                    pretty_redacted(&call["args"]),
+                )
+            } else if let Some(response) = part.get("functionResponse") {
+                (
+                    "tool_result",
+                    response["name"].as_str().unwrap_or("Tool result"),
+                    pretty_redacted(&response["response"]),
+                )
+            } else {
+                continue;
+            };
+            events.push(AcpSessionEvent {
+                timestamp: timestamp.clone(),
+                kind: kind.to_string(),
+                title: title.to_string(),
+                body,
+            });
+        }
+    } else if let Some(payload) = record.get("systemPayload") {
+        events.push(AcpSessionEvent {
+            timestamp,
+            kind: "system".to_string(),
+            title: record["subtype"]
+                .as_str()
+                .unwrap_or("System event")
+                .to_string(),
+            body: pretty_redacted(payload),
+        });
+    }
+}
+
+fn pretty_redacted(value: &serde_json::Value) -> String {
+    let mut value = value.clone();
+    redact_secrets(&mut value);
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "<unavailable>".to_string())
+}
+
+fn redact_secrets(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object {
+                let key = key.to_ascii_lowercase();
+                if [
+                    "password",
+                    "passwd",
+                    "secret",
+                    "authorization",
+                    "cookie",
+                    "api_key",
+                    "apikey",
+                    "access_token",
+                    "refresh_token",
+                    "bearer_token",
+                    "credential",
+                    "credentials",
+                ]
+                .contains(&key.as_str())
+                {
+                    *value = serde_json::Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_secrets(value);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => values.iter_mut().for_each(redact_secrets),
+        _ => {}
     }
 }
 

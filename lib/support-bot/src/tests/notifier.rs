@@ -92,6 +92,7 @@ fn html_report_includes_runtime_summary() {
             message: "help".to_string(),
             created_at: "now".to_string(),
         }],
+        None,
     );
 
     assert!(html.contains("support_status"));
@@ -124,7 +125,32 @@ fn html_report_orders_messages_by_created_at() {
                 created_at: "2026-05-04T20:00:01+00:00".to_string(),
             },
         ],
+        None,
     );
 
     assert!(html.find("first").unwrap() < html.find("second").unwrap());
+}
+
+#[test]
+fn html_report_merges_qwen_events_into_timeline() {
+    let summary = SupportReportSummary {
+        support_status: "active".to_string(),
+        state_json: "{}".to_string(),
+    };
+    let trace = crate::acp::AcpSessionTrace {
+        events: vec![crate::acp::AcpSessionEvent {
+            timestamp: "2026-05-04T20:00:01Z".to_string(),
+            kind: "tool_call".to_string(),
+            title: "read_file".to_string(),
+            body: "{\n  \"path\": \"runbook.md\"\n}".to_string(),
+        }],
+        warnings: Vec::new(),
+    };
+
+    let html =
+        render_thread_html_report("thread-1", "users", "root-1", &summary, &[], Some(&trace));
+
+    assert!(html.contains("Agent events</b><code>1</code>"));
+    assert!(html.contains("Qwen · tool call"));
+    assert!(html.contains("read_file"));
 }
