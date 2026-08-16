@@ -12,10 +12,8 @@ const DURATION_BUCKETS: [f64; 11] = [
 
 type ThreadEvents = Family<ThreadEventLabels, Counter>;
 type DurationFamily = Family<DurationLabels, Histogram, fn() -> Histogram>;
-type LlmRequests = Family<LlmLabels, Counter>;
-type LlmDuration = Family<LlmLabels, Histogram, fn() -> Histogram>;
-type ToolCalls = Family<ToolLabels, Counter>;
-type ToolDuration = Family<ToolLabels, Histogram, fn() -> Histogram>;
+type AcpRequests = Family<AcpLabels, Counter>;
+type AcpDuration = Family<AcpLabels, Histogram, fn() -> Histogram>;
 type Replies = Family<ReplyLabels, Counter>;
 type ThreadCloses = Family<CloseLabels, Counter>;
 
@@ -28,10 +26,8 @@ pub struct SupportBotMetrics {
 struct SupportBotMetricsInner {
     thread_events: ThreadEvents,
     handle_duration: DurationFamily,
-    llm_requests: LlmRequests,
-    llm_duration: LlmDuration,
-    tool_calls: ToolCalls,
-    tool_duration: ToolDuration,
+    acp_requests: AcpRequests,
+    acp_duration: AcpDuration,
     replies: Replies,
     thread_closes: ThreadCloses,
 }
@@ -41,12 +37,9 @@ impl SupportBotMetrics {
         let thread_events = ThreadEvents::default();
         let handle_duration =
             DurationFamily::new_with_constructor(duration_histogram as fn() -> Histogram);
-        let llm_requests = LlmRequests::default();
-        let llm_duration =
-            LlmDuration::new_with_constructor(duration_histogram as fn() -> Histogram);
-        let tool_calls = ToolCalls::default();
-        let tool_duration =
-            ToolDuration::new_with_constructor(duration_histogram as fn() -> Histogram);
+        let acp_requests = AcpRequests::default();
+        let acp_duration =
+            AcpDuration::new_with_constructor(duration_histogram as fn() -> Histogram);
         let replies = Replies::default();
         let thread_closes = ThreadCloses::default();
 
@@ -61,24 +54,14 @@ impl SupportBotMetrics {
             handle_duration.clone(),
         );
         registry.register(
-            "support_bot_llm_requests",
-            "Support-bot LLM requests by outcome.",
-            llm_requests.clone(),
+            "support_bot_acp_requests",
+            "Support-bot ACP requests by outcome.",
+            acp_requests.clone(),
         );
         registry.register(
-            "support_bot_llm_duration_seconds",
-            "Support-bot LLM request duration in seconds.",
-            llm_duration.clone(),
-        );
-        registry.register(
-            "support_bot_tool_calls",
-            "Support-bot tool calls by tool name and outcome.",
-            tool_calls.clone(),
-        );
-        registry.register(
-            "support_bot_tool_duration_seconds",
-            "Support-bot tool call duration in seconds.",
-            tool_duration.clone(),
+            "support_bot_acp_duration_seconds",
+            "Support-bot ACP request duration in seconds.",
+            acp_duration.clone(),
         );
         registry.register(
             "support_bot_replies",
@@ -95,10 +78,8 @@ impl SupportBotMetrics {
             inner: Arc::new(SupportBotMetricsInner {
                 thread_events,
                 handle_duration,
-                llm_requests,
-                llm_duration,
-                tool_calls,
-                tool_duration,
+                acp_requests,
+                acp_duration,
                 replies,
                 thread_closes,
             }),
@@ -163,33 +144,17 @@ impl SupportBotMetricsHandle {
             .observe(duration.as_secs_f64());
     }
 
-    pub fn record_llm_request(&self, outcome: &'static str, duration: Duration) {
+    pub fn record_acp_request(&self, outcome: &'static str, duration: Duration) {
         let Some(inner) = &self.inner else {
             return;
         };
-        let labels = LlmLabels {
+        let labels = AcpLabels {
             bot: self.bot.clone(),
             outcome: outcome.to_string(),
         };
-        inner.llm_requests.get_or_create(&labels).inc();
+        inner.acp_requests.get_or_create(&labels).inc();
         inner
-            .llm_duration
-            .get_or_create(&labels)
-            .observe(duration.as_secs_f64());
-    }
-
-    pub fn record_tool_call(&self, tool_name: &str, outcome: &'static str, duration: Duration) {
-        let Some(inner) = &self.inner else {
-            return;
-        };
-        let labels = ToolLabels {
-            bot: self.bot.clone(),
-            tool_name: tool_name.to_string(),
-            outcome: outcome.to_string(),
-        };
-        inner.tool_calls.get_or_create(&labels).inc();
-        inner
-            .tool_duration
+            .acp_duration
             .get_or_create(&labels)
             .observe(duration.as_secs_f64());
     }
@@ -243,15 +208,8 @@ struct DurationLabels {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-struct LlmLabels {
+struct AcpLabels {
     bot: String,
-    outcome: String,
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-struct ToolLabels {
-    bot: String,
-    tool_name: String,
     outcome: String,
 }
 

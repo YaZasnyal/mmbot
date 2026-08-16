@@ -46,19 +46,6 @@ fn engineer_root_message_links_and_quotes_source_post() {
 }
 
 #[test]
-fn status_update_message_includes_status_and_summary() {
-    let message = status_update_message(
-        &thread(),
-        &SupportThreadStatus::Finished,
-        Some("resolved by cache flush"),
-    );
-
-    assert!(message.contains("status: `finished`"));
-    assert!(message.contains("source: thread-1"));
-    assert!(message.contains("resolved by cache flush"));
-}
-
-#[test]
 fn source_link_uses_mattermost_redirect_url() {
     let config = Configuration {
         base_path: "http://localhost:8065/".to_string(),
@@ -89,21 +76,10 @@ fn mattermost_quote_truncates_large_messages() {
 }
 
 #[test]
-fn html_report_includes_summary_and_tool_table() {
+fn html_report_includes_runtime_summary() {
     let summary = SupportReportSummary {
-        thread_status: "resolved".to_string(),
         support_status: "finished".to_string(),
         state_json: "{\"status\":\"finished\"}".to_string(),
-        tool_errors: 1,
-        truncated_results: 1,
-        tool_calls: vec![SupportReportToolCall {
-            post_id: "post-1".to_string(),
-            round: 1,
-            call_id: "call-1".to_string(),
-            name: "instructions".to_string(),
-            status: "error".to_string(),
-            truncated: true,
-        }],
     };
     let html = render_thread_html_report(
         "thread-1",
@@ -116,28 +92,18 @@ fn html_report_includes_summary_and_tool_table() {
             message: "help".to_string(),
             created_at: "now".to_string(),
         }],
-        &[],
     );
 
-    assert!(html.contains("<h2>Summary</h2>"));
-    assert!(html.contains("Thread status"));
-    assert!(html.contains("<code>resolved</code>"));
-    assert!(html.contains("Support status"));
+    assert!(html.contains("support_status"));
     assert!(html.contains("<code>finished</code>"));
-    assert!(html.contains("instructions"));
-    assert!(html.contains("call-1"));
-    assert!(html.contains("Tool errors"));
+    assert!(html.contains("Runtime state"));
 }
 
 #[test]
 fn html_report_orders_messages_by_created_at() {
     let summary = SupportReportSummary {
-        thread_status: "active".to_string(),
         support_status: "active".to_string(),
         state_json: "{}".to_string(),
-        tool_errors: 0,
-        truncated_results: 0,
-        tool_calls: Vec::new(),
     };
     let html = render_thread_html_report(
         "thread-1",
@@ -158,7 +124,6 @@ fn html_report_orders_messages_by_created_at() {
                 created_at: "2026-05-04T20:00:01+00:00".to_string(),
             },
         ],
-        &[],
     );
 
     assert!(html.find("first").unwrap() < html.find("second").unwrap());

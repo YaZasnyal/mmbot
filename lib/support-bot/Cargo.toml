@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+agent-client-protocol = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-serde_yaml = "0.9"
 thiserror = "2"
 mattermost_api = { workspace = true }
 prometheus-client = { workspace = true }

@@ -4,9 +4,8 @@ use mattermost_bot::{Bot, MattermostBotMetrics, tokio_graceful};
 use std::sync::Arc;
 use std::time::Duration;
 use support_bot::{
-    DEFAULT_SUPPORT_SYSTEM_PROMPT, FirstMessageTextAdmissionHook, InstructionRepository, LlmConfig,
-    OpenAiChatCompletionsClient, SupportBotBuilder, SupportBotConfig, SupportBotLimits,
-    SupportBotMetrics, SupportRouteConfig, ToolConfig,
+    FirstMessageTextAdmissionHook, QwenAcpConfig, QwenAcpRuntime, SupportBotBuilder,
+    SupportBotConfig, SupportBotMetrics, SupportRouteConfig,
 };
 use thread_bot::{PgThreadStore, ThreadBotMetrics, ThreadBotPlugin, ThreadStore};
 
@@ -17,12 +16,17 @@ async fn main() -> Result<()> {
         .init();
 
     let config = load_support_config()?;
-    let instruction_repo = InstructionRepository::load(read_env(
-        "SUPPORT_INSTRUCTIONS_ROOT",
-        "examples/support_bot/instructions",
-    )?)?;
-
-    let llm = Arc::new(OpenAiChatCompletionsClient::new(config.llm.clone())?);
+    let runtime = Arc::new(
+        QwenAcpRuntime::start(QwenAcpConfig {
+            executable: read_env("SUPPORT_QWEN_EXECUTABLE", "qwen")?.into(),
+            cwd: read_env("SUPPORT_QWEN_CWD", ".")?.into(),
+            model: std::env::var("SUPPORT_QWEN_MODEL")
+                .ok()
+                .filter(|model| !model.trim().is_empty()),
+            timeout: Duration::from_secs(read_env("SUPPORT_QWEN_TIMEOUT_SECS", "120")?.parse()?),
+        })
+        .await?,
+    );
 
     let bot_name = "support_bot";
     let mut _metrics_registry = support_bot::prometheus_client::registry::Registry::default();
@@ -30,8 +34,7 @@ async fn main() -> Result<()> {
     let thread_metrics = ThreadBotMetrics::register(&mut _metrics_registry);
     let support_metrics = SupportBotMetrics::register(&mut _metrics_registry);
 
-    let mut builder = SupportBotBuilder::new(bot_name, config.clone(), llm)
-        .with_instruction_repository(instruction_repo)?
+    let mut builder = SupportBotBuilder::new(bot_name, config.clone(), runtime)
         .with_metrics(support_metrics.for_bot(bot_name));
     let admission_required_texts = read_csv_env("SUPPORT_ADMISSION_REQUIRED_TEXTS");
     if !admission_required_texts.is_empty() {
@@ -39,7 +42,7 @@ async fn main() -> Result<()> {
             admission_required_texts,
         )));
     }
-    let handler = builder.build().await?;
+    let handler = builder.build();
 
     let store: Arc<dyn ThreadStore> = Arc::new(
         PgThreadStore::new(
@@ -78,77 +81,15 @@ async fn main() -> Result<()> {
 }
 
 fn load_support_config() -> Result<SupportBotConfig> {
-    let llm_timeout_secs: u64 = read_env("SUPPORT_LLM_TIMEOUT_SECS", "45")?.parse()?;
-    let max_tool_rounds: usize = read_env("SUPPORT_MAX_TOOL_ROUNDS", "4")?.parse()?;
-    let max_tool_calls_per_round: usize =
-        read_env("SUPPORT_MAX_TOOL_CALLS_PER_ROUND", "8")?.parse()?;
-    let max_tool_result_bytes: usize =
-        read_env("SUPPORT_MAX_TOOL_RESULT_BYTES", "16384")?.parse()?;
-
     let engineer_channel_id = read_required_env("SUPPORT_ENGINEER_CHANNEL_ID")?;
 
-    let remote_mcp_endpoints = load_remote_mcp_endpoints()?;
-
     Ok(SupportBotConfig {
-        system_prompt: load_system_prompt()?,
-        llm: LlmConfig {
-            base_url: read_env("SUPPORT_LLM_BASE_URL", "http://localhost:11434")?,
-            api_key: std::env::var("SUPPORT_LLM_API_KEY").ok(),
-            model: read_env("SUPPORT_LLM_MODEL", "gpt-4o-mini")?,
-            timeout: Duration::from_secs(llm_timeout_secs),
-        },
-        tools: ToolConfig {
-            remote_mcp_endpoints,
-        },
-        limits: SupportBotLimits {
-            max_tool_rounds,
-            max_tool_calls_per_round,
-            max_tool_result_bytes,
-        },
         routes: SupportRouteConfig {
             user_channel_ids: read_csv_env("SUPPORT_USER_CHANNEL_IDS"),
             engineer_channel_id,
             ..SupportRouteConfig::default()
         },
     })
-}
-
-fn load_remote_mcp_endpoints() -> Result<Vec<support_bot::RemoteMcpEndpoint>> {
-    let mut endpoints = Vec::new();
-    for name in read_csv_env("SUPPORT_REMOTE_MCP_NAMES") {
-        let key = name.to_ascii_uppercase().replace('-', "_");
-        let url = std::env::var(format!("SUPPORT_REMOTE_MCP_{}_URL", key)).with_context(|| {
-            format!(
-                "missing SUPPORT_REMOTE_MCP_{}_URL for MCP endpoint '{}'",
-                key, name
-            )
-        })?;
-
-        let auth_header = std::env::var(format!("SUPPORT_REMOTE_MCP_{}_AUTH_HEADER", key)).ok();
-        let timeout_secs: u64 =
-            read_env(&format!("SUPPORT_REMOTE_MCP_{}_TIMEOUT_SECS", key), "30")?.parse()?;
-
-        endpoints.push(support_bot::RemoteMcpEndpoint {
-            name,
-            url,
-            auth_header,
-            timeout: Duration::from_secs(timeout_secs),
-        });
-    }
-
-    Ok(endpoints)
-}
-
-fn load_system_prompt() -> Result<String> {
-    if let Ok(path) = std::env::var("SUPPORT_SYSTEM_PROMPT_FILE")
-        && !path.trim().is_empty()
-    {
-        return std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read SUPPORT_SYSTEM_PROMPT_FILE: {path}"));
-    }
-
-    Ok(std::env::var("SUPPORT_SYSTEM_PROMPT")
-        .unwrap_or_else(|_| DEFAULT_SUPPORT_SYSTEM_PROMPT.to_string()))
 }
 
 fn read_required_env(name: &str) -> Result<String> {

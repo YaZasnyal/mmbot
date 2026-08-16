@@ -2,13 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn ignored_route_returns_noop() {
-    let handler = SupportBotHandler::new(
-        "support",
-        test_config(),
-        Arc::new(StaticLlm),
-        Arc::new(ToolRegistry::new()),
-        "system",
-    );
+    let handler = SupportBotHandler::new("support", test_config(), Arc::new(StaticAcp));
 
     let ignored = thread("other", "hello");
     let effects = handler

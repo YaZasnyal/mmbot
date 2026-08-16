@@ -4,20 +4,8 @@ pub type Result<T> = std::result::Result<T, SupportBotError>;
 
 #[derive(Debug, Error)]
 pub enum SupportBotError {
-    #[error("LLM error: {0}")]
-    Llm(String),
-
-    #[error("Tool error: {0}")]
-    Tool(String),
-
-    #[error("Unknown tool: {0}")]
-    UnknownTool(String),
-
-    #[error("Instruction error: {0}")]
-    Instruction(String),
-
-    #[error("Invalid configuration: {0}")]
-    Config(String),
+    #[error("ACP error: {0}")]
+    Acp(String),
 
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),

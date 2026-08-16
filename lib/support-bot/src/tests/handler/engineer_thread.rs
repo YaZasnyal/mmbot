@@ -2,14 +2,8 @@ use super::*;
 
 #[tokio::test]
 async fn engineer_thread_only_handles_last_external_message() {
-    let handler = SupportBotHandler::new(
-        "support",
-        test_config(),
-        Arc::new(StaticLlm),
-        Arc::new(ToolRegistry::new()),
-        "system",
-    )
-    .with_debug_handler(Arc::new(StaticDebug));
+    let handler = SupportBotHandler::new("support", test_config(), Arc::new(StaticAcp))
+        .with_debug_handler(Arc::new(StaticDebug));
     let mut thread = thread("engineers", "!support state");
     thread.messages.push(ThreadMessage {
         post_id: "post-2".to_string(),
@@ -32,14 +26,8 @@ async fn engineer_thread_only_handles_last_external_message() {
 
 #[tokio::test]
 async fn engineer_thread_ignores_new_bot_messages_after_command() {
-    let handler = SupportBotHandler::new(
-        "support",
-        test_config(),
-        Arc::new(StaticLlm),
-        Arc::new(ToolRegistry::new()),
-        "system",
-    )
-    .with_debug_handler(Arc::new(StaticDebug));
+    let handler = SupportBotHandler::new("support", test_config(), Arc::new(StaticAcp))
+        .with_debug_handler(Arc::new(StaticDebug));
     let mut thread = thread("engineers", "!support state");
     thread.messages.push(ThreadMessage {
         post_id: "post-2".to_string(),

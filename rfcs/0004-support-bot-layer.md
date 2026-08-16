@@ -1,6 +1,6 @@
 # RFC 0004: Layer 4 `support-bot` — LLM support bot поверх `thread-bot`
 
-**Статус**: Черновик  
+**Статус**: Заменён [RFC 0008](0008-qwen-code-support-runtime.md) в части agent runtime
 **Дата**: 2026-05-03  
 **Автор**: Обсуждение в парном программировании
 
