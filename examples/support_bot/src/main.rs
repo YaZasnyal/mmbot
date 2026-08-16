@@ -45,14 +45,13 @@ async fn main() -> Result<()> {
     let handler = builder.build();
 
     let store: Arc<dyn ThreadStore> = Arc::new(
-        PgThreadStore::new(
+        PgThreadStore::connect(
             thread_bot::sqlx::postgres::PgPoolOptions::new()
                 .max_connections(read_env("THREAD_BOT_DB_MAX_CONNECTIONS", "5")?.parse()?)
-                .connect(&read_env(
-                    "THREAD_BOT_DATABASE_URL",
-                    "postgres://test:test@localhost:5433/thread_bot_test",
-                )?)
-                .await?,
+                .acquire_timeout(Duration::from_secs(
+                    read_env("THREAD_BOT_DB_ACQUIRE_TIMEOUT_SECS", "5")?.parse()?,
+                )),
+            database_connect_options()?,
         )
         .await?,
     );
@@ -98,6 +97,24 @@ fn read_required_env(name: &str) -> Result<String> {
 
 fn read_env(name: &str, default: &str) -> Result<String> {
     Ok(std::env::var(name).unwrap_or_else(|_| default.to_string()))
+}
+
+fn database_connect_options() -> Result<Vec<thread_bot::sqlx::postgres::PgConnectOptions>> {
+    let options = read_env(
+        "THREAD_BOT_DATABASE_URL",
+        "postgres://test:test@localhost:5433/thread_bot_test",
+    )?
+    .parse::<thread_bot::sqlx::postgres::PgConnectOptions>()?;
+    let hosts = read_csv_env("THREAD_BOT_DATABASE_HOSTS");
+
+    Ok(if hosts.is_empty() {
+        vec![options]
+    } else {
+        hosts
+            .into_iter()
+            .map(|host| options.clone().host(&host))
+            .collect()
+    })
 }
 
 fn read_csv_env(name: &str) -> Vec<String> {
