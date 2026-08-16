@@ -10,11 +10,25 @@ use support_bot::{
 use thread_bot::{PgThreadStore, ThreadBotMetrics, ThreadBotPlugin, ThreadStore};
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
+async fn main() {
+    init_logging();
 
+    if let Err(error) = run().await {
+        tracing::error!(error = ?error, "support bot stopped");
+        std::process::exit(1);
+    }
+}
+
+fn init_logging() {
+    let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::INFO);
+    if std::env::var("SUPPORT_LOG_FORMAT").as_deref() == Ok("text") {
+        subscriber.init();
+    } else {
+        subscriber.json().init();
+    }
+}
+
+async fn run() -> Result<()> {
     let config = load_support_config()?;
     let runtime = Arc::new(
         QwenAcpRuntime::start(QwenAcpConfig {
@@ -69,7 +83,7 @@ async fn main() -> Result<()> {
         .with_metrics(mattermost_metrics.for_bot(bot_name))
         .with_plugin(plugin);
 
-    tracing::info!("Starting support-bot example...");
+    tracing::info!("support bot started");
 
     let shutdown = tokio_graceful::Shutdown::builder()
         .with_signal(tokio::signal::ctrl_c())

@@ -26,7 +26,7 @@ remains in this branch.
 ## Runnable commands
 
 - `cargo test -p support-bot <filter>` — focused library gate.
-- `cargo run -p support-bot-example` — local Mattermost run.
+- `cargo run -p support-bot-app` — local Mattermost run.
 - `just fmt-check`, `just clippy`, `just build`, `just test-all` — repository gates.
 
 ## Hard rules

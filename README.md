@@ -32,7 +32,7 @@ A Rust framework for building Mattermost bots. Layered architecture — from a l
 
 **Layer 3 — `thread-bot`** — higher-level runtime for thread-based bots. Each thread gets its own actor (tokio task) with guaranteed sequential message processing. Built-in debounce, PostgreSQL persistence, post-reconnect reconciliation, and control via reactions.
 
-**Layer 4 — `support-bot`** — experimental support workflow layer on top of `thread-bot`. Provides an OpenAI-compatible LLM loop, local and remote MCP tools, instruction/runbook loading, compact support state in thread metadata, engineer-channel mirroring, status updates, and debug HTML export.
+**Layer 4 — `support-bot`** — support workflow layer on top of `thread-bot`. Maps Mattermost threads to Qwen ACP sessions, loads local skills and runbooks, stores compact integration state, mirrors engineer threads, and provides debug HTML export.
 
 ## Quick start
 
@@ -108,9 +108,9 @@ impl ThreadHandler for MyHandler {
 }
 ```
 
-Full working examples:
+Runnable packages:
 - [`examples/hello_thread_bot`](examples/hello_thread_bot/src/main.rs)
-- [`examples/support_bot`](examples/support_bot/README.md), a runnable LLM support bot with PostgreSQL persistence, runbooks, engineer handoff, and metrics wiring.
+- [`examples/support_bot`](examples/support_bot/README.md), the deployable support-bot application with PostgreSQL persistence, Qwen ACP sessions, runbooks, and engineer handoff.
 
 ## Middleware
 

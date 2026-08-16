@@ -1,8 +1,7 @@
-# support-bot example
+# support bot
 
-This example runs the RFC 0008 ACP-only support bot. To compare behavior at
-work, run the legacy build from `master` separately and this branch as the Qwen
-build; there is no runtime switch inside this binary.
+This package builds the deployable RFC 0008 ACP-only support bot. Container and
+Kubernetes configuration are intentionally left to the deployment environment.
 
 ## Configuration
 
@@ -19,9 +18,15 @@ export SUPPORT_QWEN_EXECUTABLE=qwen
 export SUPPORT_QWEN_CWD=.
 export SUPPORT_QWEN_MODEL=qwen/qwen3.6-35b-a3b
 export SUPPORT_QWEN_TIMEOUT_SECS=120
+# Optional for local debugging; JSON is the default.
+export SUPPORT_LOG_FORMAT=text
 
-cargo run -p support-bot-example
+cargo run -p support-bot-app
 ```
+
+The executable is named `support-bot`. Application logs, including fatal
+startup errors, are JSON objects written to stdout by default. Set
+`SUPPORT_LOG_FORMAT=text` for human-readable local output.
 
 ### PostgreSQL failover
 
@@ -45,7 +50,8 @@ one is tried.
 
 `SUPPORT_QWEN_MODEL` is optional. `SUPPORT_ADMISSION_REQUIRED_TEXTS` may contain
 comma-separated phrases; on a thread's first message at least one phrase must
-match before a Qwen session is started.
+match before a Qwen session is started. `SUPPORT_QWEN_EXECUTABLE` accepts any
+executable name or path available in the bot process.
 
 The repository skill at [`.qwen/skills/support/SKILL.md`](../../.qwen/skills/support/SKILL.md)
 is the diagnostic entry point. It links to the existing Markdown runbooks in
