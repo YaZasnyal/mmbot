@@ -1,101 +1,65 @@
-# support_bot example
+# support bot
 
-Runnable `support-bot` example on top of `thread-bot`.
+This package builds the deployable RFC 0008 ACP-only support bot. Container and
+Kubernetes configuration are intentionally left to the deployment environment.
 
-## What this example wires
-
-- `SupportBotBuilder` with default workflow tools.
-- `InstructionRepository` loaded from Markdown files under `instructions/`.
-- Optional remote MCP tool registration from env-driven `ToolConfig`.
-- Optional Prometheus/OpenMetrics metric families for Mattermost WS,
-  thread actors, and support workflow counters/durations.
-- User-channel routing and engineer-channel routing.
-- Engineer-thread mirroring, explicit engineer notifications, finish status
-  updates, close notifications, and debug report export.
-- Mattermost runtime via `mattermost-bot` + `ThreadBotPlugin`.
-- PostgreSQL persistence via `PgThreadStore`.
-
-## Quick start
-
-1. Start local infra (from repo root):
-
-```bash
-just test-env-start
-```
-
-2. Configure env (minimum manual input: Mattermost bot token, LLM, and channel IDs):
+## Configuration
 
 ```bash
 export MM_BASE_PATH=http://localhost:8065
-export MM_BEARER_TOKEN=YOUR_BOT_TOKEN
-
+export MM_BEARER_TOKEN=...
+export SUPPORT_USER_CHANNEL_IDS=user-channel-id
+export SUPPORT_ENGINEER_CHANNEL_ID=engineer-channel-id
 export THREAD_BOT_DATABASE_URL=postgres://test:test@localhost:5433/thread_bot_test
 export THREAD_BOT_DB_MAX_CONNECTIONS=5
+export THREAD_BOT_DB_ACQUIRE_TIMEOUT_SECS=5
 
-export SUPPORT_LLM_BASE_URL=http://localhost:11434
-export SUPPORT_LLM_MODEL=gpt-4o-mini
-export SUPPORT_LLM_API_KEY=
-export SUPPORT_LLM_TIMEOUT_SECS=45
-# Optional: inline prompt or a file path. File wins when both are set.
-# export SUPPORT_SYSTEM_PROMPT="You are a support assistant..."
-# export SUPPORT_SYSTEM_PROMPT_FILE=examples/support_bot/system-prompt.md
+export SUPPORT_QWEN_EXECUTABLE=qwen
+export SUPPORT_QWEN_CWD=.
+export SUPPORT_QWEN_MODEL=qwen/qwen3.6-35b-a3b
+export SUPPORT_QWEN_TIMEOUT_SECS=120
+# Optional for local debugging; JSON is the default.
+export SUPPORT_LOG_FORMAT=text
 
-export SUPPORT_USER_CHANNEL_IDS=YOUR_SUPPORT_CHANNEL_ID
-export SUPPORT_ENGINEER_CHANNEL_ID=YOUR_ENGINEER_CHANNEL_ID
-# Optional: only handle user threads whose first message contains these texts.
-# export SUPPORT_ADMISSION_REQUIRED_TEXTS=@xxxduty
-
-export SUPPORT_INSTRUCTIONS_ROOT=examples/support_bot/instructions
-
-# Optional remote MCP tools
-# export SUPPORT_REMOTE_MCP_NAMES=logs,metrics
-# export SUPPORT_REMOTE_MCP_LOGS_URL=http://localhost:9001/mcp
-# export SUPPORT_REMOTE_MCP_LOGS_AUTH_HEADER="Bearer dev-token"
-# export SUPPORT_REMOTE_MCP_LOGS_TIMEOUT_SECS=30
-# export SUPPORT_REMOTE_MCP_METRICS_URL=http://localhost:9002/mcp
+cargo run -p support-bot-app
 ```
 
-3. Run:
+The executable is named `support-bot`. Application logs, including fatal
+startup errors, are JSON objects written to stdout by default. Set
+`SUPPORT_LOG_FORMAT=text` for human-readable local output.
+
+### PostgreSQL failover
+
+Set multiple direct PostgreSQL hosts when the database endpoint does not handle
+primary failover:
 
 ```bash
-cargo run -p support-bot-example
+export THREAD_BOT_DATABASE_URL=postgres://bot:password@postgres-1:5432/thread_bot
+export THREAD_BOT_DATABASE_HOSTS=postgres-1,postgres-2
 ```
 
-## Notes
+`THREAD_BOT_DATABASE_URL` supplies credentials, database, port, and connection
+parameters. Each entry in `THREAD_BOT_DATABASE_HOSTS` replaces its host. The
+store checks `transaction_read_only` when acquiring a connection and remembers
+the last writable pool. Without `THREAD_BOT_DATABASE_HOSTS`, it uses the URL as
+a single target.
 
-- Defaults are already baked into the example for everything except:
-  - `MM_BEARER_TOKEN` (required),
-  - LLM settings (`SUPPORT_LLM_BASE_URL`, `SUPPORT_LLM_MODEL`, and optional `SUPPORT_LLM_API_KEY`),
-  - channel routing (`SUPPORT_USER_CHANNEL_IDS`, `SUPPORT_ENGINEER_CHANNEL_ID`).
-- `THREAD_BOT_DATABASE_URL` defaults to `postgres://test:test@localhost:5433/thread_bot_test`.
-- `MM_BASE_PATH` defaults to `http://localhost:8065`.
-- `SUPPORT_SYSTEM_PROMPT_FILE` or `SUPPORT_SYSTEM_PROMPT` overrides the default support-bot system prompt.
-- `SUPPORT_ADMISSION_REQUIRED_TEXTS` is an optional comma-separated list of
-  case-sensitive substrings that must all appear in the first user-thread
-  message. For example, `@xxxduty` ignores unrelated channel traffic before
-  engineer-thread creation or LLM processing.
-- `SUPPORT_REMOTE_MCP_NAMES` is a comma-separated list. For each name `x`, provide `SUPPORT_REMOTE_MCP_X_URL` and optionally `SUPPORT_REMOTE_MCP_X_AUTH_HEADER` / `SUPPORT_REMOTE_MCP_X_TIMEOUT_SECS` (name is uppercased, `-` becomes `_`).
-- The included instruction files are placeholders; replace them with your runbooks.
-- Instruction repository lint issues are logged at `error` during startup, but
-  they do not stop the example process. Invalid documents are skipped by the
-  repository until fixed.
-- Support thread state is stored in thread metadata under `support_bot`. The
-  request status can be `active`, `ignored`, `finished`, or `stopped`.
-  Admission-rejected threads are persisted as `ignored`; active threads become
-  `finished` when the model calls `finish_request`.
-- The first handled user thread creates an engineer thread containing a source
-  link and quoted root request in `SUPPORT_ENGINEER_CHANNEL_ID`.
-  Later user messages, bot replies, `notify_engineer` calls, and
-  `finish_request` status updates are posted as replies in that engineer thread.
-- Engineer thread commands:
-  - `!support debug-report` to export full source support thread as a self-contained HTML attachment (includes tool-trace section).
-- On tool-loop limit failure, the bot tells the user it stopped the thread,
-  notifies the engineer thread with trace summary, and asks engineers to run
-  `!support debug-report` if they want the full HTML snapshot.
-- Metrics are registered into an in-process `prometheus_client::Registry`.
-  Use the crate re-export (`support_bot::prometheus_client`) so applications do
-  not need to match the exact dependency version. This example wires the
-  registry and labels every series with `bot="support_bot"`; add your own HTTP
-  `/metrics` endpoint around that registry if you want scraping.
-- [`TOOL_AUTHORING_GUIDE.md`](TOOL_AUTHORING_GUIDE.md) is a copy-paste handoff
-  for coding agents that need to add new support tools.
+`THREAD_BOT_DB_MAX_CONNECTIONS` applies to each target. A failed target may
+delay switching by up to `THREAD_BOT_DB_ACQUIRE_TIMEOUT_SECS` before the next
+one is tried.
+
+`SUPPORT_QWEN_MODEL` is optional. `SUPPORT_ADMISSION_REQUIRED_TEXTS` may contain
+comma-separated phrases; on a thread's first message at least one phrase must
+match before a Qwen session is started. `SUPPORT_QWEN_EXECUTABLE` accepts any
+executable name or path available in the bot process.
+
+The repository skill at [`.qwen/skills/support/SKILL.md`](../../.qwen/skills/support/SKILL.md)
+is the diagnostic entry point. It links to the existing Markdown runbooks in
+[`instructions/`](instructions/); runbooks stay load-on-demand and are not
+copied into Rust prompts.
+
+Each accepted support thread creates a linked engineer thread. It receives
+mirrored user/bot messages and an ACP report with session ID, duration, stop
+reason, recovery flag, or a bounded failure detail. Users receive only final
+agent text or a generic availability error. `!support debug-report` in the
+engineer thread uploads an HTML snapshot of messages and persisted runtime state.

@@ -2,7 +2,15 @@
 
 ## Project Structure & Module Organization
 
-This repository is a Rust workspace for Mattermost bot development. Core crates live under `lib/`: `mattermost-api` is the generated Mattermost API client, `mattermost-bot` is the plugin and WebSocket framework, `thread-bot` adds thread actors and persistence, `bool_parser` handles API quirks, and `mattermost-test-helpers` supports integration tests. The runnable example is in `examples/hello_thread_bot`. SQL migrations are in `lib/thread-bot/migrations`. RFCs and design notes live in `rfcs/` and `notes/`.
+This repository is a Rust workspace for Mattermost bot development. Core crates live under `lib/`: `mattermost-api` is the generated Mattermost API client, `mattermost-bot` is the plugin and WebSocket framework, `thread-bot` adds thread actors and persistence, `support-bot` is the experimental Layer 4 support workflow, `bool_parser` handles API quirks, and `mattermost-test-helpers` supports integration tests. Runnable examples live in `examples/hello_thread_bot` and `examples/support_bot`. SQL migrations are in `lib/thread-bot/migrations`. RFCs and design notes live in `rfcs/` and `notes/`.
+
+## Layer Boundaries & Layer 4 Direction
+
+Keep Mattermost transport, thread serialization, and persistence generic in Layers 1–3. Layer 4 may depend on `thread-bot`; lower layers must not depend on support-specific LLM, prompt, runbook, or agent behavior.
+
+Treat the current `lib/support-bot` LLM loop as experimental and scheduled for replacement by the existing work Qwen Code fork through the official Rust `agent-client-protocol` crate. Do not implement ACP, agent roles, or the Qwen agent loop in Rust. Layer 4 should only map Mattermost threads to Qwen sessions, send prompts that invoke the local support skill, and publish final responses. Do not expand the custom chat-completions loop, tool registry, or prompt heuristics unless explicitly requested. Preserve reusable boundaries such as `ThreadHandler`/`ThreadEffect`, linked engineer threads, audit metadata, and the Markdown runbook corpus while evaluating the replacement.
+
+Runbooks are the source of operational procedures and must remain loadable on demand through local skills rather than copied wholesale into prompts. The support skill owns diagnostic behavior and user communication; internal subagents are a Qwen implementation detail. Final responses must not expose chain-of-thought, internal tool traces, credentials, raw logs, or unsupported claims. Never ask a support user to inspect internal logs or systems they cannot access: Qwen should use an available read-only tool or state that evidence is unavailable.
 
 ## Build, Test, and Development Commands
 
@@ -15,7 +23,7 @@ Use `just` from the repository root when available:
 - `just test-all`: run `cargo test --workspace`.
 - `just test-full`: start Mattermost/Postgres, run integration tests, then stop services.
 
-For quick local runs, use `cargo test`, `cargo test --doc`, or `cargo run --example hello_thread_bot`. The example expects `MM_BASE_PATH` and `MM_BEARER_TOKEN`; thread-bot flows also require PostgreSQL.
+For quick local runs, use `cargo test`, `cargo test --doc`, `cargo run --example hello_thread_bot`, or `cargo run -p support-bot-example`. The examples expect `MM_BASE_PATH` and `MM_BEARER_TOKEN`; thread-bot flows also require PostgreSQL, and the support example requires its LLM and channel settings.
 
 ## Coding Style & Naming Conventions
 

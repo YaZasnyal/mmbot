@@ -5,6 +5,12 @@ pub enum ThreadBotError {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
+    #[error("No writable PostgreSQL server is available")]
+    NoWritableDatabase,
+
+    #[error("At least one PostgreSQL connection target is required")]
+    NoDatabaseTargets,
+
     #[error("Mattermost API error: {0}")]
     MattermostApi(String),
 

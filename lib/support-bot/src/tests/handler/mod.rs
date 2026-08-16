@@ -1,26 +1,16 @@
 use super::*;
+use crate::acp::{AcpPrompt, AcpRuntime, AcpTurn, AcpTurnAction};
 use crate::admission::{SupportThreadAdmissionDecision, SupportThreadAdmissionHook};
-use crate::config::{
-    DebugCommandConfig, LlmConfig, SupportBotLimits, SupportRouteConfig, ToolConfig,
-};
-use crate::conversation::{build_llm_messages, STATE_KEY, TRACE_KEY};
+use crate::config::{DebugCommandConfig, SupportRouteConfig};
 use crate::debug::DebugResponse;
-use crate::llm::{ChatMessage, ChatRole, LlmRequest, LlmResponse};
 use crate::metadata::store_thread_state as store_state;
-use crate::state::{SupportThreadState, SupportThreadStatus};
+use crate::state::SupportThreadState;
 use crate::testutil::PanicStore;
-use crate::tools::{
-    register_default_workflow_tools, SupportTool, ToolCall, ToolContext, ToolExecutionOutcome,
-    ToolKind, ToolRegistry, ToolResult, ToolSpec,
-};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::json;
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::time::Duration;
 use thread_bot::{
     ChannelCheckpoint, ThreadInfo, ThreadInvocation, ThreadLink, ThreadMessage,
     ThreadMessageRecord, ThreadRecord, ThreadStore, ThreadTrigger, UpsertThread, UpsertThreadLink,
@@ -29,14 +19,20 @@ use thread_bot::{
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-struct StaticLlm;
+const STATE_KEY: &str = "support_bot";
+
+struct StaticAcp;
 
 #[async_trait]
-impl LlmClient for StaticLlm {
-    async fn complete(&self, _request: LlmRequest) -> crate::Result<LlmResponse> {
-        Ok(LlmResponse {
-            message: ChatMessage::assistant("hello from support"),
-            tool_calls: Vec::new(),
+impl AcpRuntime for StaticAcp {
+    async fn prompt(&self, _prompt: AcpPrompt) -> crate::Result<AcpTurn> {
+        Ok(AcpTurn {
+            session_id: "session-1".to_string(),
+            response: "hello from support".to_string(),
+            action: AcpTurnAction::None,
+            reason: None,
+            stop_reason: "end_turn".to_string(),
+            session_recovered: false,
         })
     }
 }
@@ -49,61 +45,6 @@ impl DebugCommandHandler for StaticDebug {
         Ok(DebugResponse {
             message: format!("debug: {}", command.name),
         })
-    }
-}
-
-struct EchoReadOnlyTool;
-
-#[async_trait]
-impl SupportTool for EchoReadOnlyTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "echo_read".to_string(),
-            description: "Echo test tool".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "additionalProperties": true
-            }),
-            kind: ToolKind::ReadOnly,
-        }
-    }
-
-    async fn call(&self, _ctx: ToolContext, call: ToolCall) -> crate::Result<ToolExecutionOutcome> {
-        Ok(ToolExecutionOutcome::ToolResult(ToolResult {
-            call_id: call.id,
-            content: json!({ "ok": true }),
-            is_error: false,
-        }))
-    }
-}
-
-struct SequenceLlm {
-    responses: Mutex<VecDeque<LlmResponse>>,
-    requests: Mutex<Vec<LlmRequest>>,
-}
-
-impl SequenceLlm {
-    fn new(responses: Vec<LlmResponse>) -> Self {
-        Self {
-            responses: Mutex::new(VecDeque::from(responses)),
-            requests: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn requests(&self) -> Vec<LlmRequest> {
-        self.requests.lock().unwrap().clone()
-    }
-}
-
-#[async_trait]
-impl LlmClient for SequenceLlm {
-    async fn complete(&self, request: LlmRequest) -> crate::Result<LlmResponse> {
-        self.requests.lock().unwrap().push(request);
-        self.responses
-            .lock()
-            .unwrap()
-            .pop_front()
-            .ok_or_else(|| crate::SupportBotError::Llm("missing test response".to_string()))
     }
 }
 
@@ -133,28 +74,8 @@ impl SupportThreadAdmissionHook for StaticAdmissionHook {
     }
 }
 
-struct ErrorAdmissionHook;
-
-#[async_trait]
-impl SupportThreadAdmissionHook for ErrorAdmissionHook {
-    async fn evaluate(&self, _thread: &Thread) -> crate::Result<SupportThreadAdmissionDecision> {
-        Err(crate::SupportBotError::Config(
-            "admission failed".to_string(),
-        ))
-    }
-}
-
 fn test_config() -> SupportBotConfig {
     SupportBotConfig {
-        system_prompt: "system".to_string(),
-        llm: LlmConfig {
-            base_url: "http://localhost".to_string(),
-            api_key: None,
-            model: "test-model".to_string(),
-            timeout: Duration::from_secs(1),
-        },
-        tools: ToolConfig::default(),
-        limits: SupportBotLimits::default(),
         routes: SupportRouteConfig {
             user_channel_ids: vec!["users".to_string()],
             engineer_channel_id: "engineers".to_string(),

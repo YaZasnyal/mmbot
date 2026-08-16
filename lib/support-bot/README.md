@@ -1,108 +1,45 @@
 # support-bot
 
-Experimental Layer 4 crate for building Mattermost support bots on top of
-`thread-bot`.
+Layer 4 support workflow for Mattermost. It maps each support thread to a Qwen
+Code ACP session and keeps operational diagnostics in a linked engineer thread.
 
-The crate owns support-specific concerns:
+The crate intentionally does not implement an LLM loop, tool registry, MCP
+client, or prompt heuristics. Qwen owns agent behavior and loads the repository
+support skill; Rust owns routing, session metadata, final replies, admission,
+control reactions, and engineer reports.
 
-- OpenAI-compatible LLM integration through a `LlmClient` abstraction.
-- Local Rust tools and remote MCP tools behind one `ToolRegistry`.
-- Compact per-thread resume state stored in `thread-bot` thread metadata.
-- Markdown instruction/runbook loading from a documented filesystem tree.
-- Separate user and engineer notification sinks, including engineer-channel
-  mirroring, status updates, and debug exports.
-
-The API is intentionally experimental while the first real support bot is being
-built. Prefer small integrations and keep concrete tools/prompts outside this
-crate.
-
-## Layering
-
-```text
-support-bot  -> implements thread_bot::ThreadHandler
-thread-bot   -> owns Mattermost thread tracking and persistence
-mattermost-bot / mattermost-api
-```
-
-`support-bot` should not add LLM behavior to `thread-bot`; it consumes
-`Thread`, `ThreadEffect`, and thread/message metadata exposed by Layer 3.
-
-## Current Scope
-
-This crate now includes a concrete `SupportBotHandler`:
-
-- routes user-channel threads into the LLM/tool loop;
-- routes engineer-channel threads through debug command handling before LLM;
-- can run a configurable admission hook before handling a new user thread,
-  including a reusable first-message text filter for tags such as `@xxxduty`;
-- persists compact `SupportThreadState` under the `support_bot` thread metadata
-  key, including `active`/`ignored`/`finished`/`stopped` request state,
-  optional ignore reason, and optional finish summary;
-- executes local tools through `ToolRegistry` with bounded tool rounds.
-- provides default workflow tools for user replies, engineer notifications,
-  and finishing a request.
-- mirrors user and bot messages into a dedicated engineer channel thread when
-  configured.
-- posts support status updates to the engineer thread when `finish_request`
-  marks a request as `finished`.
-- supports on-demand engineer diagnostics with `!support debug-report`, which
-  uploads an HTML report containing support state, source posts, and captured
-  tool traces.
-- notifies the engineer thread on tool-loop limit failures and tells engineers
-  to run `!support debug-report` for the full HTML snapshot.
-- can register remote MCP tools from `ToolConfig.remote_mcp_endpoints` via
-  `register_remote_mcp_tools`.
-- includes `SupportBotBuilder` with a default system prompt that enforces using
-  the `instructions` tool before inventing diagnostics.
-- keeps instruction repository loading in the instruction tool via
-  `InstructionRepository::load`, outside `SupportBotConfig`.
-
-## Runtime Flow
-
-For a user-channel thread, the handler loads `SupportThreadState`, runs the
-optional admission hook before engineer-thread creation or LLM processing,
-ensures the engineer thread exists when a separate engineer channel is
-configured, mirrors new user messages, builds LLM context from the source thread
-plus loaded instruction state, and executes bounded tool rounds.
-
-Threads rejected by admission are persisted as `status = "ignored"` and are not
-rechecked by later messages. A simple first-message text filter can be wired
-from application code:
-
-```rust
+```rust,no_run
 use std::sync::Arc;
-use support_bot::{FirstMessageTextAdmissionHook, SupportBotBuilder};
+use support_bot::{QwenAcpConfig, QwenAcpRuntime, SupportBotBuilder, SupportBotConfig};
 
-let builder = SupportBotBuilder::new("support", config, llm)
-    .with_admission_hook(Arc::new(FirstMessageTextAdmissionHook::new(["@xxxduty"])));
+# async fn example(config: SupportBotConfig) -> anyhow::Result<()> {
+let runtime = QwenAcpRuntime::start(QwenAcpConfig {
+    executable: "qwen".into(),
+    cwd: ".".into(),
+    model: None,
+    timeout: std::time::Duration::from_secs(120),
+}).await?;
+let handler = SupportBotBuilder::new("support", config, Arc::new(runtime)).build();
+# Ok(())
+# }
 ```
 
-Default workflow tools return structured actions:
+Qwen receives `/support`, the Mattermost thread/post IDs, and the new user
+message. It returns one structured object:
 
-- `send_user_message`: replies to the user through `ThreadEffect::Reply` and
-  mirrors the bot response to the engineer thread when configured.
-- `notify_engineer`: sends diagnostic context or escalation notes to the
-  engineer sink.
-- `finish_request`: stores `status = "finished"` and `finished_summary`,
-  posts a status update to the engineer thread, and resolves the underlying
-  `thread-bot` thread.
+```json
+{"message":"User-facing Markdown","action":"none|ignore|finish","reason":null}
+```
 
-## Engineer Debug Commands
+Only `message` is posted to the user. `ignore` marks a non-support thread as
+ignored; `finish` marks a completed conversation as finished. Unknown actions
+are treated as `none`.
 
-Engineer-channel commands are parsed before the engineer thread enters the
-regular LLM flow. The default prefixes are `/support` and `!support`.
+The support skill must not use Qwen's `ask_user_question` popup: Mattermost
+cannot display or answer that ACP permission UI. To request clarification, Qwen
+returns the question in `message` with `action: "none"`; the user's next
+Mattermost reply continues the same ACP session.
 
-- `!support debug-report`: export the source support thread diagnostics as an
-  HTML attachment in the engineer thread.
-- `!support state <thread-id>`: pending command shape for state inspection.
-- `!support trace <thread-id>`: pending command shape for trace inspection.
-- `!support retry <thread-id>`: pending command shape for retrying a support
-  run after manual review.
-
-## Instruction Format
-
-Instruction and runbook trees are documented in
-[`docs/instructions.md`](docs/instructions.md). Documents are ordinary `.md`
-files with YAML frontmatter. The default entry point is `/index`, and generated
-indexes such as embeddings may be added later as derived artifacts rather than
-maintained by hand.
+Session ID, last input post, recovery status, duration, stop reason, and failures are available
+in thread metadata and the linked engineer thread. Engineers can run
+`!support debug-report` to export the tracked thread and runtime state as HTML.

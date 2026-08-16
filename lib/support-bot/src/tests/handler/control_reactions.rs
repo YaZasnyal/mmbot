@@ -2,13 +2,7 @@ use super::*;
 
 #[test]
 fn control_reactions_update_support_status_metadata() {
-    let handler = SupportBotHandler::new(
-        "support",
-        test_config(),
-        Arc::new(StaticLlm),
-        Arc::new(ToolRegistry::new()),
-        "system",
-    );
+    let handler = SupportBotHandler::new("support", test_config(), Arc::new(StaticAcp));
     let record = thread_record("users", json!({}));
 
     let resolved = handler
@@ -52,13 +46,7 @@ fn control_reactions_update_support_status_metadata() {
 
 #[test]
 fn control_reactions_route_channel_backed_user_threads_without_thread_kind() {
-    let handler = SupportBotHandler::new(
-        "support",
-        test_config(),
-        Arc::new(StaticLlm),
-        Arc::new(ToolRegistry::new()),
-        "system",
-    );
+    let handler = SupportBotHandler::new("support", test_config(), Arc::new(StaticAcp));
     let mut record = thread_record("users", json!({}));
     record.thread_kind = None;
 

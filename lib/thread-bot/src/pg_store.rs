@@ -6,18 +6,95 @@ use crate::types::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sqlx::{FromRow, PgPool};
+use sqlx::pool::PoolConnection;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::{FromRow, PgPool, Postgres};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Production implementation of ThreadStore backed by PostgreSQL
 pub struct PgThreadStore {
-    pool: PgPool,
+    pool: WriterPool,
+}
+
+struct WriterPool {
+    pools: Box<[PgPool]>,
+    preferred: AtomicUsize,
+}
+
+impl WriterPool {
+    fn new(pools: impl IntoIterator<Item = PgPool>) -> Result<Self, ThreadBotError> {
+        let pools = pools.into_iter().collect::<Box<[_]>>();
+        if pools.is_empty() {
+            return Err(ThreadBotError::NoDatabaseTargets);
+        }
+
+        Ok(Self {
+            pools,
+            preferred: AtomicUsize::new(0),
+        })
+    }
+
+    async fn acquire(&self) -> Result<PoolConnection<Postgres>, ThreadBotError> {
+        let preferred = self.preferred.load(Ordering::Relaxed) % self.pools.len();
+        let mut last_error = None;
+
+        for offset in 0..self.pools.len() {
+            let index = (preferred + offset) % self.pools.len();
+            let mut connection = match self.pools[index].acquire().await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    last_error = Some(error);
+                    continue;
+                }
+            };
+
+            match sqlx::query_scalar::<_, bool>(
+                "SELECT current_setting('transaction_read_only') = 'off'",
+            )
+            .fetch_one(&mut *connection)
+            .await
+            {
+                Ok(true) => {
+                    self.preferred.store(index, Ordering::Relaxed);
+                    return Ok(connection);
+                }
+                Ok(false) => {}
+                Err(error) => last_error = Some(error),
+            }
+        }
+
+        match last_error {
+            Some(error) => Err(error.into()),
+            None => Err(ThreadBotError::NoWritableDatabase),
+        }
+    }
 }
 
 impl PgThreadStore {
     /// Create a new PgThreadStore and run migrations
     pub async fn new(pool: PgPool) -> Result<Self, ThreadBotError> {
+        Self::new_with_pools([pool]).await
+    }
+
+    /// Create pools lazily from connection targets and run migrations on the writable server.
+    pub async fn connect(
+        pool_options: PgPoolOptions,
+        connect_options: impl IntoIterator<Item = PgConnectOptions>,
+    ) -> Result<Self, ThreadBotError> {
+        let pools = connect_options
+            .into_iter()
+            .map(|options| pool_options.clone().connect_lazy_with(options));
+        Self::new_with_pools(pools).await
+    }
+
+    /// Create a PgThreadStore from existing pools and run migrations on the writable server.
+    pub async fn new_with_pools(
+        pools: impl IntoIterator<Item = PgPool>,
+    ) -> Result<Self, ThreadBotError> {
+        let pool = WriterPool::new(pools)?;
+        let mut connection = pool.acquire().await?;
         sqlx::migrate!("./migrations")
-            .run(&pool)
+            .run(&mut *connection)
             .await
             .map_err(|e| ThreadBotError::Internal(Box::new(e)))?;
         Ok(Self { pool })
@@ -136,6 +213,7 @@ const THREAD_LINK_COLUMNS: &str = r#"
 #[async_trait]
 impl ThreadStore for PgThreadStore {
     async fn upsert_thread(&self, input: UpsertThread) -> Result<ThreadRecord, ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let now = Utc::now();
 
         let sql = format!(
@@ -161,18 +239,19 @@ impl ThreadStore for PgThreadStore {
             .bind(&input.thread_kind)
             .bind(&input.metadata)
             .bind(now)
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *connection)
             .await?;
 
         Ok(row.into())
     }
 
     async fn get_thread(&self, thread_id: &str) -> Result<Option<ThreadRecord>, ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let sql = format!("SELECT {THREAD_COLUMNS} FROM threads WHERE thread_id = $1");
 
         let row: Option<ThreadRow> = sqlx::query_as(&sql)
             .bind(thread_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *connection)
             .await?;
 
         Ok(row.map(Into::into))
@@ -182,6 +261,7 @@ impl ThreadStore for PgThreadStore {
         &self,
         post_id: &str,
     ) -> Result<Option<ThreadRecord>, ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let sql = format!(
             r#"
             SELECT {THREAD_COLUMNS}
@@ -195,7 +275,7 @@ impl ThreadStore for PgThreadStore {
 
         let row: Option<ThreadRow> = sqlx::query_as(&sql)
             .bind(post_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *connection)
             .await?;
 
         Ok(row.map(Into::into))
@@ -206,6 +286,7 @@ impl ThreadStore for PgThreadStore {
         updated_after: Option<DateTime<Utc>>,
         updated_before: Option<DateTime<Utc>>,
     ) -> Result<Vec<ThreadRecord>, ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let sql = format!(
             "SELECT {THREAD_COLUMNS} FROM threads \
              WHERE ($1::timestamptz IS NULL OR updated_at > $1) \
@@ -216,7 +297,7 @@ impl ThreadStore for PgThreadStore {
         let rows: Vec<ThreadRow> = sqlx::query_as(&sql)
             .bind(updated_after)
             .bind(updated_before)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
@@ -227,6 +308,7 @@ impl ThreadStore for PgThreadStore {
         thread_id: &str,
         metadata: serde_json::Value,
     ) -> Result<(), ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let now = Utc::now();
 
         let result =
@@ -234,7 +316,7 @@ impl ThreadStore for PgThreadStore {
                 .bind(thread_id)
                 .bind(metadata)
                 .bind(now)
-                .execute(&self.pool)
+                .execute(&mut *connection)
                 .await?;
 
         if result.rows_affected() == 0 {
@@ -247,6 +329,7 @@ impl ThreadStore for PgThreadStore {
         &self,
         input: UpsertThreadLink,
     ) -> Result<ThreadLink, ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let now = Utc::now();
         let sql = format!(
             r#"
@@ -266,7 +349,7 @@ impl ThreadStore for PgThreadStore {
             .bind(&input.link_kind)
             .bind(&input.target_thread_id)
             .bind(now)
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *connection)
             .await?;
 
         Ok(row.into())
@@ -277,6 +360,7 @@ impl ThreadStore for PgThreadStore {
         source_thread_id: &str,
         target_thread_id: &str,
     ) -> Result<Option<ThreadLink>, ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let sql = format!(
             "SELECT {THREAD_LINK_COLUMNS} FROM thread_links \
              WHERE source_thread_id = $1 AND target_thread_id = $2"
@@ -285,7 +369,7 @@ impl ThreadStore for PgThreadStore {
         let row: Option<ThreadLinkRow> = sqlx::query_as(&sql)
             .bind(source_thread_id)
             .bind(target_thread_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *connection)
             .await?;
 
         Ok(row.map(Into::into))
@@ -295,6 +379,7 @@ impl ThreadStore for PgThreadStore {
         &self,
         source_thread_id: &str,
     ) -> Result<Vec<ThreadLink>, ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let sql = format!(
             "SELECT {THREAD_LINK_COLUMNS} FROM thread_links \
              WHERE source_thread_id = $1 ORDER BY link_kind ASC, target_thread_id ASC"
@@ -302,7 +387,7 @@ impl ThreadStore for PgThreadStore {
 
         let rows: Vec<ThreadLinkRow> = sqlx::query_as(&sql)
             .bind(source_thread_id)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
@@ -312,6 +397,7 @@ impl ThreadStore for PgThreadStore {
         &self,
         target_thread_id: &str,
     ) -> Result<Vec<ThreadLink>, ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let sql = format!(
             "SELECT {THREAD_LINK_COLUMNS} FROM thread_links \
              WHERE target_thread_id = $1 ORDER BY source_thread_id ASC, link_kind ASC"
@@ -319,7 +405,7 @@ impl ThreadStore for PgThreadStore {
 
         let rows: Vec<ThreadLinkRow> = sqlx::query_as(&sql)
             .bind(target_thread_id)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
@@ -331,6 +417,7 @@ impl ThreadStore for PgThreadStore {
         post_id: &str,
         seen_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let now = Utc::now();
 
         let result = sqlx::query(
@@ -340,7 +427,7 @@ impl ThreadStore for PgThreadStore {
         .bind(post_id)
         .bind(seen_at)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *connection)
         .await?;
 
         if result.rows_affected() == 0 {
@@ -355,6 +442,7 @@ impl ThreadStore for PgThreadStore {
         post_id: &str,
         processed_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let now = Utc::now();
 
         let result = sqlx::query(
@@ -364,7 +452,7 @@ impl ThreadStore for PgThreadStore {
         .bind(post_id)
         .bind(processed_at)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *connection)
         .await?;
 
         if result.rows_affected() == 0 {
@@ -377,6 +465,7 @@ impl ThreadStore for PgThreadStore {
         &self,
         input: UpsertThreadMessage,
     ) -> Result<ThreadMessageRecord, ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let now = Utc::now();
 
         let sql = format!(
@@ -407,7 +496,7 @@ impl ThreadStore for PgThreadStore {
             .bind(input.post_updated_at)
             .bind(input.post_deleted_at)
             .bind(now)
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *connection)
             .await?;
 
         Ok(row.into())
@@ -417,11 +506,12 @@ impl ThreadStore for PgThreadStore {
         &self,
         post_id: &str,
     ) -> Result<Option<ThreadMessageRecord>, ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let sql = format!("SELECT {MESSAGE_COLUMNS} FROM thread_messages WHERE post_id = $1");
 
         let row: Option<MessageRow> = sqlx::query_as(&sql)
             .bind(post_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *connection)
             .await?;
 
         Ok(row.map(Into::into))
@@ -431,13 +521,14 @@ impl ThreadStore for PgThreadStore {
         &self,
         thread_id: &str,
     ) -> Result<Vec<ThreadMessageRecord>, ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let sql = format!(
             "SELECT {MESSAGE_COLUMNS} FROM thread_messages WHERE thread_id = $1 ORDER BY post_created_at ASC"
         );
 
         let rows: Vec<MessageRow> = sqlx::query_as(&sql)
             .bind(thread_id)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
@@ -448,6 +539,7 @@ impl ThreadStore for PgThreadStore {
         post_id: &str,
         metadata: serde_json::Value,
     ) -> Result<(), ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let now = Utc::now();
 
         let result = sqlx::query(
@@ -456,7 +548,7 @@ impl ThreadStore for PgThreadStore {
         .bind(post_id)
         .bind(metadata)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *connection)
         .await?;
 
         if result.rows_affected() == 0 {
@@ -468,10 +560,11 @@ impl ThreadStore for PgThreadStore {
     // ── Channel checkpoints ─────────────────────────────────────────────
 
     async fn list_channel_checkpoints(&self) -> Result<Vec<ChannelCheckpoint>, ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let rows: Vec<CheckpointRow> = sqlx::query_as(
             "SELECT channel_id, last_seen_post_id, last_seen_post_at, updated_at, is_reconciled FROM channel_checkpoints",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *connection)
         .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
@@ -483,6 +576,7 @@ impl ThreadStore for PgThreadStore {
         last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let now = Utc::now();
 
         sqlx::query(
@@ -503,7 +597,7 @@ impl ThreadStore for PgThreadStore {
         .bind(last_seen_post_id)
         .bind(last_seen_post_at)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *connection)
         .await?;
 
         Ok(())
@@ -515,6 +609,7 @@ impl ThreadStore for PgThreadStore {
         last_seen_post_id: &str,
         last_seen_post_at: DateTime<Utc>,
     ) -> Result<(), ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let now = Utc::now();
 
         sqlx::query(
@@ -532,21 +627,23 @@ impl ThreadStore for PgThreadStore {
         .bind(last_seen_post_id)
         .bind(last_seen_post_at)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *connection)
         .await?;
 
         Ok(())
     }
 
     async fn set_all_channels_not_reconciled(&self) -> Result<(), ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         sqlx::query("UPDATE channel_checkpoints SET is_reconciled = false")
-            .execute(&self.pool)
+            .execute(&mut *connection)
             .await?;
 
         Ok(())
     }
 
     async fn set_channel_reconciled(&self, channel_id: &str) -> Result<(), ThreadBotError> {
+        let mut connection = self.pool.acquire().await?;
         let now = Utc::now();
 
         sqlx::query(
@@ -554,7 +651,7 @@ impl ThreadStore for PgThreadStore {
         )
         .bind(channel_id)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *connection)
         .await?;
 
         Ok(())

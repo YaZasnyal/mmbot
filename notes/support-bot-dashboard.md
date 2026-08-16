@@ -14,13 +14,11 @@ draft; if import fails, use this document to rebuild the board manually.
 
 ```text
 ┌───────────────┬───────────────┬───────────────┬───────────────┐
-│ 1 Actors      │ 2 LLM Errors  │ 3 Handler p95 │ 4 WS Errors   │
+│ 1 Actors      │ 2 ACP Errors  │ 3 Handler p95 │ 4 WS Errors   │
 ├───────────────┴───────────────┬───────────────┴───────────────┤
 │ 5 Mattermost Events           │ 6 Support Route Outcomes      │
 ├───────────────────────────────┼───────────────────────────────┤
-│ 7 LLM Latency                 │ 8 Tool Latency p95            │
-├───────────────────────────────┼───────────────────────────────┤
-│ 9 Tool Calls                  │ 10 Thread Effects             │
+│ 7 ACP Latency                 │ 10 Thread Effects             │
 ├───────────────────────────────┼───────────────────────────────┤
 │ 11 Replies / Notifications    │ 12 WS Connection Outcomes     │
 └───────────────────────────────┴───────────────────────────────┘
@@ -37,15 +35,15 @@ draft; if import fails, use this document to rebuild the board manually.
      ```
    - Display: green single stat, show sparkline/area if available.
 
-2. LLM Error Ratio
+2. ACP Error Ratio
    - Type: Stat
    - Unit: `percentunit`
    - Thresholds: green `< 1%`, red `>= 1%`
    - Query:
      ```promql
-     sum(rate(support_bot_llm_requests_total{bot=~"$bot",outcome="error"}[$__rate_interval]))
+     sum(rate(support_bot_acp_requests_total{bot=~"$bot",outcome="error"}[$__rate_interval]))
        /
-     clamp_min(sum(rate(support_bot_llm_requests_total{bot=~"$bot"}[$__rate_interval])), 0.001)
+     clamp_min(sum(rate(support_bot_acp_requests_total{bot=~"$bot"}[$__rate_interval])), 0.001)
      ```
 
 3. Handler p95
@@ -93,44 +91,16 @@ draft; if import fails, use this document to rebuild the board manually.
      )
      ```
 
-7. LLM Latency
+7. ACP Latency
    - Type: Time series
    - Unit: seconds
    - Legend: p50, p95, p99
    - Queries:
      ```promql
-     histogram_quantile(0.50, sum by (le) (rate(support_bot_llm_duration_seconds_bucket{bot=~"$bot"}[$__rate_interval])))
-     histogram_quantile(0.95, sum by (le) (rate(support_bot_llm_duration_seconds_bucket{bot=~"$bot"}[$__rate_interval])))
-     histogram_quantile(0.99, sum by (le) (rate(support_bot_llm_duration_seconds_bucket{bot=~"$bot"}[$__rate_interval])))
+     histogram_quantile(0.50, sum by (le) (rate(support_bot_acp_duration_seconds_bucket{bot=~"$bot"}[$__rate_interval])))
+     histogram_quantile(0.95, sum by (le) (rate(support_bot_acp_duration_seconds_bucket{bot=~"$bot"}[$__rate_interval])))
+     histogram_quantile(0.99, sum by (le) (rate(support_bot_acp_duration_seconds_bucket{bot=~"$bot"}[$__rate_interval])))
      ```
-
-8. Tool Latency p95
-   - Type: Time series
-   - Unit: seconds
-   - Legend: `{{tool_name}} p95`
-   - Query:
-     ```promql
-     histogram_quantile(
-       0.95,
-       sum by (tool_name, le) (
-         rate(support_bot_tool_duration_seconds_bucket{bot=~"$bot"}[$__rate_interval])
-       )
-     )
-     ```
-   - Styling: keep legend as table; this panel can get noisy when many tools
-     are registered.
-
-9. Tool Calls
-   - Type: Table
-   - Unit: ops/sec
-   - Query:
-     ```promql
-     sum by (tool_name, outcome) (
-       rate(support_bot_tool_calls_total{bot=~"$bot"}[$__rate_interval])
-     )
-     ```
-   - Mode: instant query, table format.
-   - Styling: enable column filters; sort value descending.
 
 10. Thread Effects
     - Type: Time series
@@ -167,18 +137,18 @@ draft; if import fails, use this document to rebuild the board manually.
 
 ## Suggested Alerts
 
-- LLM error ratio: warn above `1%` for 10 minutes, critical above `5%`.
+- ACP error ratio: warn above `1%` for 10 minutes, critical above `5%`.
 - Handler p95: warn above `3s` for 10 minutes.
 - Active actors: warn if it keeps increasing while route throughput is flat.
 - WS parse errors: warn on any sustained non-zero rate.
-- Tool action errors: warn on
-  `sum(rate(support_bot_tool_calls_total{outcome=~"error|action_error"}[5m])) > 0`.
 
 ## Notes
 
 - Prefer rates for counters and current values for gauges.
 - Avoid adding `thread_id`, `channel_id`, `post_id`, `user_id`, URLs, raw error
   text, or model prompt fields as labels.
+- Qwen tool activity is intentionally opaque to the Rust bridge. Monitor it at
+  the configured Qwen/MCP services instead of adding per-tool bridge metrics.
 - If `bot=All` is selected, latency histograms aggregate across bots. That is
   useful for fleet view but can hide one slow bot; switch to a single bot when
   debugging.

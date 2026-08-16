@@ -10,9 +10,36 @@ mod common;
 use chrono::Utc;
 use common::{make_message, make_thread, TestDb};
 use serde_json::json;
+use sqlx::postgres::PgPoolOptions;
 use thread_bot::{
-    ThreadBotError, ThreadStore, UpsertThread, UpsertThreadLink, UpsertThreadMessage,
+    PgThreadStore, ThreadBotError, ThreadStore, UpsertThread, UpsertThreadLink, UpsertThreadMessage,
 };
+
+#[tokio::test]
+async fn store_uses_writable_pool() {
+    let db = TestDb::new().await;
+    let read_only_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .after_connect(|connection, _| {
+            Box::pin(async move {
+                sqlx::query("SET default_transaction_read_only = on")
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect_with(db.pool.connect_options().as_ref().clone())
+        .await
+        .unwrap();
+    let store = PgThreadStore::new_with_pools([read_only_pool, db.pool.clone()])
+        .await
+        .unwrap();
+
+    let record = store.upsert_thread(make_thread("writable")).await.unwrap();
+
+    assert_eq!(record.thread_id, "thread_writable");
+    db.cleanup().await;
+}
 
 // ---------------------------------------------------------------------------
 // Thread CRUD tests

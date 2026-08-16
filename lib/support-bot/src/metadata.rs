@@ -1,4 +1,3 @@
-use crate::llm::ChatMessage;
 use crate::state::SupportThreadState;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -9,16 +8,14 @@ pub(crate) const SUPPORT_METADATA_KEY: &str = "support_bot";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SupportMetadataKind {
+    AcpReport,
     AssistantResponse,
     BotMessage,
     DebugResponse,
-    EngineerNotification,
     EngineerThread,
     EngineerThreadRoot,
     StatusUpdate,
     ThreadHtmlReport,
-    ToolAction,
-    ToolLoopLimit,
     UserMessage,
 }
 
@@ -61,14 +58,6 @@ impl SupportMetadata {
         }
     }
 
-    pub(crate) fn tool_action(call_id: &str, action: impl Into<String>) -> Self {
-        Self {
-            tool_call_id: Some(call_id.to_string()),
-            action: Some(action.into()),
-            ..Self::new(SupportMetadataKind::ToolAction)
-        }
-    }
-
     pub(crate) fn thread_html_report(source_thread_id: impl Into<String>) -> Self {
         Self {
             source_thread_id: Some(source_thread_id.into()),
@@ -76,12 +65,6 @@ impl SupportMetadata {
             ..Self::new(SupportMetadataKind::ThreadHtmlReport)
         }
     }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub(crate) struct SupportMessageMetadata {
-    #[serde(default, rename = "llm_trace", skip_serializing_if = "Vec::is_empty")]
-    pub llm_trace: Vec<ChatMessage>,
 }
 
 pub(crate) fn metadata_value<T>(payload: &T) -> Result<Value, ThreadBotError>
@@ -109,24 +92,6 @@ pub(crate) fn store_thread_state(
     state: &SupportThreadState,
 ) -> Result<Value, ThreadBotError> {
     store_payload(metadata, state)
-}
-
-pub(crate) fn load_message_trace(metadata: &Value) -> Result<Vec<ChatMessage>, ThreadBotError> {
-    load_payload::<SupportMessageMetadata>(metadata)
-        .map(|payload| payload.unwrap_or_default().llm_trace)
-}
-
-pub(crate) fn store_message_trace(
-    metadata: &Value,
-    trace: &[ChatMessage],
-) -> Result<Value, ThreadBotError> {
-    if trace.is_empty() {
-        return Ok(metadata.clone());
-    }
-
-    let mut payload = load_payload::<SupportMessageMetadata>(metadata)?.unwrap_or_default();
-    payload.llm_trace = trace.to_vec();
-    store_payload(metadata, &payload)
 }
 
 fn load_payload<T>(metadata: &Value) -> Result<Option<T>, ThreadBotError>

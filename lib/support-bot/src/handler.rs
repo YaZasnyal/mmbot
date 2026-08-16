@@ -1,15 +1,14 @@
+use crate::acp::AcpRuntime;
 use crate::admission::SupportThreadAdmissionHook;
 use crate::config::SupportBotConfig;
 use crate::debug::{DebugCommand, DebugCommandHandler};
 use crate::debug_export::handle_debug_export_html;
-use crate::llm::LlmClient;
 use crate::metadata::{
     load_thread_state, metadata_value, store_thread_state, SupportMetadata, SupportMetadataKind,
 };
 use crate::metrics::SupportBotMetricsHandle;
 use crate::notifier::{engineer_thread_root_message, source_post_link, support_post_props};
 use crate::state::SupportThreadStatus;
-use crate::tools::ToolRegistry;
 use async_trait::async_trait;
 use chrono::Utc;
 use mattermost_api::apis::reactions_api;
@@ -25,11 +24,9 @@ use tracing::{debug, info, warn, Instrument, Span};
 pub struct SupportBotHandler {
     id: &'static str,
     config: SupportBotConfig,
-    llm: Arc<dyn LlmClient>,
-    tools: Arc<ToolRegistry>,
+    acp_runtime: Arc<dyn AcpRuntime>,
     admission_hook: Option<Arc<dyn SupportThreadAdmissionHook>>,
     debug_handler: Option<Arc<dyn DebugCommandHandler>>,
-    system_prompt: String,
     metrics: SupportBotMetricsHandle,
 }
 
@@ -40,18 +37,14 @@ impl SupportBotHandler {
     pub fn new(
         id: &'static str,
         config: SupportBotConfig,
-        llm: Arc<dyn LlmClient>,
-        tools: Arc<ToolRegistry>,
-        system_prompt: impl Into<String>,
+        acp_runtime: Arc<dyn AcpRuntime>,
     ) -> Self {
         Self {
             id,
             config,
-            llm,
-            tools,
+            acp_runtime,
             admission_hook: None,
             debug_handler: None,
-            system_prompt: system_prompt.into(),
             metrics: SupportBotMetricsHandle::noop(),
         }
     }
@@ -126,7 +119,7 @@ impl SupportBotHandler {
 
         if command.name == "debug-report" {
             info!("support-bot: received debug-report command");
-            let effects = handle_debug_export_html(&thread, ctx).await;
+            let effects = handle_debug_export_html(&thread, ctx, self.acp_runtime.as_ref()).await;
             if effects.is_ok() {
                 self.metrics.record_reply("engineer", "success");
             } else {
