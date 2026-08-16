@@ -7,14 +7,16 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo};
 use async_trait::async_trait;
+use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
-const QWEN_SUPPORT_SYSTEM_PROMPT: &str =
-    "You are a support runtime. Follow the local /support skill for every prompt. Return only the final user-facing response.";
+const QWEN_SUPPORT_SYSTEM_PROMPT: &str = r#"You are a support runtime. Follow the local /support skill for every prompt.
+Never use ask_user_question or request interactive input. To ask for clarification, return the question in message and end the turn.
+Return only one JSON object: {"message":"user-facing Markdown","action":"none|ignore|finish","reason":null|string}. Use ignore when the thread is not a support request and finish when the support conversation is complete."#;
 
 #[derive(Debug, Clone)]
 pub struct QwenAcpConfig {
@@ -36,8 +38,47 @@ pub struct AcpPrompt {
 pub struct AcpTurn {
     pub session_id: String,
     pub response: String,
+    pub action: AcpTurnAction,
+    pub reason: Option<String>,
     pub stop_reason: String,
     pub session_recovered: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AcpTurnAction {
+    #[default]
+    None,
+    Ignore,
+    Finish,
+}
+
+impl AcpTurnAction {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Ignore => "ignore",
+            Self::Finish => "finish",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct AcpResponse {
+    message: String,
+    #[serde(default)]
+    action: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+impl AcpResponse {
+    fn action(&self) -> AcpTurnAction {
+        match self.action.as_str() {
+            "ignore" => AcpTurnAction::Ignore,
+            "finish" => AcpTurnAction::Finish,
+            _ => AcpTurnAction::None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -447,11 +488,23 @@ async fn run_prompt(
         ));
     }
 
+    let parsed = parse_response(&text);
+    let action = parsed.action();
     Ok(AcpTurn {
         session_id,
-        response: text,
+        response: parsed.message,
+        action,
+        reason: parsed.reason,
         stop_reason: format!("{:?}", response.stop_reason).to_ascii_lowercase(),
         session_recovered,
+    })
+}
+
+fn parse_response(text: &str) -> AcpResponse {
+    serde_json::from_str(text).unwrap_or_else(|_| AcpResponse {
+        message: text.to_string(),
+        action: String::new(),
+        reason: None,
     })
 }
 

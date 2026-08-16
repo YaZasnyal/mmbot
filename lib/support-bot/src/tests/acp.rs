@@ -1,6 +1,6 @@
 use super::{
-    find_session_file, format_prompt, parse_session_trace, AcpPrompt, AcpRuntime, QwenAcpConfig,
-    QwenAcpRuntime,
+    find_session_file, format_prompt, parse_response, parse_session_trace, AcpPrompt, AcpRuntime,
+    AcpTurnAction, QwenAcpConfig, QwenAcpRuntime,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -18,6 +18,24 @@ fn support_prompt_contains_thread_post_and_untrusted_message() {
         prompt,
         "/support\n\nMattermost thread: thread-1\nMattermost post: post-2\nUser message:\nservice is slow"
     );
+}
+
+#[test]
+fn structured_response_extracts_message_and_action() {
+    let response = parse_response(
+        r#"{"message":"This is not a support request.","action":"ignore","reason":"wrong channel"}"#,
+    );
+
+    assert_eq!(response.message, "This is not a support request.");
+    assert_eq!(response.action(), AcpTurnAction::Ignore);
+    assert_eq!(response.reason.as_deref(), Some("wrong channel"));
+
+    let response = parse_response("Please provide the order ID.");
+    assert_eq!(response.message, "Please provide the order ID.");
+    assert_eq!(response.action(), AcpTurnAction::None);
+
+    let response = parse_response(r#"{"message":"Continue","action":"delete"}"#);
+    assert_eq!(response.action(), AcpTurnAction::None);
 }
 
 #[test]

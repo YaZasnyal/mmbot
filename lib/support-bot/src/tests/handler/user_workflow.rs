@@ -26,8 +26,34 @@ fn success() -> AcpTurn {
     AcpTurn {
         session_id: "session-1".to_string(),
         response: "final answer".to_string(),
+        action: AcpTurnAction::None,
+        reason: None,
         stop_reason: "end_turn".to_string(),
         session_recovered: false,
+    }
+}
+
+#[tokio::test]
+async fn acp_actions_update_support_status() {
+    for (action, status, reason_key) in [
+        (AcpTurnAction::Ignore, "ignored", "ignored_reason"),
+        (AcpTurnAction::Finish, "finished", "finished_summary"),
+    ] {
+        let mut turn = success();
+        turn.action = action;
+        turn.reason = Some("agent decision".to_string());
+        let handler = SupportBotHandler::new("support", test_config(), runtime(Ok(turn)));
+
+        let effects = handle_thread(&handler, thread("users", "hello"))
+            .await
+            .unwrap();
+        let metadata = effects.iter().find_map(|effect| match effect {
+            ThreadEffect::SetThreadMetadata { metadata, .. } => Some(metadata),
+            _ => None,
+        });
+
+        assert_eq!(metadata.unwrap()[STATE_KEY]["status"], status);
+        assert_eq!(metadata.unwrap()[STATE_KEY][reason_key], "agent decision");
     }
 }
 

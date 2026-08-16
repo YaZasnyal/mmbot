@@ -25,7 +25,21 @@ let handler = SupportBotBuilder::new("support", config, Arc::new(runtime)).build
 ```
 
 Qwen receives `/support`, the Mattermost thread/post IDs, and the new user
-message. Only ACP agent-message text is posted to the user. Session ID, last
-input post, recovery status, duration, stop reason, and failures are available
+message. It returns one structured object:
+
+```json
+{"message":"User-facing Markdown","action":"none|ignore|finish","reason":null}
+```
+
+Only `message` is posted to the user. `ignore` marks a non-support thread as
+ignored; `finish` marks a completed conversation as finished. Unknown actions
+are treated as `none`.
+
+The support skill must not use Qwen's `ask_user_question` popup: Mattermost
+cannot display or answer that ACP permission UI. To request clarification, Qwen
+returns the question in `message` with `action: "none"`; the user's next
+Mattermost reply continues the same ACP session.
+
+Session ID, last input post, recovery status, duration, stop reason, and failures are available
 in thread metadata and the linked engineer thread. Engineers can run
 `!support debug-report` to export the tracked thread and runtime state as HTML.

@@ -1,5 +1,5 @@
 use super::*;
-use crate::acp::{AcpPrompt, AcpRuntime, AcpTurn};
+use crate::acp::{AcpPrompt, AcpRuntime, AcpTurn, AcpTurnAction};
 use crate::admission::{SupportThreadAdmissionDecision, SupportThreadAdmissionHook};
 use crate::config::{DebugCommandConfig, SupportRouteConfig};
 use crate::debug::DebugResponse;
@@ -29,6 +29,8 @@ impl AcpRuntime for StaticAcp {
         Ok(AcpTurn {
             session_id: "session-1".to_string(),
             response: "hello from support".to_string(),
+            action: AcpTurnAction::None,
+            reason: None,
             stop_reason: "end_turn".to_string(),
             session_recovered: false,
         })

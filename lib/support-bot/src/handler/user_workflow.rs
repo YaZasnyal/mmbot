@@ -1,4 +1,4 @@
-use crate::acp::{AcpPrompt, AcpTurn};
+use crate::acp::{AcpPrompt, AcpTurn, AcpTurnAction};
 use crate::admission::SupportThreadAdmissionDecision;
 use crate::metadata::{
     has_thread_state, load_thread_state, metadata_value, store_thread_state, SupportMetadata,
@@ -105,6 +105,17 @@ impl SupportBotHandler {
                     last_outbound_post_id: None,
                     status: SupportRuntimeStatus::Active,
                 });
+                match turn.action {
+                    AcpTurnAction::None => {}
+                    AcpTurnAction::Ignore => {
+                        state.status = SupportThreadStatus::Ignored;
+                        state.ignored_reason = turn.reason.clone();
+                    }
+                    AcpTurnAction::Finish => {
+                        state.status = SupportThreadStatus::Finished;
+                        state.finished_summary = turn.reason.clone();
+                    }
+                }
                 effects.push(acp_engineer_report(&thread, &turn, elapsed));
                 effects.push(ThreadEffect::Reply {
                     target: ThreadTarget::CurrentThread,
@@ -185,12 +196,14 @@ fn acp_engineer_report(thread: &Thread, turn: &AcpTurn, elapsed: Duration) -> Th
     ThreadEffect::Reply {
         target: engineer_threads(),
         message: format!(
-            "**Qwen ACP report**\n\n- source_thread_id: `{}`\n- acp_session_id: `{}`\n- duration_ms: `{}`\n- stop_reason: `{}`\n- session_recovered: `{}`\n\n**Final response**\n\n{}",
+            "**Qwen ACP report**\n\n- source_thread_id: `{}`\n- acp_session_id: `{}`\n- duration_ms: `{}`\n- stop_reason: `{}`\n- session_recovered: `{}`\n- action: `{}`\n- reason: `{}`\n\n**Final response**\n\n{}",
             thread.info.thread_id,
             turn.session_id,
             elapsed.as_millis(),
             turn.stop_reason,
             turn.session_recovered,
+            turn.action.as_str(),
+            turn.reason.as_deref().unwrap_or("none"),
             quote_for_mattermost(&turn.response)
         ),
         metadata: support_post_props(SupportMetadataKind::AcpReport, thread),

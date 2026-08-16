@@ -20,7 +20,8 @@ pub mod state;
 mod testutil;
 
 pub use acp::{
-    AcpPrompt, AcpRuntime, AcpSessionEvent, AcpSessionTrace, AcpTurn, QwenAcpConfig, QwenAcpRuntime,
+    AcpPrompt, AcpRuntime, AcpSessionEvent, AcpSessionTrace, AcpTurn, AcpTurnAction, QwenAcpConfig,
+    QwenAcpRuntime,
 };
 pub use admission::{
     FirstMessageTextAdmissionHook, SupportThreadAdmissionDecision, SupportThreadAdmissionHook,
